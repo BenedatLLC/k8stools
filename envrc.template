@@ -1,0 +1,2 @@
+export PATH="`pwd`/.venv/bin:$PATH"
+export KUBECONFIG="/path/to/your/k8s/config"
