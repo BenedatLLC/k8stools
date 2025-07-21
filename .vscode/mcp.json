@@ -2,10 +2,8 @@
        {
         "servers": {
             "k8stools": {
-                "command": "${workspaceFolder}/.venv/bin/python",
+                "command": "${workspaceFolder}/.venv/bin/k8s-mcp-server",
                 "args": [
-                    "-m",
-                    "k8stools.mcp_server"
                 ],
                 "envFile": "${workspaceFolder}/.envrc"
             }

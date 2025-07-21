@@ -225,7 +225,7 @@ wheels = [
 [[package]]
 name = "k8stools"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "kubernetes" },
     { name = "mcp" },
