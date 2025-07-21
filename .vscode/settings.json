@@ -1,0 +1,21 @@
+{
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "mcp": {
+
+        "inputs": [],
+        "servers": {
+            "k8stools": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "k8stools.mcp_server"
+                ],
+                "envFile": "${workspaceFolder}/.envrc"
+            }
+        }
+    }
+}
