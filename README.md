@@ -27,6 +27,18 @@ There are three styles of tools provided here:
    The return type is `dict[str,Any]`, but we document the fields in the function's docstring.
    `get_pod_spec` is an example of this type of tool.
 
+## Installation
+Via `pip`:
+
+```sh
+pip install k8stools
+```
+
+Via `uv`:
+```sh
+uv add k8stools
+```
+
 ## Current tools
 
 These are the tools we define:
@@ -120,12 +132,12 @@ Here's a short example that starts the server and then does a sanity test using 
 [07/21/25 19:55:13] INFO     Starting with 6 tools on transport streamable-http           mcp_server.py:59
 INFO:     Started server process [6649]
 INFO:     Waiting for application startup.
-                    INFO     StreamableHTTP session manager started         streamable_http_manager.py:111
+INFO     StreamableHTTP session manager started         streamable_http_manager.py:111
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 
 # Now, open another terminal window a test it
-$ curl -v \                                 ✔  ▼  19:56:26 
+$ curl -v \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
      -d '{
