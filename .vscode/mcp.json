@@ -1,11 +1,14 @@
        
        {
         "servers": {
-            "k8stools": {
+            "k8stools-stdio": {
                 "command": "${workspaceFolder}/.venv/bin/k8s-mcp-server",
                 "args": [
                 ],
                 "envFile": "${workspaceFolder}/.envrc"
+            },
+            "k8stools-streamable-http": {
+                "url": "http://localhost:8000/mcp"
             }
         }
     }

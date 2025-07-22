@@ -1,3 +1,14 @@
+# Copyright (c) 2025 Benedat LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+#
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 """Tools for interacting with kubernetes.
 These are build on top of the kubernetes Python API (https://github.com/kubernetes-client/python).
 The goal is to provide well-documented and strongly typed tools. There are three kinds
