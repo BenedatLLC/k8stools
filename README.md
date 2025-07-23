@@ -8,6 +8,10 @@ include:
 * Vibe-code a custom chat UI.
 * Use in non-agentic automations.
 
+![[Demo of a live chat](chat-with-cluster.png)](https://youtu.be/Ep2K1a-pbB8)
+
+## Methodology
+
 Currently, the priority is on functions that do not modify the state of the cluster.
 We want to focus first on the monitoring / RCA use cases. When we do add tools to address
 other use cases, they will be kept separate from the read-only tools so you can still build
