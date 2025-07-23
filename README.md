@@ -8,7 +8,7 @@ include:
 * Vibe-code a custom chat UI.
 * Use in non-agentic automations.
 
-![[Demo of a live chat](chat-with-cluster.png)](https://youtu.be/Ep2K1a-pbB8)
+[![Demo of a live chat](chat-with-cluster.png)](https://youtu.be/Ep2K1a-pbB8)
 
 ## Methodology
 
