@@ -47,4 +47,4 @@ k8stools.mcp_client is a test client that starts the server and makes
 a list_tools request through the stdio transport.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
