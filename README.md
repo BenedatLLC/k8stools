@@ -1,5 +1,7 @@
 # Kubernetes Tools
 
+![Unit Tests](https://github.com/BenedatLLC/k8stools/actions/workflows/unit-tests.yml/badge.svg)
+
 This package provides a collection of Kubernetes functions to be used by Agents. They can be passed
 directly to an agent as tools or placed behind an MCP server (included). Some use cases include:
 * Chat with your kubernetes cluster via GitHub CoPilot or Cursor.
