@@ -104,3 +104,5 @@ questions:
   if possible.
 * When providing pod statuses, be sure to include the state of the pod.
 * When providing a status, use an icon show quickly show if it is good or bad.
+* If you are asked for the current status, and you haven't run a request in
+  more than an minute, be sure to run the tool again to get the latest status.

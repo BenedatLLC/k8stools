@@ -10,14 +10,11 @@ include:
 
 Here's an example, click to see video:
 
-[![Demo of a live chat](chat-with-cluster.png)](https://youtu.be/Ep2K1a-pbB8)
+[![Demo of a live chat](chat-with-cluster.png)](https://youtu.be/huN20MlHPiA)
 
 ## Methodology
 
-Currently, the priority is on functions that do not modify the state of the cluster.
-We want to focus first on the monitoring / RCA use cases. When we do add tools to address
-other use cases, they will be kept separate from the read-only tools so you can still build
-"safe" agents. In general, our goal is to focus on quality over quantity -- providing
+Our goal is to focus on quality over quantity -- providing
 well-documented and strongly typed tools. We believe that this is a critical in enabling
 agents to make effective use of tools, beyond simple demos.
 
@@ -32,6 +29,11 @@ There are three styles of tools provided here:
    https://github.com/kubernetes-client/python/tree/master/kubernetes/client/models).
    The return type is `dict[str,Any]`, but we document the fields in the function's docstring.
    `get_pod_spec` is an example of this type of tool.
+
+Currently, the priority is on functions that do not modify the state of the cluster.
+We want to focus first on the monitoring / RCA use cases. When we do add tools to address
+other use cases, they will be kept separate from the read-only tools so you can still build
+"safe" agents.
 
 ## Installation
 Via `pip`:
@@ -142,7 +144,7 @@ INFO     StreamableHTTP session manager started         streamable_http_manager.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 
-# Now, open another terminal window a test it
+# Now, open another terminal window and test it
 $ curl -v \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
@@ -175,3 +177,26 @@ $ curl -v \
 event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
 ```
+
+## Instruction files
+GitHub CoPilot supports *instruction* files that can provide additional context to the CoPilot
+Coding Agent. It can even analyze your project and create one for your. By default, this gets
+save to `.github/copilot-instructions.md`. You can manually add instructions to customize
+your agent when using your MCP tool. As an example, here's the additional content included
+in this repository's `copilot-instructions.md`:
+
+> ### MCP Integration
+> Run server: `k8s-mcp-server [--transport stdio|streamable-http]`
+> Tools auto-registered via `Tool.from_function()` in `mcp_server.py`
+> 
+> When answering questions about the user's kubernetes cluster, use the
+> tools provided by this server, which is configured in `mcp.json` as
+> `k8stools-stdio`. Some other considerations when answering these
+> questions:
+> * If the answer includes multiple, similar entries, format as a table
+>   if possible.
+> * When providing pod statuses, be sure to include the state of the pod.
+> * When providing a status, use an icon show quickly show if it is good or bad.
+> * If you are asked for the current status, and you haven't run a request in
+>   more than an minute, be sure to run the tool again to get the latest status.
+
