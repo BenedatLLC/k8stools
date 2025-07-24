@@ -1,6 +1,6 @@
 # Kubernetes Tools
 
-This package provides a collection of Kubernetes functions to be used as tools for an Agent. They can be passed
+This package provides a collection of Kubernetes functions to be used by Agents. They can be passed
 directly to an agent as tools or placed behind an MCP server (included). Some use cases include:
 * Chat with your kubernetes cluster via GitHub CoPilot or Cursor.
 * Build [agents](https://github.com/BenedatLLC/orca-agent/) to monitor your cluster or perform root cause analysis.
