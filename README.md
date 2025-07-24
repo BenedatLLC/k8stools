@@ -1,8 +1,7 @@
 # Kubernetes Tools
 
-This package provides a collection of functions to be used as tools for an Agent. They can be called
-directly as functions or placed behind an MCP server (included). Some use cases
-include:
+This package provides a collection of Kubernetes functions to be used as tools for an Agent. They can be passed
+directly to an agent as tools or placed behind an MCP server (included). Some use cases include:
 * Chat with your kubernetes cluster via GitHub CoPilot or Cursor.
 * Build [agents](https://github.com/BenedatLLC/orca-agent/) to monitor your cluster or perform root cause analysis.
 * Vibe-code a custom chat UI.
@@ -180,9 +179,9 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
 
 ## Instruction files
 GitHub CoPilot supports *instruction* files that can provide additional context to the CoPilot
-Coding Agent. It can even analyze your project and create one for your. By default, this gets
-save to `.github/copilot-instructions.md`. You can manually add instructions to customize
-your agent when using your MCP tool. As an example, here's the additional content included
+Coding Agent. It can even analyze your project and create one for you. By default, this gets
+saved to `.github/copilot-instructions.md`. You can manually add instructions to customize
+your agent for using your MCP tools. As an example, here's the additional content included
 in this repository's `copilot-instructions.md`:
 
 > ### MCP Integration
