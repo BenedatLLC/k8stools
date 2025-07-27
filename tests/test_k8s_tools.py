@@ -51,7 +51,7 @@ class MockK8S:
         )
         return SimpleNamespace(items=[event1, event2])
 
-    def read_namespaced_pod_log(self, name, namespace, container=None, follow=False, _preload_content=True, timestamps=True):
+    def read_namespaced_pod_log(self, name, namespace, container=None, follow=False, _preload_content=True, timestamps=True, tail_lines=None, limit_bytes=None):
         # Return a sample log string for testing
         if name == "pod-1" and namespace == "default" and container == "container-1":
             return "2025-07-12T00:00:00Z container-1 log line 1\n2025-07-12T00:01:00Z container-1 log line 2"
@@ -102,8 +102,70 @@ class MockK8S:
         )
         return SimpleNamespace(items=[pod1, pod2])
 
-# overwrite the real k8s client with a mock
-k8s_tools.K8S = MockK8S()
+
+class MockAppsV1Api:
+    def list_namespaced_deployment(self, namespace):
+        deployments = [dep for dep in self._mock_deployments().items if dep.metadata.namespace == namespace]
+        return SimpleNamespace(items=deployments)
+    
+    def list_deployment_for_all_namespaces(self):
+        return self._mock_deployments()
+    
+    def _mock_deployments(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # Create mock deployment 1 in default namespace
+        deployment1 = SimpleNamespace(
+            metadata=SimpleNamespace(
+                name="nginx-deployment",
+                namespace="default",
+                creation_timestamp=now - datetime.timedelta(days=2)
+            ),
+            spec=SimpleNamespace(replicas=3),
+            status=SimpleNamespace(
+                ready_replicas=2,
+                updated_replicas=3,
+                available_replicas=2
+            )
+        )
+        
+        # Create mock deployment 2 in test namespace
+        deployment2 = SimpleNamespace(
+            metadata=SimpleNamespace(
+                name="app-deployment",
+                namespace="test",
+                creation_timestamp=now - datetime.timedelta(hours=6)
+            ),
+            spec=SimpleNamespace(replicas=1),
+            status=SimpleNamespace(
+                ready_replicas=1,
+                updated_replicas=1,
+                available_replicas=1
+            )
+        )
+        
+        return SimpleNamespace(items=[deployment1, deployment2])
+
+
+@pytest.fixture(scope="module", autouse=True)
+def setup_and_teardown_mock():
+    """Set up mock K8S client before tests and clean up after."""
+    # Store original values
+    original_k8s = k8s_tools.K8S
+    original_apps_v1 = k8s_tools.APPS_V1_API
+    
+    # Set up mocks
+    k8s_tools.K8S = MockK8S()
+    k8s_tools.APPS_V1_API = MockAppsV1Api()
+    
+    yield
+    
+    # Clean up - reset to original values
+    k8s_tools.K8S = original_k8s
+    k8s_tools.APPS_V1_API = original_apps_v1
+
+# Note: We no longer set the global state at module level
+# k8s_tools.K8S = MockK8S()  # Removed this line
 
 def test_get_namespaces():
     namespaces = k8s_tools.get_namespaces()
@@ -166,7 +228,36 @@ def test_retrieve_logs_from_pod_and_container():
     assert "container-1 log line 1" in logs
     assert "container-1 log line 2" in logs
 
-@pytest.fixture(scope="module", autouse=True)
-def reset_k8s_tools_K8S():
-    yield
-    k8s_tools.K8S = None
+def test_deployment_summaries():
+    deployments = k8s_tools.get_deployment_summaries()
+    assert isinstance(deployments, list)
+    assert len(deployments) == 2
+    
+    # Check first deployment (nginx-deployment in default namespace)
+    deployment1 = deployments[0]
+    assert isinstance(deployment1, k8s_tools.DeploymentSummary)
+    assert deployment1.name == "nginx-deployment"
+    assert deployment1.namespace == "default"
+    assert deployment1.total_replicas == 3
+    assert deployment1.ready_replicas == 2
+    assert deployment1.up_to_date_relicas == 3
+    assert deployment1.available_replicas == 2
+    assert isinstance(deployment1.age, datetime.timedelta)
+    
+    # Check second deployment (app-deployment in test namespace)
+    deployment2 = deployments[1]
+    assert isinstance(deployment2, k8s_tools.DeploymentSummary)
+    assert deployment2.name == "app-deployment"
+    assert deployment2.namespace == "test"
+    assert deployment2.total_replicas == 1
+    assert deployment2.ready_replicas == 1
+    assert deployment2.up_to_date_relicas == 1
+    assert deployment2.available_replicas == 1
+    assert isinstance(deployment2.age, datetime.timedelta)
+    
+    # Test namespace-specific deployments
+    default_deployments = k8s_tools.get_deployment_summaries("default")
+    assert isinstance(default_deployments, list)
+    assert len(default_deployments) == 1
+    assert default_deployments[0].name == "nginx-deployment"
+    assert default_deployments[0].namespace == "default"

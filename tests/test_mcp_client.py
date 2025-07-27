@@ -12,6 +12,7 @@ EXPECTED_TOOLS = [
     'get_pod_events',
     'get_pod_spec',
     'get_logs_for_pod_and_container',
+    'get_deployment_summaries',
 ]
 
 

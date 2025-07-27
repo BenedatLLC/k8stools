@@ -26,9 +26,10 @@ from kubernetes.client import V1PodSpec, ApiException
 from kubernetes.client.models.v1_container_status import V1ContainerStatus
 
 K8S:Optional[client.CoreV1Api] = None
+APPS_V1_API:Optional[client.AppsV1Api] = None
 
 class K8sConfigError(Exception):
-    """This is thrown when ampting to load the config or initializing the API fails."""
+    """This is thrown when atempting to load the config or initializing the API fails."""
     pass
 
 class K8sApiError(Exception):
@@ -45,6 +46,22 @@ def _get_api_client() -> client.CoreV1Api:
         try:
             config.load_incluster_config()
             return client.CoreV1Api()
+        except config.ConfigException as e:
+            raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
+        except Exception as e:
+            raise K8sConfigError(f"Unexpected error: {e}") from e
+
+
+def _get_apps_v1_api_client() -> client.AppsV1Api:
+    try:
+        config.load_kube_config()
+        return client.AppsV1Api()
+    except config.ConfigException:
+        logging.warning("Could not load kube config. Ensure you have a valid Kubernetes configuration.")
+        logging.warning("Attempting to load in-cluster config...")
+        try:
+            config.load_incluster_config()
+            return client.AppsV1Api()
         except config.ConfigException as e:
             raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
         except Exception as e:
@@ -353,7 +370,7 @@ class ContainerStateTerminated(BaseModel):
 # see kubernetes.client.models.v1_container_state.V1ContainerState
 ContainerState = Union[ContainerStateRunning, ContainerStateWaiting, ContainerStateTerminated]
 
-def _v1_container_state_to_container_state(container_state:client.V1ContainerState) -> ContainerState:
+def _v1_container_state_to_container_state(container_state:client.V1ContainerState) -> Optional[ContainerState]:
     if container_state.running:
         return ContainerStateRunning(started_at=container_state.running.started_at)
     elif container_state.waiting:
@@ -367,7 +384,8 @@ def _v1_container_state_to_container_state(container_state:client.V1ContainerSta
                                         message=cst.message,
                                         started_at=cst.started_at)
     else:
-        raise K8sApiError(f"Unexpected container state: {container_state}")
+        # All states are None - this is valid (e.g., for last_state when container has never been in a previous state)
+        return None
     
 # see https://github.com/kubernetes-client/python/blob/master/kubernetes/docs/V1VolumeMountStatus.md
 class VolumeMountStatus(BaseModel):
@@ -647,15 +665,16 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
         K8S = _get_api_client()
  
     try:
-        # read_namespaced_pod_log with follow=False and _preload_content=True (default)
-        # returns the entire log content as a string
+        # read_namespaced_pod_log with reasonable limits to avoid memory issues
         resp = K8S.read_namespaced_pod_log(
             name=pod_name,
             namespace=namespace,
             container=container_name,  # Pass container_name if specified
             follow=False,              # Set to False to get all current logs
             _preload_content=True,     # Important: This loads all content into memory
-            timestamps=True            # Optional: Include timestamps
+            timestamps=True,           # Optional: Include timestamps
+            tail_lines=1000,          # Limit to last 1000 lines to avoid memory issues
+            limit_bytes=1024*1024     # Limit to 1MB to avoid memory issues
         )
 
         # The response is a single string containing all logs
@@ -669,11 +688,121 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
         raise K8sApiError(f"An unexpected error occurred: {e}") from e
 
 
+class DeploymentSummary(BaseModel):
+    """A summary of a deployment's status like returned by `kubectl get deployments`"""
+    name: str
+    namespace: str
+    total_replicas: int
+    ready_replicas: int
+    up_to_date_relicas: int
+    available_replicas: int
+    age: datetime.timedelta
+
+def get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]:
+    """
+    Retrieves a list of DeploymentSummary objects for deployments in a given namespace or all namespaces.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list deployments from. If None, lists deployments from all namespaces.
+
+    Returns
+    -------
+    list of DeploymentSummary
+        A list of DeploymentSummary objects, each providing a summary of a deployment's status with the following fields:
+
+        name : str
+            Name of the deployment.
+        namespace : str
+            Namespace in which the deployment is running.
+        total_replicas : int
+            Total number of replicas desired for this deployment.
+        ready_replicas : int
+            Number of replicas that are currently ready.
+        up_to_date_replicas : int
+            Number of replicas that are up to date.
+        available_replicas : int
+            Number of replicas that are available.
+        age : datetime.timedelta
+            Age of the deployment (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list deployments fails.
+    """
+    global APPS_V1_API
+    
+    # Load Kubernetes configuration and initialize client only once
+    if APPS_V1_API is None:
+        APPS_V1_API = _get_apps_v1_api_client()
+
+    logging.info(f"get_deployment_summaries(namespace={namespace})")
+    deployment_summaries: list[DeploymentSummary] = []
+    
+    try:
+        if namespace:
+            deployments = APPS_V1_API.list_namespaced_deployment(namespace=namespace)
+        else:
+            deployments = APPS_V1_API.list_deployment_for_all_namespaces()
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching deployments: {e}") from e
+    
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    
+    for deployment in deployments.items:
+        deployment_name = deployment.metadata.name
+        deployment_namespace = deployment.metadata.namespace
+        
+        # Extract replica counts from deployment status
+        total_replicas = deployment.spec.replicas if deployment.spec.replicas is not None else 0
+        ready_replicas = deployment.status.ready_replicas if deployment.status.ready_replicas is not None else 0
+        up_to_date_replicas = deployment.status.updated_replicas if deployment.status.updated_replicas is not None else 0
+        available_replicas = deployment.status.available_replicas if deployment.status.available_replicas is not None else 0
+        
+        # Calculate age
+        age = datetime.timedelta(0)  # Default to 0 if creation_timestamp is missing
+        if deployment.metadata.creation_timestamp:
+            age = current_time_utc - deployment.metadata.creation_timestamp
+        
+        deployment_summary = DeploymentSummary(
+            name=deployment_name,
+            namespace=deployment_namespace,
+            total_replicas=total_replicas,
+            ready_replicas=ready_replicas,
+            up_to_date_relicas=up_to_date_replicas,
+            available_replicas=available_replicas,
+            age=age
+        )
+        deployment_summaries.append(deployment_summary)
+    
+    return deployment_summaries
+
+
+def print_deployment_summaries(namespace: Optional[str] = None) -> None:
+    """
+    Calls get_deployment_summaries and prints the output to stdout, using
+    the same format as `kubectl get deployments`.
+    """
+    deployment_summaries = get_deployment_summaries(namespace)
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'UP-TO-DATE':<12} {'AVAILABLE':<12} {'AGE':<12}")
+    for deployment in deployment_summaries:
+        ready = f"{deployment.ready_replicas}/{deployment.total_replicas}"
+        up_to_date = str(deployment.up_to_date_relicas)
+        available = str(deployment.available_replicas)
+        age = _format_timedelta(deployment.age)
+        print(f"{deployment.name:<32} {deployment.namespace:<20} {ready:<10} {up_to_date:<12} {available:<12} {age:<12}")
+
+
 TOOLS = [
     get_namespaces,
     get_pod_summaries,
     get_pod_container_statuses,
     get_pod_events,
     get_pod_spec,
-    get_logs_for_pod_and_container
+    get_logs_for_pod_and_container,
+    get_deployment_summaries
 ]
