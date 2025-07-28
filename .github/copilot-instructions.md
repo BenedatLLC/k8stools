@@ -96,7 +96,7 @@ from k8stools.k8s_tools import TOOLS
 Run server: `k8s-mcp-server [--transport stdio|streamable-http]`
 Tools auto-registered via `Tool.from_function()` in `mcp_server.py`
 
-When answer questions about the user's kubernetes cluster, use the
+When answering questions about the user's kubernetes cluster, use the
 tools provided by this server, which is configured in `mcp.json` as
 `k8stools-stdio`. Some other considerations when answering these
 questions:

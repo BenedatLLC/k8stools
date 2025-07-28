@@ -185,6 +185,15 @@ event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
 ```
 
+## Mock tools
+When building agents, it can be helpful to test them against *mock* versions that do
+not go against a real cluster, but return static (but realistic) values. The module
+`k8stools.mock_tools` does just that. The data values were captured when running
+against a real Minikube instance running the
+(Open Telemetry Demo)[https://github.com/open-telemetry/opentelemetry-demo]
+application. When running the MCP server, this may be enabled by using the
+`--mock` command line option.
+
 ## Instruction files
 GitHub CoPilot supports *instruction* files that can provide additional context to the CoPilot
 Coding Agent. It can even analyze your project and create one for you. By default, this gets

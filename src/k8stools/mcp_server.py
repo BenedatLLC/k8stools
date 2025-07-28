@@ -16,7 +16,6 @@ This will run with either the stdio transport or the streamable http transport.
 from pydantic import BaseModel
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools import Tool
-from .k8s_tools import TOOLS
 import argparse
 import logging
 
@@ -40,9 +39,15 @@ def main():
                         help="Log level [default: INFO]")
     parser.add_argument('--debug', action='store_true',
                         help="Enable debug mode [default: False]")
+    parser.add_argument('--mock', action='store_true', default=False,
+                        help="If specified, just run mock versions of the tools that don't need a cluster")
 
     args = parser.parse_args()
-
+    if not args.mock:
+        from .k8s_tools import TOOLS
+    else:
+        from .mock_tools import TOOLS
+        logging.warning(f"Using mock versions of the tools")
     wrapped_tools = [get_tool_for_function(fn) for fn in TOOLS]
 
     mcp = FastMCP(
