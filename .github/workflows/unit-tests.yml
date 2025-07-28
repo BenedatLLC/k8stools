@@ -28,4 +28,4 @@ jobs:
       - name: Run unit tests
         run: |
           source .venv/bin/activate
-          pytest tests/test_k8s_tools.py
+          pytest
