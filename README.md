@@ -190,7 +190,7 @@ When building agents, it can be helpful to test them against *mock* versions tha
 not go against a real cluster, but return static (but realistic) values. The module
 `k8stools.mock_tools` does just that. The data values were captured when running
 against a real Minikube instance running the
-(Open Telemetry Demo)[https://github.com/open-telemetry/opentelemetry-demo]
+[Open Telemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
 application. When running the MCP server, this may be enabled by using the
 `--mock` command line option.
 
