@@ -26,19 +26,25 @@ of tools provided here:
 These are the tools we define:
 
 * get_namespaces - get a list of namespaces, like `kubectl get namespace`
-* get_pod_summaries - get a list of pods, like `kubectl get pods`
+* get_node_summaries - get a list of nodes, like `kubectl get nodes -o wide`
+* get_pod_summaries - get a list of pods, like `kubectl get pods -o wide`
 * get_pod_container_statuses - return the status for each of the container in a pod
 * get_pod_events - return the events for a pod
 * get_pod_spec - retrieves the spec for a given pod
 * get_logs_for_pod_and_container - retrieves logs from a pod and container
+* get_deployment_summaries - get a list of deployments, like `kubectl get deployments`
+* get_service_summaries - get a list of services, like `kubectl get services`
 
 We also define a set of associated "print_" functions that are helpful in debugging:
 
 * print_namespaces
+* print_node_summaries
 * print_pod_summaries
 * print_pod_container_statuses
 * print_pod_events
 * print_pod_spec
+* print_deployment_summaries
+* print_service_summaries
 
 The tool functions are defined in k8stools.k8s_tools.
 k8stools.mcp_server can be run to start an MCP server based on these
@@ -47,4 +53,4 @@ k8stools.mcp_client is a test client that starts the server and makes
 a list_tools request through the stdio transport.
 """
 
-__version__ = "0.1.2"
+__version__ = "1.0.0"

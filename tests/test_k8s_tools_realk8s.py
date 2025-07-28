@@ -1,6 +1,7 @@
 """These tests call the tool apis against a real k8s cluster. They just do very basic santity
 testing of the results. The tests are skipped if we can't reach the cluster.
 """
+import datetime
 import pytest
 from k8stools import k8s_tools
 
@@ -30,9 +31,78 @@ def test_get_namespaces():
     namespaces = k8s_tools.get_namespaces()
     assert isinstance(namespaces, list)
 
+def test_get_node_summaries():
+    nodes = k8s_tools.get_node_summaries()
+    assert isinstance(nodes, list)
+    # If we have nodes, verify the structure of all fields
+    if nodes:
+        node = nodes[0]
+        assert hasattr(node, 'name')
+        assert hasattr(node, 'status')
+        assert hasattr(node, 'roles')
+        assert hasattr(node, 'age')
+        assert hasattr(node, 'version')
+        assert hasattr(node, 'internal_ip')
+        assert hasattr(node, 'external_ip')
+        assert hasattr(node, 'os_image')
+        assert hasattr(node, 'kernel_version')
+        assert hasattr(node, 'container_runtime')
+        
+        # Verify field types
+        assert isinstance(node.name, str)
+        assert isinstance(node.status, str)
+        assert isinstance(node.roles, list)
+        assert isinstance(node.age, datetime.timedelta)
+        assert isinstance(node.version, str)
+        assert node.internal_ip is None or isinstance(node.internal_ip, str)
+        assert node.external_ip is None or isinstance(node.external_ip, str)
+        assert node.os_image is None or isinstance(node.os_image, str)
+        assert node.kernel_version is None or isinstance(node.kernel_version, str)
+        assert node.container_runtime is None or isinstance(node.container_runtime, str)
+        
+        # Verify logical constraints
+        assert node.status in ["Ready", "NotReady", "Unknown"]
+        assert len(node.roles) > 0  # Should have at least one role or ["<none>"]
+        if node.roles != ["<none>"]:
+            for role in node.roles:
+                assert isinstance(role, str)
+                assert len(role) > 0
+
 def test_get_pod_summaries():
     pods = k8s_tools.get_pod_summaries()
     assert isinstance(pods, list)
+    # If we have pods, verify the structure of all fields
+    if pods:
+        pod = pods[0]
+        assert hasattr(pod, 'name')
+        assert hasattr(pod, 'namespace')
+        assert hasattr(pod, 'total_containers')
+        assert hasattr(pod, 'ready_containers')
+        assert hasattr(pod, 'restarts')
+        assert hasattr(pod, 'last_restart')
+        assert hasattr(pod, 'age')
+        assert hasattr(pod, 'ip')
+        assert hasattr(pod, 'node')
+        
+        # Verify field types
+        assert isinstance(pod.name, str)
+        assert isinstance(pod.namespace, str)
+        assert isinstance(pod.total_containers, int)
+        assert isinstance(pod.ready_containers, int)
+        assert isinstance(pod.restarts, int)
+        assert pod.last_restart is None or isinstance(pod.last_restart, datetime.timedelta)
+        assert isinstance(pod.age, datetime.timedelta)
+        assert pod.ip is None or isinstance(pod.ip, str)
+        assert pod.node is None or isinstance(pod.node, str)
+        
+        # Verify logical constraints
+        assert pod.ready_containers <= pod.total_containers
+        assert pod.restarts >= 0
+        assert pod.total_containers > 0
+    
+    # Test namespace-specific pods
+    default_pods = k8s_tools.get_pod_summaries("default")
+    assert isinstance(default_pods, list)
 
 def test_get_pod_container_statuses():
     if k8s_tools.K8S is None:
@@ -113,3 +183,29 @@ def test_deployment_summaries():
     # Test namespace-specific deployments
     default_deployments = k8s_tools.get_deployment_summaries("default")
     assert isinstance(default_deployments, list)
+
+def test_service_summaries():
+    services = k8s_tools.get_service_summaries()
+    assert isinstance(services, list)
+    # If we have services, verify the structure
+    if services:
+        service = services[0]
+        assert hasattr(service, 'name')
+        assert hasattr(service, 'namespace')
+        assert hasattr(service, 'type')
+        assert hasattr(service, 'cluster_ip')
+        assert hasattr(service, 'external_ip')
+        assert hasattr(service, 'ports')
+        assert hasattr(service, 'age')
+        assert isinstance(service.ports, list)
+        # If there are ports, verify their structure
+        if service.ports:
+            port = service.ports[0]
+            assert hasattr(port, 'port')
+            assert hasattr(port, 'protocol')
+            assert isinstance(port.port, int)
+            assert isinstance(port.protocol, str)
+    
+    # Test namespace-specific services
+    default_services = k8s_tools.get_service_summaries("default")
+    assert isinstance(default_services, list)

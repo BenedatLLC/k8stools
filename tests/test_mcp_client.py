@@ -5,16 +5,8 @@ import os
 import re
 import pytest
 
-EXPECTED_TOOLS = [
-    'get_namespaces',
-    'get_pod_summaries',
-    'get_pod_container_statuses',
-    'get_pod_events',
-    'get_pod_spec',
-    'get_logs_for_pod_and_container',
-    'get_deployment_summaries',
-]
-
+from k8stools.k8s_tools import TOOLS
+EXPECTED_TOOLS = [tool.__name__ for tool in TOOLS]
 
 import time
 import requests

@@ -75,6 +75,7 @@ class NamespaceSummary(BaseModel):
     status: str
     age: datetime.timedelta
 
+
 def get_namespaces() -> list[NamespaceSummary]:
     """Return a summary of the namespaces for this Kubernetes cluster, similar to that
     returned by `kubectl get namespace`.
@@ -116,6 +117,156 @@ def get_namespaces() -> list[NamespaceSummary]:
     ]
 
 
+class NodeSummary(BaseModel):
+    """A summary of a node's status like returned by `kubectl get nodes -o wide`"""
+    name: str
+    status: str
+    roles: list[str]
+    age: datetime.timedelta
+    version: str
+    internal_ip: Optional[str] = None
+    external_ip: Optional[str] = None
+    os_image: Optional[str] = None
+    kernel_version: Optional[str] = None
+    container_runtime: Optional[str] = None
+
+def get_node_summaries() -> list[NodeSummary]:
+    """Return a summary of the nodes for this Kubernetes cluster, similar to that
+    returned by `kubectl get nodes -o wide`.
+
+    Parameters
+    ----------
+    None
+        This function does not take any parameters.
+
+    Returns
+    -------
+    list of NodeSummary
+        List of node summary objects. Each NodeSummary has the following fields:
+
+        name : str
+            Name of the node.
+        status : str
+            Status of the node (Ready, NotReady, etc.).
+        roles : list[str]
+            List of roles for the node (e.g., ['control-plane', 'master']).
+        age : datetime.timedelta
+            Age of the node (current time minus creation timestamp).
+        version : str
+            Kubernetes version running on the node.
+        internal_ip : Optional[str]
+            Internal IP address of the node.
+        external_ip : Optional[str]
+            External IP address of the node (if available).
+        os_image : Optional[str]
+            Operating system image running on the node.
+        kernel_version : Optional[str]
+            Kernel version of the node.
+        container_runtime : Optional[str]
+            Container runtime version on the node.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list nodes fails.
+    """
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_node_summaries()")
+    
+    try:
+        nodes = K8S.list_node().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching nodes: {e}") from e
+    
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    node_summaries: list[NodeSummary] = []
+    
+    for node in nodes:
+        node_name = node.metadata.name
+        
+        # Determine node status
+        status = "Unknown"
+        if node.status and node.status.conditions:
+            for condition in node.status.conditions:
+                if condition.type == "Ready":
+                    status = "Ready" if condition.status == "True" else "NotReady"
+                    break
+        
+        # Extract roles from labels
+        roles = []
+        if node.metadata.labels:
+            for label_key in node.metadata.labels:
+                if label_key.startswith("node-role.kubernetes.io/"):
+                    role = label_key.replace("node-role.kubernetes.io/", "")
+                    if role:  # Skip empty roles
+                        roles.append(role)
+                # Also check for older master label
+                elif label_key == "kubernetes.io/role" and node.metadata.labels[label_key]:
+                    roles.append(node.metadata.labels[label_key])
+        
+        if not roles:
+            roles = ["<none>"]
+        
+        # Calculate age
+        age = datetime.timedelta(0)
+        if node.metadata.creation_timestamp:
+            age = current_time_utc - node.metadata.creation_timestamp
+        
+        # Extract version and system info
+        version = node.status.node_info.kubelet_version if node.status and node.status.node_info else "Unknown"
+        os_image = node.status.node_info.os_image if node.status and node.status.node_info else None
+        kernel_version = node.status.node_info.kernel_version if node.status and node.status.node_info else None
+        container_runtime = node.status.node_info.container_runtime_version if node.status and node.status.node_info else None
+        
+        # Extract IP addresses
+        internal_ip = None
+        external_ip = None
+        if node.status and node.status.addresses:
+            for address in node.status.addresses:
+                if address.type == "InternalIP":
+                    internal_ip = address.address
+                elif address.type == "ExternalIP":
+                    external_ip = address.address
+        
+        node_summary = NodeSummary(
+            name=node_name,
+            status=status,
+            roles=roles,
+            age=age,
+            version=version,
+            internal_ip=internal_ip,
+            external_ip=external_ip,
+            os_image=os_image,
+            kernel_version=kernel_version,
+            container_runtime=container_runtime
+        )
+        node_summaries.append(node_summary)
+    
+    return node_summaries
+
+def print_node_summaries() -> None:
+    """
+    Calls get_node_summaries and prints the output to stdout, using
+    the same format as `kubectl get nodes -o wide`.
+    """
+    nodes = get_node_summaries()
+    print(f"{'NAME':<32} {'STATUS':<12} {'ROLES':<20} {'AGE':<12} {'VERSION':<16} {'INTERNAL-IP':<16} {'EXTERNAL-IP':<16} {'OS-IMAGE':<32} {'KERNEL-VERSION':<16} {'CONTAINER-RUNTIME':<20}")
+    for node in nodes:
+        age = _format_timedelta(node.age)
+        roles_str = ",".join(node.roles) if node.roles and node.roles != ["<none>"] else "<none>"
+        internal_ip = node.internal_ip if node.internal_ip else "<none>"
+        external_ip = node.external_ip if node.external_ip else "<none>"
+        os_image = node.os_image if node.os_image else "<unknown>"
+        kernel_version = node.kernel_version if node.kernel_version else "<unknown>"
+        container_runtime = node.container_runtime if node.container_runtime else "<unknown>"
+        
+        print(f"{node.name:<32} {node.status:<12} {roles_str:<20} {age:<12} {node.version:<16} {internal_ip:<16} {external_ip:<16} {os_image:<32} {kernel_version:<16} {container_runtime:<20}")
+    
+
 def print_namespaces() -> None:
     """
     Calls get_namespaces and prints the output to stdout, using
@@ -126,10 +277,10 @@ def print_namespaces() -> None:
     for ns in namespaces:
         age = _format_timedelta(ns.age)
         print(f"{ns.name:<32} {ns.status:<12} {age:<12}")
-    
+
 
 class PodSummary(BaseModel):
-    """A summary of a pod's status like returned by `kubectl get pods`"""
+    """A summary of a pod's status like returned by `kubectl get pods -o wide`"""
     name: str
     namespace: str
     total_containers: int
@@ -137,6 +288,8 @@ class PodSummary(BaseModel):
     restarts: int
     last_restart: Optional[datetime.timedelta]
     age: datetime.timedelta
+    ip: Optional[str] = None
+    node: Optional[str] = None
 
    
 
@@ -168,6 +321,10 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             Time since the container last restart (None if never restarted).
         age : datetime.timedelta
             Age of the pod (current time minus creation timestamp).
+        ip : Optional[str]
+            Pod IP address (None if not assigned).
+        node : Optional[str]
+            Name of the node where the pod is running (None if not scheduled).
     Raises
     ------
     K8sConfigError
@@ -229,6 +386,10 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
         if latest_restart_time:
             last_restart_timedelta = current_time_utc - latest_restart_time
 
+        # Extract IP and node information
+        pod_ip = pod.status.pod_ip if pod.status and pod.status.pod_ip else None
+        node_name = pod.spec.node_name if pod.spec and pod.spec.node_name else None
+
         pod_summary = PodSummary(
             name=pod_name,
             namespace=pod_namespace,
@@ -236,7 +397,9 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             ready_containers=ready_containers,
             restarts=total_restarts,
             last_restart=last_restart_timedelta,
-            age=age
+            age=age,
+            ip=pod_ip,
+            node=node_name
         )
         pod_summaries.append(pod_summary)
     
@@ -245,17 +408,18 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
 def print_pod_summaries(namespace: Optional[str] = None) -> None:
     """
     Calls get_pod_summaries and prints the output to stdout, using
-    the same format as `kubectl get pods`.
+    the same format as `kubectl get pods -o wide`.
     """
     pod_summaries = get_pod_summaries(namespace)
     # Print header
-    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'RESTARTS':<10} {'AGE':<12} {'LAST_RESTART':<15}")
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'RESTARTS':<10} {'AGE':<12} {'IP':<16} {'NODE':<24}")
     for pod in pod_summaries:
         ready = f"{pod.ready_containers}/{pod.total_containers}"
         restarts = str(pod.restarts)
         age = _format_timedelta(pod.age)
-        last_restart = _format_timedelta(pod.last_restart) if pod.last_restart is not None else "-"
-        print(f"{pod.name:<32} {pod.namespace:<20} {ready:<10} {restarts:<10} {age:<12} {last_restart:<15}")
+        ip = pod.ip if pod.ip else "<none>"
+        node = pod.node if pod.node else "<none>"
+        print(f"{pod.name:<32} {pod.namespace:<20} {ready:<10} {restarts:<10} {age:<12} {ip:<16} {node:<24}")
 
 def _format_timedelta(td: Optional[datetime.timedelta]) -> str:
     if td is None:
@@ -701,6 +865,7 @@ class DeploymentSummary(BaseModel):
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]:
     """
     Retrieves a list of DeploymentSummary objects for deployments in a given namespace or all namespaces.
+    Similar to `kubectl get deployements`.
 
     Parameters
     ----------
@@ -797,12 +962,150 @@ def print_deployment_summaries(namespace: Optional[str] = None) -> None:
         print(f"{deployment.name:<32} {deployment.namespace:<20} {ready:<10} {up_to_date:<12} {available:<12} {age:<12}")
 
 
+class PortInfo(BaseModel):
+    """A representation of a port, to be used in various specs."""
+    port: int
+    protocol: str
+
+class ServiceSummary(BaseModel):
+    """A summary of a service's status like returned by `kubectl get servicess`"""
+    name: str
+    namespace: str
+    type: str
+    cluster_ip: Optional[str] = None
+    external_ip: Optional[str] = None
+    ports: list[PortInfo]
+    age: datetime.timedelta
+
+def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummary]:
+    """Retrieves a list of ServiceSummary objects for services in a given namespace or all namespaces.
+    Similar to `kubectl get services`.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list services from. If None, lists services from all namespaces.
+
+    Returns
+    -------
+    list of ServiceSummary
+        A list of ServiceSummary objects, each providing a summary of a service's status with the following fields:
+
+        name : str
+            Name of the service.
+        namespace : str
+            Namespace in which the service is running.
+        type : str
+            Type of the service (ClusterIP, NodePort, LoadBalancer, ExternalName).
+        cluster_ip : Optional[str]
+            Cluster IP address assigned to the service (None for ExternalName services).
+        external_ip : Optional[str]
+            External IP address if applicable (for LoadBalancer services).
+        ports : list[PortInfo]
+            List of ports (and their protocols) exposed by the service.
+        age : datetime.timedelta
+            Age of the service (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list services fails.
+    """
+    global K8S
+    
+    # Load Kubernetes configuration and initialize client only once
+    if K8S is None:
+        K8S = _get_api_client()
+
+    logging.info(f"get_service_summaries(namespace={namespace})")
+    service_summaries: list[ServiceSummary] = []
+    
+    try:
+        if namespace:
+            # List services in a specific namespace
+            services = K8S.list_namespaced_service(namespace=namespace).items
+        else:
+            # List services across all namespaces
+            services = K8S.list_service_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching services: {e}") from e
+
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    for service in services:
+        service_name = service.metadata.name
+        service_namespace = service.metadata.namespace
+        service_type = service.spec.type if service.spec.type else "ClusterIP"
+        
+        # Get cluster IP (None for ExternalName services)
+        cluster_ip = service.spec.cluster_ip if service.spec.cluster_ip != "None" else None
+        
+        # Get external IP for LoadBalancer services
+        external_ip = None
+        if service.status and service.status.load_balancer and service.status.load_balancer.ingress:
+            # Take the first ingress IP or hostname
+            ingress = service.status.load_balancer.ingress[0]
+            external_ip = ingress.ip or ingress.hostname
+        
+        # Extract port information
+        ports = []
+        if service.spec.ports:
+            for port in service.spec.ports:
+                ports.append(PortInfo(
+                    port=port.port,
+                    protocol=port.protocol if port.protocol else "TCP"
+                ))
+        
+        # Calculate age
+        age = datetime.timedelta(0)  # Default to 0 if creation_timestamp is missing
+        if service.metadata.creation_timestamp:
+            age = current_time_utc - service.metadata.creation_timestamp
+
+        service_summary = ServiceSummary(
+            name=service_name,
+            namespace=service_namespace,
+            type=service_type,
+            cluster_ip=cluster_ip,
+            external_ip=external_ip,
+            ports=ports,
+            age=age
+        )
+        service_summaries.append(service_summary)
+    
+    return service_summaries
+
+
+def print_service_summaries(namespace: Optional[str] = None) -> None:
+    """
+    Calls get_service_summaries and prints the output to stdout, using
+    the same format as `kubectl get services`.
+    """
+    service_summaries = get_service_summaries(namespace)
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'TYPE':<15} {'CLUSTER-IP':<16} {'EXTERNAL-IP':<16} {'PORT(S)':<20} {'AGE':<12}")
+    for service in service_summaries:
+        service_type = service.type
+        cluster_ip = service.cluster_ip if service.cluster_ip else "<none>"
+        external_ip = service.external_ip if service.external_ip else "<none>"
+        
+        # Format ports as "port/protocol,port/protocol"
+        ports_str = ",".join([f"{port.port}/{port.protocol}" for port in service.ports]) if service.ports else "<none>"
+        
+        age = _format_timedelta(service.age)
+        print(f"{service.name:<32} {service.namespace:<20} {service_type:<15} {cluster_ip:<16} {external_ip:<16} {age:<12} {ports_str:<20}")
+
+
+
+
 TOOLS = [
     get_namespaces,
+    get_node_summaries,
     get_pod_summaries,
     get_pod_container_statuses,
     get_pod_events,
     get_pod_spec,
     get_logs_for_pod_and_container,
-    get_deployment_summaries
+    get_deployment_summaries,
+    get_service_summaries
 ]

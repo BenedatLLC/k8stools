@@ -53,19 +53,25 @@ uv add k8stools
 These are the tools we define:
 
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
-* `get_pod_summar`ies` - get a list of pods, like `kubectl get pods`
+* `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide`
+* `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`
 * `get_pod_container_statuses` - return the status for each of the container in a pod
 * `get_pod_events` - return the events for a pod
 * `get_pod_spec` - retrieves the spec for a given pod
 * `get_logs_for_pod_and_container` - retrieves logs from a pod and container
+* `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
+* `get_service_summaries` - get a list of services, like `kubectl get services`
 
 We also define a set of associated "print_" functions that are helpful in debugging:
 
 * `print_namespaces`
+* `print_node_summaries`
 * `print_pod_summaries`
 * `print_pod_container_statuses`
 * `print_pod_events`
 * `print_pod_spec`
+* `print_deployment_summaries`
+* `print_service_summaries`
 
 ## Using the tools
 ### Directly use in an agent
