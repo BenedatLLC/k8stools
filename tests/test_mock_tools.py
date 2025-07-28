@@ -2,7 +2,7 @@
 
 import datetime
 import pytest
-from src.k8stools import mock_tools, k8s_tools
+from k8stools import mock_tools, k8s_tools
 
 
 class TestMockNamespaces:
