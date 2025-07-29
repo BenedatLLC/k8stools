@@ -1,7 +1,7 @@
 
 [project]
 name = "k8stools"
-version = "1.0.0"
+version = "1.0.1"
 description = "Tools and an MCP server for building Kubernetes agents"
 readme = "README.md"
 requires-python = ">=3.12"
