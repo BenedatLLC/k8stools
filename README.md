@@ -9,6 +9,10 @@ directly to an agent as tools or placed behind an MCP server (included). Some us
 * Vibe-code a custom chat UI.
 * Use in non-agentic automations.
 
+<a href="https://glama.ai/mcp/servers/@BenedatLLC/k8stools">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@BenedatLLC/k8stools/badge" alt="Kubernetes Tools Server MCP server" />
+</a>
+
 ## Methodology
 
 Our goal is to focus on quality over quantity -- providing
@@ -211,4 +215,3 @@ in this repository's `copilot-instructions.md`:
 > * When providing a status, use an icon show quickly show if it is good or bad.
 > * If you are asked for the current status, and you haven't run a request in
 >   more than an minute, be sure to run the tool again to get the latest status.
-
