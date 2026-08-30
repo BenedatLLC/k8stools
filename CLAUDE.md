@@ -12,10 +12,13 @@ src/k8stools/
   mcp_server.py  - MCP server (stdio or streamable-http transport)
   mcp_client.py  - MCP client used for manual testing
 tests/
-  test_k8s_tools.py          - Unit tests (mocked K8s API)
+  test_k8s_tools.py          - Unit tests for the original tools (mocked K8s API)
+  test_new_tools.py          - Unit tests for the 1.1.0 tools (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, events, log enhancements)
+  test_redaction.py          - Unit tests for the secret-redaction pass
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
-  test_mock_tools.py         - Tests for mock_tools module
+  test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
   test_mcp_client.py         - MCP client tests
+  test_version.py            - Asserts pyproject and package __version__ agree
 ```
 
 ## Environment setup
@@ -54,7 +57,7 @@ Use `datetime.timedelta` for age/duration fields. Use snake_case field names. In
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
 
-`print_*` companion functions exist for each `get_*` function — for human-readable debugging output only.
+`print_*` companion functions exist for each `get_*` summary/spec function — for human-readable debugging output only. The log readers (`get_logs_for_pod_and_container`, `get_logs_for_job`, `get_logs_for_cronjob`) have no `print_*` companion since they already return a printable string.
 
 ## Error handling
 
@@ -86,7 +89,7 @@ agent = Agent(model="openai:gpt-4.1", system_prompt=SYSTEM_PROMPT, tools=TOOLS)
 ## MCP server
 
 ```bash
-# stdio (default) — for local coding agents (Copilot, Cursor)
+# stdio (default) — for local coding agents (e.g. Cursor)
 k8s-mcp-server
 
 # HTTP — for remote access

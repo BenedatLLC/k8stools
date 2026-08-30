@@ -231,25 +231,3 @@ a reader for Kubernetes `Secret` objects.
 If you call the tool functions directly in Python (rather than through the MCP
 server), you get raw, un-redacted values; you can apply the same pass yourself via
 `k8stools.redaction.redact_object`.
-
-## Instruction files
-GitHub CoPilot supports *instruction* files that can provide additional context to the CoPilot
-Coding Agent. It can even analyze your project and create one for you. By default, this gets
-saved to `.github/copilot-instructions.md`. You can manually add instructions to customize
-your agent for using your MCP tools. As an example, here's the additional content included
-in this repository's `copilot-instructions.md`:
-
-> ### MCP Integration
-> Run server: `k8s-mcp-server [--transport stdio|streamable-http]`
-> Tools auto-registered via `Tool.from_function()` in `mcp_server.py`
-> 
-> When answering questions about the user's kubernetes cluster, use the
-> tools provided by this server, which is configured in `mcp.json` as
-> `k8stools-stdio`. Some other considerations when answering these
-> questions:
-> * If the answer includes multiple, similar entries, format as a table
->   if possible.
-> * When providing pod statuses, be sure to include the state of the pod.
-> * When providing a status, use an icon show quickly show if it is good or bad.
-> * If you are asked for the current status, and you haven't run a request in
->   more than an minute, be sure to run the tool again to get the latest status.
