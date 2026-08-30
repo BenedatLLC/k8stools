@@ -13,11 +13,12 @@
 
 This will run with either the stdio transport or the streamable http transport.
 """
-from pydantic import BaseModel
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.tools import Tool
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.tools import Tool
 import argparse
 import logging
+
+from .redaction import redaction_enabled, wrap_with_redaction
 
 
 def get_tool_for_function(fn) -> Tool:
@@ -41,6 +42,9 @@ def main():
                         help="Enable debug mode [default: False]")
     parser.add_argument('--mock', action='store_true', default=False,
                         help="If specified, just run mock versions of the tools that don't need a cluster")
+    parser.add_argument('--no-redact', action='store_true', default=False,
+                        help="Disable secret redaction of tool output (redaction is on by default; "
+                             "can also be disabled with K8STOOLS_REDACT=0)")
 
     args = parser.parse_args()
     if not args.mock:
@@ -48,22 +52,36 @@ def main():
     else:
         from .mock_tools import TOOLS
         logging.warning(f"Using mock versions of the tools")
-    wrapped_tools = [get_tool_for_function(fn) for fn in TOOLS]
 
-    mcp = FastMCP(
+    # Apply secret redaction at the output boundary (default-on, opt-out). See redaction.py.
+    redact = redaction_enabled(no_redact_flag=args.no_redact)
+    if redact:
+        logging.info("Secret redaction of tool output is ENABLED (use --no-redact or "
+                     "K8STOOLS_REDACT=0 to disable)")
+        fns = [wrap_with_redaction(fn) for fn in TOOLS]
+    else:
+        logging.warning("Secret redaction of tool output is DISABLED")
+        fns = list(TOOLS)
+    wrapped_tools = [get_tool_for_function(fn) for fn in fns]
+
+    mcp = MCPServer(
         name="k8stools-"+args.transport,
         tools=wrapped_tools,
-        streamable_http_path="/mcp",
-        stateless_http=(args.transport == 'streamable-http'),
-        host=args.host,
-        port=args.port,
         log_level=args.log_level,
-        debug=args.debug
+        debug=args.debug,
     )
-    logging.debug(f"Settings are: {mcp.settings}")
     logging.info(f"Starting with {len(wrapped_tools)} tools on transport {args.transport}")
     # this starts the uvicorn server
-    mcp.run(transport=args.transport)
+    if args.transport == 'streamable-http':
+        mcp.run(
+            transport='streamable-http',
+            host=args.host,
+            port=args.port,
+            streamable_http_path="/mcp",
+            stateless_http=True,
+        )
+    else:
+        mcp.run(transport=args.transport)
 
 
 if __name__=='__main__':

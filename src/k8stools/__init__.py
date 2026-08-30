@@ -31,9 +31,18 @@ These are the tools we define:
 * get_pod_container_statuses - return the status for each of the container in a pod
 * get_pod_events - return the events for a pod
 * get_pod_spec - retrieves the spec for a given pod
-* get_logs_for_pod_and_container - retrieves logs from a pod and container
+* get_logs_for_pod_and_container - retrieves logs from a pod and container (supports tail/since/previous)
 * get_deployment_summaries - get a list of deployments, like `kubectl get deployments`
 * get_service_summaries - get a list of services, like `kubectl get services`
+* get_configmap_summaries - get a list of ConfigMaps, like `kubectl get configmaps`
+* get_configmap - retrieve the full contents of a single ConfigMap
+* get_statefulset_summaries - get a list of StatefulSets, like `kubectl get statefulsets`
+* get_cronjob_summaries - get a list of CronJobs, like `kubectl get cronjobs`
+* get_job_summaries - get a list of Jobs, like `kubectl get jobs`
+* get_logs_for_job - retrieve logs from a Job's most-recent pod
+* get_logs_for_cronjob - retrieve logs from a CronJob's most-recent run
+* get_pvc_summaries - get a list of PersistentVolumeClaims, like `kubectl get pvc`
+* get_events - list cluster/namespace-wide events with server-side filtering
 
 We also define a set of associated "print_" functions that are helpful in debugging:
 
@@ -45,12 +54,20 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_pod_spec
 * print_deployment_summaries
 * print_service_summaries
+* print_configmap_summaries
+* print_configmap
+* print_statefulset_summaries
+* print_cronjob_summaries
+* print_job_summaries
+* print_pvc_summaries
+* print_events
 
-The tool functions are defined in k8stools.k8s_tools.
+Secret redaction of tool output (on by default in the MCP server) is provided by
+k8stools.redaction. The tool functions are defined in k8stools.k8s_tools.
 k8stools.mcp_server can be run to start an MCP server based on these
 tools. It can be called directly through the script k8s-mcp-server.
 k8stools.mcp_client is a test client that starts the server and makes
 a list_tools request through the stdio transport.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"

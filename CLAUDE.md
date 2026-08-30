@@ -8,6 +8,7 @@ Kubernetes monitoring tools for AI agents, exposed as direct Python functions or
 src/k8stools/
   k8s_tools.py   - Core tools: Kubernetes API wrappers with Pydantic return types
   mock_tools.py  - Static mock versions of all tools (captured from real Minikube + OTel Demo)
+  redaction.py   - Secret-redaction pass applied at the MCP server output boundary
   mcp_server.py  - MCP server (stdio or streamable-http transport)
   mcp_client.py  - MCP client used for manual testing
 tests/
@@ -93,7 +94,22 @@ k8s-mcp-server --transport=streamable-http --port=8000
 
 # Mock mode (no real cluster needed)
 k8s-mcp-server --mock
+
+# Disable secret redaction (on by default)
+k8s-mcp-server --no-redact
 ```
+
+## Secret redaction
+
+`redaction.py` applies a single redaction pass to every tool's return value at the
+MCP server output boundary (`mcp_server.py` wraps each tool with
+`wrap_with_redaction`). It is **on by default** and opt-out via `--no-redact` or
+`K8STOOLS_REDACT=0`. It matches secret-shaped values (AWS keys, JWTs, PEM private
+keys) and values under keys/env-var names matching
+`key|secret|token|password|credential`, replacing them with a visible `[REDACTED]`
+marker. Direct Python callers of the tool functions get raw values (no redaction) and
+can call `redaction.redact_object` themselves. We never add a reader for `Secret`
+objects.
 
 Example `mcp.json`:
 ```json

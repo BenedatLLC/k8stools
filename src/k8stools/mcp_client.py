@@ -12,11 +12,8 @@ import sys
 from typing import Any
 
 
-from pydantic import AnyUrl
-
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
-from mcp.shared.context import RequestContext
 from mcp.types import ListToolsResult, Tool
 
 from rich import print

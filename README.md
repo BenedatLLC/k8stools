@@ -53,14 +53,23 @@ uv add k8stools
 These are the tools we define:
 
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
-* `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide`
+* `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide` (includes capacity/allocatable/conditions/taints/labels)
 * `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`
 * `get_pod_container_statuses` - return the status for each of the container in a pod
 * `get_pod_events` - return the events for a pod
 * `get_pod_spec` - retrieves the spec for a given pod
-* `get_logs_for_pod_and_container` - retrieves logs from a pod and container
+* `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`)
 * `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
-* `get_service_summaries` - get a list of services, like `kubectl get services`
+* `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
+* `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
+* `get_configmap` - retrieve the full contents of a single ConfigMap
+* `get_statefulset_summaries` - get a list of StatefulSets, like `kubectl get statefulsets`
+* `get_cronjob_summaries` - get a list of CronJobs, like `kubectl get cronjobs`
+* `get_job_summaries` - get a list of Jobs, like `kubectl get jobs`
+* `get_logs_for_job` - retrieve logs from a Job's most-recent pod
+* `get_logs_for_cronjob` - retrieve logs from a CronJob's most-recent run
+* `get_pvc_summaries` - get a list of PersistentVolumeClaims, like `kubectl get pvc` (resolves mounting pods)
+* `get_events` - list cluster/namespace-wide events with server-side filtering
 
 We also define a set of associated "print_" functions that are helpful in debugging:
 
@@ -72,6 +81,13 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_pod_spec`
 * `print_deployment_summaries`
 * `print_service_summaries`
+* `print_configmap_summaries`
+* `print_configmap`
+* `print_statefulset_summaries`
+* `print_cronjob_summaries`
+* `print_job_summaries`
+* `print_pvc_summaries`
+* `print_events`
 
 ## Using the tools
 ### Directly use in an agent
@@ -96,7 +112,8 @@ The script `k8s-mcp-server` provides an MCP server for the same set of tools.
 Here are the command line arguments for the server:
 ```
 usage: k8s-mcp-server [-h] [--transport {streamable-http,stdio}] [--host HOST] [--port PORT]
-                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug]
+                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug] [--mock]
+                      [--no-redact]
 
 Run the MCP server.
 
@@ -109,6 +126,8 @@ options:
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Log level [default: INFO]
   --debug               Enable debug mode [default: False]
+  --mock                Run mock versions of the tools that don't need a cluster
+  --no-redact           Disable secret redaction of tool output (on by default)
 ```
 
 #### Use MCP with the stdio transport
@@ -144,7 +163,7 @@ Here's a short example that starts the server and then does a sanity test using 
 ```sh
 # start the server
  $ k8s-mcp-server --transport=streamable-http
-[07/21/25 19:55:13] INFO     Starting with 6 tools on transport streamable-http           mcp_server.py:59
+[07/21/25 19:55:13] INFO     Starting with 18 tools on transport streamable-http          mcp_server.py:59
 INFO:     Started server process [6649]
 INFO:     Waiting for application startup.
 INFO     StreamableHTTP session manager started         streamable_http_manager.py:111
@@ -193,6 +212,25 @@ against a real Minikube instance running the
 [Open Telemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
 application. When running the MCP server, this may be enabled by using the
 `--mock` command line option.
+
+## Secret redaction
+Some read-only resources can carry secret-shaped values even though they are not
+Kubernetes `Secret` objects — `ConfigMap` data and the `env` blocks in a pod spec
+are the common cases. When you run the k8stools MCP server directly against an
+agent (with no wrapping service to scrub output), those values would otherwise flow
+straight into the model's context.
+
+To prevent that, the MCP server applies a redaction pass to every tool's output.
+It is **on by default** and can be disabled with `--no-redact` or by setting
+`K8STOOLS_REDACT=0`. Redaction matches both by value shape (AWS access keys, JWT /
+bearer tokens, PEM private-key blocks) and by key / env-var name
+(`key|secret|token|password|credential`), replacing each match with a visible
+`[REDACTED]` marker so the agent can tell "hidden" from "absent". We never provide
+a reader for Kubernetes `Secret` objects.
+
+If you call the tool functions directly in Python (rather than through the MCP
+server), you get raw, un-redacted values; you can apply the same pass yourself via
+`k8stools.redaction.redact_object`.
 
 ## Instruction files
 GitHub CoPilot supports *instruction* files that can provide additional context to the CoPilot
