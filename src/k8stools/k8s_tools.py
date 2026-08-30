@@ -27,6 +27,7 @@ from kubernetes.client.models.v1_container_status import V1ContainerStatus
 
 K8S:Optional[client.CoreV1Api] = None
 APPS_V1_API:Optional[client.AppsV1Api] = None
+BATCH_V1_API:Optional[client.BatchV1Api] = None
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -62,6 +63,22 @@ def _get_apps_v1_api_client() -> client.AppsV1Api:
         try:
             config.load_incluster_config()
             return client.AppsV1Api()
+        except config.ConfigException as e:
+            raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
+        except Exception as e:
+            raise K8sConfigError(f"Unexpected error: {e}") from e
+
+
+def _get_batch_v1_api_client() -> client.BatchV1Api:
+    try:
+        config.load_kube_config()
+        return client.BatchV1Api()
+    except config.ConfigException:
+        logging.warning("Could not load kube config. Ensure you have a valid Kubernetes configuration.")
+        logging.warning("Attempting to load in-cluster config...")
+        try:
+            config.load_incluster_config()
+            return client.BatchV1Api()
         except config.ConfigException as e:
             raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
         except Exception as e:
@@ -118,7 +135,10 @@ def get_namespaces() -> list[NamespaceSummary]:
 
 
 class NodeSummary(BaseModel):
-    """A summary of a node's status like returned by `kubectl get nodes -o wide`"""
+    """A summary of a node's status like returned by `kubectl get nodes -o wide`,
+    augmented with the capacity/allocatable/conditions/taints/labels detail that
+    `kubectl describe node` shows (useful for reconstructing a pods-per-node
+    capacity model)."""
     name: str
     status: str
     roles: list[str]
@@ -129,6 +149,11 @@ class NodeSummary(BaseModel):
     os_image: Optional[str] = None
     kernel_version: Optional[str] = None
     container_runtime: Optional[str] = None
+    capacity: dict[str, str] = Field(default_factory=dict)
+    allocatable: dict[str, str] = Field(default_factory=dict)
+    conditions: dict[str, str] = Field(default_factory=dict)
+    taints: list[str] = Field(default_factory=list)
+    labels: dict[str, str] = Field(default_factory=dict)
 
 def get_node_summaries() -> list[NodeSummary]:
     """Return a summary of the nodes for this Kubernetes cluster, similar to that
@@ -164,6 +189,21 @@ def get_node_summaries() -> list[NodeSummary]:
             Kernel version of the node.
         container_runtime : Optional[str]
             Container runtime version on the node.
+        capacity : dict[str, str]
+            Total capacity of the node keyed by resource name (e.g. "cpu",
+            "memory", "ephemeral-storage", "pods"). Empty if unavailable.
+        allocatable : dict[str, str]
+            Resources allocatable to pods (capacity minus system-reserved),
+            keyed by resource name. Empty if unavailable.
+        conditions : dict[str, str]
+            Node conditions keyed by type with their status, e.g.
+            {"Ready": "True", "MemoryPressure": "False", "DiskPressure": "False"}.
+        taints : list[str]
+            Taints on the node formatted as "key=value:effect" (value omitted
+            when empty).
+        labels : dict[str, str]
+            All labels on the node. Useful for identifying node pool / instance
+            type and spotting version skew across pools.
 
     Raises
     ------
@@ -231,7 +271,23 @@ def get_node_summaries() -> list[NodeSummary]:
                     internal_ip = address.address
                 elif address.type == "ExternalIP":
                     external_ip = address.address
-        
+
+        # Extract capacity / allocatable / conditions (all live on node.status)
+        capacity = dict(node.status.capacity) \
+            if node.status and getattr(node.status, "capacity", None) else {}
+        allocatable = dict(node.status.allocatable) \
+            if node.status and getattr(node.status, "allocatable", None) else {}
+        conditions = {c.type: c.status for c in node.status.conditions} \
+            if node.status and node.status.conditions else {}
+
+        # Extract taints (on node.spec) and labels (on node.metadata)
+        taints: list[str] = []
+        if getattr(node, "spec", None) and getattr(node.spec, "taints", None):
+            for taint in node.spec.taints:
+                value = f"={taint.value}" if getattr(taint, "value", None) else "="
+                taints.append(f"{taint.key}{value}:{taint.effect}")
+        labels = dict(node.metadata.labels) if node.metadata.labels else {}
+
         node_summary = NodeSummary(
             name=node_name,
             status=status,
@@ -242,7 +298,12 @@ def get_node_summaries() -> list[NodeSummary]:
             external_ip=external_ip,
             os_image=os_image,
             kernel_version=kernel_version,
-            container_runtime=container_runtime
+            container_runtime=container_runtime,
+            capacity=capacity,
+            allocatable=allocatable,
+            conditions=conditions,
+            taints=taints,
+            labels=labels,
         )
         node_summaries.append(node_summary)
     
@@ -804,15 +865,30 @@ def print_pod_spec(pod_name: str, namespace: str = "default") -> None:
 
 
 def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
-                                    container_name:Optional[str]=None) -> Optional[str]:
+                                    container_name:Optional[str]=None,
+                                    tail:Optional[int]=None,
+                                    since_seconds:Optional[int]=None,
+                                    previous:bool=False) -> Optional[str]:
     """
     Retrieves logs from a Kubernetes pod and container.
 
     Args:
-        namespace (str): The namespace of the pod.
         pod_name (str): The name of the pod.
+        namespace (str): The namespace of the pod.
         container_name (str, optional): The name of the container within the pod.
                                         If None, defaults to the first container.
+        tail (int, optional): Number of lines to return from the end of the log.
+                              If None, defaults to the last 1000 lines. Pass a
+                              larger value to retrieve more history, or a small
+                              value for a bounded recent slice.
+        since_seconds (int, optional): If set, only return logs newer than this
+                              many seconds. Combines with `tail` (both limits
+                              apply).
+        previous (bool, default False): If True, return logs from the *previous*
+                              terminated instance of the container instead of the
+                              current one. Indispensable for crashloop analysis,
+                              where the current instance's logs are empty or
+                              post-restart. Fails if there is no previous instance.
 
     Returns:
         str, optional: Log content if any found for this pod/container, or None otherwise
@@ -827,19 +903,25 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
     global K8S
     if K8S is None:
         K8S = _get_api_client()
- 
+
     try:
-        # read_namespaced_pod_log with reasonable limits to avoid memory issues
-        resp = K8S.read_namespaced_pod_log(
+        # read_namespaced_pod_log with reasonable limits to avoid memory issues.
+        # Optional args are only passed when set so the common path stays simple.
+        log_kwargs: dict[str, Any] = dict(
             name=pod_name,
             namespace=namespace,
             container=container_name,  # Pass container_name if specified
             follow=False,              # Set to False to get all current logs
             _preload_content=True,     # Important: This loads all content into memory
             timestamps=True,           # Optional: Include timestamps
-            tail_lines=1000,          # Limit to last 1000 lines to avoid memory issues
-            limit_bytes=1024*1024     # Limit to 1MB to avoid memory issues
+            tail_lines=tail if tail is not None else 1000,  # Default: last 1000 lines
+            limit_bytes=1024*1024,     # Limit to 1MB to avoid memory issues
         )
+        if since_seconds is not None:
+            log_kwargs["since_seconds"] = since_seconds
+        if previous:
+            log_kwargs["previous"] = True
+        resp = K8S.read_namespaced_pod_log(**log_kwargs)
 
         # The response is a single string containing all logs
         if resp:
@@ -968,7 +1050,8 @@ class PortInfo(BaseModel):
     protocol: str
 
 class ServiceSummary(BaseModel):
-    """A summary of a service's status like returned by `kubectl get servicess`"""
+    """A summary of a service's status like returned by `kubectl get services`,
+    plus the pod `selector` and the service's labels/annotations."""
     name: str
     namespace: str
     type: str
@@ -976,6 +1059,9 @@ class ServiceSummary(BaseModel):
     external_ip: Optional[str] = None
     ports: list[PortInfo]
     age: datetime.timedelta
+    selector: dict[str, str] = Field(default_factory=dict)
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
 
 def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummary]:
     """Retrieves a list of ServiceSummary objects for services in a given namespace or all namespaces.
@@ -1005,6 +1091,14 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
             List of ports (and their protocols) exposed by the service.
         age : datetime.timedelta
             Age of the service (current time minus creation timestamp).
+        selector : dict[str, str]
+            The label selector the service uses to choose backing pods. Empty
+            for services without a selector (e.g. ExternalName, or manually
+            managed Endpoints).
+        labels : dict[str, str]
+            Labels on the service object.
+        annotations : dict[str, str]
+            Annotations on the service object.
 
     Raises
     ------
@@ -1063,6 +1157,14 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
         if service.metadata.creation_timestamp:
             age = current_time_utc - service.metadata.creation_timestamp
 
+        # Selector (spec) and labels/annotations (metadata)
+        selector = dict(service.spec.selector) \
+            if getattr(service.spec, "selector", None) else {}
+        labels = dict(service.metadata.labels) \
+            if getattr(service.metadata, "labels", None) else {}
+        annotations = dict(service.metadata.annotations) \
+            if getattr(service.metadata, "annotations", None) else {}
+
         service_summary = ServiceSummary(
             name=service_name,
             namespace=service_namespace,
@@ -1070,7 +1172,10 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
             cluster_ip=cluster_ip,
             external_ip=external_ip,
             ports=ports,
-            age=age
+            age=age,
+            selector=selector,
+            labels=labels,
+            annotations=annotations,
         )
         service_summaries.append(service_summary)
     
@@ -1098,6 +1203,904 @@ def print_service_summaries(namespace: Optional[str] = None) -> None:
 
 
 
+class ConfigMapSummary(BaseModel):
+    """A summary of a ConfigMap like returned by `kubectl get configmaps`."""
+    name: str
+    namespace: str
+    key_count: int
+    data_size: int  # total bytes across all values (data + binary_data)
+    age: datetime.timedelta
+
+
+def _configmap_key_count_and_size(config_map) -> tuple[int, int]:
+    key_count = 0
+    data_size = 0
+    if getattr(config_map, "data", None):
+        key_count += len(config_map.data)
+        data_size += sum(len(v) for v in config_map.data.values() if v is not None)
+    if getattr(config_map, "binary_data", None):
+        key_count += len(config_map.binary_data)
+        # binary_data values are base64-encoded strings on the wire
+        data_size += sum(len(v) for v in config_map.binary_data.values() if v is not None)
+    return key_count, data_size
+
+
+def get_configmap_summaries(namespace: Optional[str] = None) -> list[ConfigMapSummary]:
+    """Retrieves a list of ConfigMapSummary objects for ConfigMaps in a given namespace
+    or all namespaces, similar to `kubectl get configmaps`.
+
+    Note that this returns only summary metadata (not the ConfigMap contents); use
+    `get_configmap` to read the actual data map.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list ConfigMaps from. If None, lists ConfigMaps from
+        all namespaces.
+
+    Returns
+    -------
+    list of ConfigMapSummary
+        A list of ConfigMapSummary objects, each with the following fields:
+
+        name : str
+            Name of the ConfigMap.
+        namespace : str
+            Namespace in which the ConfigMap lives.
+        key_count : int
+            Number of keys across `data` and `binary_data`.
+        data_size : int
+            Approximate total size in bytes of all values.
+        age : datetime.timedelta
+            Age of the ConfigMap (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list ConfigMaps fails.
+    """
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_configmap_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            config_maps = K8S.list_namespaced_config_map(namespace=namespace).items
+        else:
+            config_maps = K8S.list_config_map_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching config maps: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[ConfigMapSummary] = []
+    for config_map in config_maps:
+        key_count, data_size = _configmap_key_count_and_size(config_map)
+        age = datetime.timedelta(0)
+        if config_map.metadata.creation_timestamp:
+            age = now - config_map.metadata.creation_timestamp
+        summaries.append(ConfigMapSummary(
+            name=config_map.metadata.name,
+            namespace=config_map.metadata.namespace,
+            key_count=key_count,
+            data_size=data_size,
+            age=age,
+        ))
+    return summaries
+
+
+def print_configmap_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_configmap_summaries and prints the output to stdout."""
+    summaries = get_configmap_summaries(namespace)
+    print(f"{'NAME':<40} {'NAMESPACE':<20} {'KEYS':<6} {'SIZE':<10} {'AGE':<12}")
+    for cm in summaries:
+        age = _format_timedelta(cm.age)
+        print(f"{cm.name:<40} {cm.namespace:<20} {cm.key_count:<6} {cm.data_size:<10} {age:<12}")
+
+
+def get_configmap(name: str, namespace: str = "default") -> dict[str, Any]:
+    """Retrieves the full contents of a single ConfigMap.
+
+    WARNING: ConfigMaps can contain secret-shaped values (e.g. credentials stored
+    as plain config). When this tool is served through the k8stools MCP server, the
+    output passes through a redaction step by default (see the `redaction` module
+    and the server's `--no-redact` flag). Callers using this function directly get
+    the raw values and are responsible for their own redaction.
+
+    Parameters
+    ----------
+    name : str
+        Name of the ConfigMap.
+    namespace : str, optional
+        Namespace of the ConfigMap (default is "default").
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary describing the ConfigMap with the following keys:
+
+        name : str
+            Name of the ConfigMap.
+        namespace : str
+            Namespace of the ConfigMap.
+        data : dict[str, str]
+            The string key/value data map (empty dict if none).
+        binary_data_keys : list[str]
+            Names of any binary keys. The binary values themselves are not
+            returned.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the ConfigMap is not found or the API call fails.
+    """
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_configmap(name={name}, namespace={namespace})")
+    try:
+        config_map = K8S.read_namespaced_config_map(name=name, namespace=namespace)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise K8sApiError(
+                f"ConfigMap '{name}' not found in namespace '{namespace}'."
+            ) from e
+        raise K8sApiError(
+            f"Error getting ConfigMap '{name}' in namespace '{namespace}': {e}"
+        ) from e
+    return {
+        "name": config_map.metadata.name,
+        "namespace": config_map.metadata.namespace,
+        "data": dict(config_map.data) if getattr(config_map, "data", None) else {},
+        "binary_data_keys": list(config_map.binary_data.keys())
+        if getattr(config_map, "binary_data", None) else [],
+    }
+
+
+def print_configmap(name: str, namespace: str = "default") -> None:
+    """Pretty prints the contents of the specified ConfigMap as YAML."""
+    try:
+        print(yaml.safe_dump(get_configmap(name, namespace), default_flow_style=False, sort_keys=False))
+    except Exception as e:
+        print(f"Error printing config map: {e}")
+
+
+class StatefulSetSummary(BaseModel):
+    """A summary of a StatefulSet like returned by `kubectl get statefulsets`,
+    mirroring DeploymentSummary for the stateful workloads (databases, queues,
+    etc.) that deployments don't cover."""
+    name: str
+    namespace: str
+    total_replicas: int
+    ready_replicas: int
+    current_replicas: int
+    update_strategy: str
+    service_name: Optional[str] = None
+    age: datetime.timedelta
+
+
+def get_statefulset_summaries(namespace: Optional[str] = None) -> list[StatefulSetSummary]:
+    """Retrieves a list of StatefulSetSummary objects for StatefulSets in a given
+    namespace or all namespaces, similar to `kubectl get statefulsets`.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list StatefulSets from. If None, lists from all
+        namespaces.
+
+    Returns
+    -------
+    list of StatefulSetSummary
+        A list of StatefulSetSummary objects, each with the following fields:
+
+        name : str
+            Name of the StatefulSet.
+        namespace : str
+            Namespace in which the StatefulSet runs.
+        total_replicas : int
+            Desired number of replicas.
+        ready_replicas : int
+            Number of replicas currently ready.
+        current_replicas : int
+            Number of replicas created by the current revision.
+        update_strategy : str
+            Update strategy type (e.g. "RollingUpdate", "OnDelete").
+        service_name : Optional[str]
+            Name of the governing (headless) service.
+        age : datetime.timedelta
+            Age of the StatefulSet (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list StatefulSets fails.
+    """
+    global APPS_V1_API
+    if APPS_V1_API is None:
+        APPS_V1_API = _get_apps_v1_api_client()
+    logging.info(f"get_statefulset_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            stateful_sets = APPS_V1_API.list_namespaced_stateful_set(namespace=namespace).items
+        else:
+            stateful_sets = APPS_V1_API.list_stateful_set_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching stateful sets: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[StatefulSetSummary] = []
+    for sts in stateful_sets:
+        spec = sts.spec
+        status = sts.status
+        total_replicas = spec.replicas if spec and spec.replicas is not None else 0
+        ready_replicas = status.ready_replicas if status and status.ready_replicas is not None else 0
+        current_replicas = status.current_replicas if status and status.current_replicas is not None else 0
+        update_strategy = "Unknown"
+        if spec and getattr(spec, "update_strategy", None) and spec.update_strategy.type:
+            update_strategy = spec.update_strategy.type
+        service_name = spec.service_name if spec and getattr(spec, "service_name", None) else None
+        age = datetime.timedelta(0)
+        if sts.metadata.creation_timestamp:
+            age = now - sts.metadata.creation_timestamp
+        summaries.append(StatefulSetSummary(
+            name=sts.metadata.name,
+            namespace=sts.metadata.namespace,
+            total_replicas=total_replicas,
+            ready_replicas=ready_replicas,
+            current_replicas=current_replicas,
+            update_strategy=update_strategy,
+            service_name=service_name,
+            age=age,
+        ))
+    return summaries
+
+
+def print_statefulset_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_statefulset_summaries and prints the output to stdout."""
+    summaries = get_statefulset_summaries(namespace)
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'SERVICE':<24} {'AGE':<12}")
+    for sts in summaries:
+        ready = f"{sts.ready_replicas}/{sts.total_replicas}"
+        service_name = sts.service_name if sts.service_name else "<none>"
+        age = _format_timedelta(sts.age)
+        print(f"{sts.name:<32} {sts.namespace:<20} {ready:<10} {service_name:<24} {age:<12}")
+
+
+class ContainerTemplateSummary(BaseModel):
+    """A container as declared in a pod template (e.g. inside a CronJob or Job),
+    with just the image and literal environment values that matter for RCA."""
+    name: str
+    image: str
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+def _container_templates(pod_spec) -> list[ContainerTemplateSummary]:
+    """Extract ContainerTemplateSummary list from a V1PodSpec-like object."""
+    result: list[ContainerTemplateSummary] = []
+    if not pod_spec or not getattr(pod_spec, "containers", None):
+        return result
+    for container in pod_spec.containers:
+        env: dict[str, str] = {}
+        if getattr(container, "env", None):
+            for env_var in container.env:
+                if getattr(env_var, "value", None) is not None:
+                    env[env_var.name] = env_var.value
+                elif getattr(env_var, "value_from", None) is not None:
+                    env[env_var.name] = "<valueFrom>"
+        result.append(ContainerTemplateSummary(
+            name=container.name,
+            image=container.image,
+            env=env,
+        ))
+    return result
+
+
+class CronJobSummary(BaseModel):
+    """A summary of a CronJob like returned by `kubectl get cronjobs`, plus the
+    pod template's container images/env (schedules and env-configured timeouts are
+    common root-cause material for cleanup / warm-pool jobs)."""
+    name: str
+    namespace: str
+    schedule: str
+    suspend: bool
+    active: int
+    last_schedule_time: Optional[datetime.timedelta] = None
+    last_successful_time: Optional[datetime.timedelta] = None
+    age: datetime.timedelta
+    containers: list[ContainerTemplateSummary] = Field(default_factory=list)
+
+
+def get_cronjob_summaries(namespace: Optional[str] = None) -> list[CronJobSummary]:
+    """Retrieves a list of CronJobSummary objects for CronJobs in a given namespace
+    or all namespaces, similar to `kubectl get cronjobs`.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list CronJobs from. If None, lists from all
+        namespaces.
+
+    Returns
+    -------
+    list of CronJobSummary
+        A list of CronJobSummary objects, each with the following fields:
+
+        name : str
+            Name of the CronJob.
+        namespace : str
+            Namespace of the CronJob.
+        schedule : str
+            Cron schedule expression.
+        suspend : bool
+            Whether the CronJob is suspended.
+        active : int
+            Number of currently active (running) jobs.
+        last_schedule_time : Optional[datetime.timedelta]
+            Time since the CronJob was last scheduled (None if never).
+        last_successful_time : Optional[datetime.timedelta]
+            Time since the CronJob last completed successfully (None if never).
+        age : datetime.timedelta
+            Age of the CronJob (current time minus creation timestamp).
+        containers : list[ContainerTemplateSummary]
+            The job pod template's containers, each with name, image, and literal
+            environment values.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list CronJobs fails.
+    """
+    global BATCH_V1_API
+    if BATCH_V1_API is None:
+        BATCH_V1_API = _get_batch_v1_api_client()
+    logging.info(f"get_cronjob_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            cron_jobs = BATCH_V1_API.list_namespaced_cron_job(namespace=namespace).items
+        else:
+            cron_jobs = BATCH_V1_API.list_cron_job_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching cron jobs: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[CronJobSummary] = []
+    for cron_job in cron_jobs:
+        spec = cron_job.spec
+        status = cron_job.status
+        active = len(status.active) if status and status.active else 0
+        last_schedule_time = None
+        if status and getattr(status, "last_schedule_time", None):
+            last_schedule_time = now - status.last_schedule_time
+        last_successful_time = None
+        if status and getattr(status, "last_successful_time", None):
+            last_successful_time = now - status.last_successful_time
+        age = datetime.timedelta(0)
+        if cron_job.metadata.creation_timestamp:
+            age = now - cron_job.metadata.creation_timestamp
+        pod_spec = None
+        if spec and getattr(spec, "job_template", None) and spec.job_template.spec \
+                and getattr(spec.job_template.spec, "template", None):
+            pod_spec = spec.job_template.spec.template.spec
+        summaries.append(CronJobSummary(
+            name=cron_job.metadata.name,
+            namespace=cron_job.metadata.namespace,
+            schedule=spec.schedule if spec else "",
+            suspend=bool(spec.suspend) if spec and spec.suspend is not None else False,
+            active=active,
+            last_schedule_time=last_schedule_time,
+            last_successful_time=last_successful_time,
+            age=age,
+            containers=_container_templates(pod_spec),
+        ))
+    return summaries
+
+
+def print_cronjob_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_cronjob_summaries and prints the output to stdout."""
+    summaries = get_cronjob_summaries(namespace)
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'SCHEDULE':<16} {'SUSPEND':<8} {'ACTIVE':<7} {'LAST SCHEDULE':<14} {'AGE':<12}")
+    for cj in summaries:
+        last_schedule = _format_timedelta(cj.last_schedule_time) if cj.last_schedule_time else "<none>"
+        age = _format_timedelta(cj.age)
+        print(f"{cj.name:<32} {cj.namespace:<20} {cj.schedule:<16} {str(cj.suspend):<8} {cj.active:<7} {last_schedule:<14} {age:<12}")
+
+
+class JobSummary(BaseModel):
+    """A summary of a Job like returned by `kubectl get jobs`, plus its owning
+    CronJob (if any) and pod template containers."""
+    name: str
+    namespace: str
+    owner: Optional[str] = None  # owning CronJob name, if created by one
+    active: int
+    succeeded: int
+    failed: int
+    start_time: Optional[datetime.timedelta] = None
+    completion_time: Optional[datetime.timedelta] = None
+    conditions: list[str] = Field(default_factory=list)
+    age: datetime.timedelta
+    containers: list[ContainerTemplateSummary] = Field(default_factory=list)
+
+
+def _cronjob_owner(metadata) -> Optional[str]:
+    for owner_ref in (getattr(metadata, "owner_references", None) or []):
+        if owner_ref.kind == "CronJob":
+            return owner_ref.name
+    return None
+
+
+def get_job_summaries(namespace: Optional[str] = None) -> list[JobSummary]:
+    """Retrieves a list of JobSummary objects for Jobs in a given namespace or all
+    namespaces, similar to `kubectl get jobs`.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list Jobs from. If None, lists from all namespaces.
+
+    Returns
+    -------
+    list of JobSummary
+        A list of JobSummary objects, each with the following fields:
+
+        name : str
+            Name of the Job.
+        namespace : str
+            Namespace of the Job.
+        owner : Optional[str]
+            Name of the owning CronJob, if this Job was created by one.
+        active : int
+            Number of actively running pods.
+        succeeded : int
+            Number of pods that completed successfully.
+        failed : int
+            Number of pods that terminated in failure.
+        start_time : Optional[datetime.timedelta]
+            Time since the Job started (None if not started).
+        completion_time : Optional[datetime.timedelta]
+            Time since the Job completed (None if not complete).
+        conditions : list[str]
+            Status condition types currently True (e.g. ["Complete"], ["Failed"]).
+        age : datetime.timedelta
+            Age of the Job (current time minus creation timestamp).
+        containers : list[ContainerTemplateSummary]
+            The Job pod template's containers, each with name, image, and literal
+            environment values.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list Jobs fails.
+    """
+    global BATCH_V1_API
+    if BATCH_V1_API is None:
+        BATCH_V1_API = _get_batch_v1_api_client()
+    logging.info(f"get_job_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            jobs = BATCH_V1_API.list_namespaced_job(namespace=namespace).items
+        else:
+            jobs = BATCH_V1_API.list_job_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching jobs: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[JobSummary] = []
+    for job in jobs:
+        status = job.status
+        active = status.active if status and status.active is not None else 0
+        succeeded = status.succeeded if status and status.succeeded is not None else 0
+        failed = status.failed if status and status.failed is not None else 0
+        start_time = None
+        if status and getattr(status, "start_time", None):
+            start_time = now - status.start_time
+        completion_time = None
+        if status and getattr(status, "completion_time", None):
+            completion_time = now - status.completion_time
+        conditions = []
+        if status and getattr(status, "conditions", None):
+            conditions = [c.type for c in status.conditions if c.status == "True"]
+        age = datetime.timedelta(0)
+        if job.metadata.creation_timestamp:
+            age = now - job.metadata.creation_timestamp
+        pod_spec = job.spec.template.spec if job.spec and getattr(job.spec, "template", None) else None
+        summaries.append(JobSummary(
+            name=job.metadata.name,
+            namespace=job.metadata.namespace,
+            owner=_cronjob_owner(job.metadata),
+            active=active,
+            succeeded=succeeded,
+            failed=failed,
+            start_time=start_time,
+            completion_time=completion_time,
+            conditions=conditions,
+            age=age,
+            containers=_container_templates(pod_spec),
+        ))
+    return summaries
+
+
+def print_job_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_job_summaries and prints the output to stdout."""
+    summaries = get_job_summaries(namespace)
+    print(f"{'NAME':<40} {'NAMESPACE':<20} {'OWNER':<24} {'COMPLETIONS':<12} {'CONDITIONS':<16} {'AGE':<12}")
+    for job in summaries:
+        owner = job.owner if job.owner else "<none>"
+        completions = f"{job.succeeded} ok / {job.failed} fail"
+        conditions = ",".join(job.conditions) if job.conditions else "<none>"
+        age = _format_timedelta(job.age)
+        print(f"{job.name:<40} {job.namespace:<20} {owner:<24} {completions:<12} {conditions:<16} {age:<12}")
+
+
+def _latest_pod_name_for_selector(namespace: str, label_selector: str) -> Optional[str]:
+    """Return the name of the most-recently-created pod matching a label selector,
+    or None if there are no matching pods."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    try:
+        pods = K8S.list_namespaced_pod(namespace=namespace, label_selector=label_selector).items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error listing pods for selector '{label_selector}': {e}") from e
+    if not pods:
+        return None
+    pods_with_ts = [p for p in pods if p.metadata.creation_timestamp]
+    if not pods_with_ts:
+        return pods[0].metadata.name
+    latest = max(pods_with_ts, key=lambda p: p.metadata.creation_timestamp)
+    return latest.metadata.name
+
+
+def get_logs_for_job(job_name: str, namespace: str = "default",
+                     container_name: Optional[str] = None,
+                     tail: Optional[int] = None,
+                     since_seconds: Optional[int] = None,
+                     previous: bool = False) -> Optional[str]:
+    """Retrieves logs from the most-recently-created pod of a Job.
+
+    Job pods are short-lived, so this convenience finds the newest pod belonging to
+    the Job (via its `job-name` label) and returns its logs, saving the caller from
+    listing pods and sorting by creation time.
+
+    Parameters
+    ----------
+    job_name : str
+        Name of the Job.
+    namespace : str, optional
+        Namespace of the Job (default is "default").
+    container_name : str, optional
+        Container within the pod. If None, defaults to the first container.
+    tail : int, optional
+        Number of lines from the end of the log (default: last 1000).
+    since_seconds : int, optional
+        If set, only return logs newer than this many seconds.
+    previous : bool, default False
+        If True, return logs from the previous terminated container instance.
+
+    Returns
+    -------
+    str, optional
+        Log content, or None if the Job has no pods.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call fails.
+    """
+    logging.info(f"get_logs_for_job(job_name={job_name}, namespace={namespace})")
+    pod_name = _latest_pod_name_for_selector(namespace, f"job-name={job_name}")
+    if pod_name is None:
+        return None
+    return get_logs_for_pod_and_container(pod_name, namespace, container_name,
+                                          tail=tail, since_seconds=since_seconds,
+                                          previous=previous)
+
+
+def get_logs_for_cronjob(cronjob_name: str, namespace: str = "default",
+                         container_name: Optional[str] = None,
+                         tail: Optional[int] = None,
+                         since_seconds: Optional[int] = None,
+                         previous: bool = False) -> Optional[str]:
+    """Retrieves logs from the most-recent run of a CronJob.
+
+    Finds the newest Job owned by the CronJob, then returns the logs of that Job's
+    most-recently-created pod. Removes the need to manually locate the right
+    short-lived pod for a CronJob's last tick.
+
+    Parameters
+    ----------
+    cronjob_name : str
+        Name of the CronJob.
+    namespace : str, optional
+        Namespace of the CronJob (default is "default").
+    container_name : str, optional
+        Container within the pod. If None, defaults to the first container.
+    tail : int, optional
+        Number of lines from the end of the log (default: last 1000).
+    since_seconds : int, optional
+        If set, only return logs newer than this many seconds.
+    previous : bool, default False
+        If True, return logs from the previous terminated container instance.
+
+    Returns
+    -------
+    str, optional
+        Log content, or None if the CronJob has no jobs/pods yet.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call fails.
+    """
+    global BATCH_V1_API
+    if BATCH_V1_API is None:
+        BATCH_V1_API = _get_batch_v1_api_client()
+    logging.info(f"get_logs_for_cronjob(cronjob_name={cronjob_name}, namespace={namespace})")
+    try:
+        jobs = BATCH_V1_API.list_namespaced_job(namespace=namespace).items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error listing jobs for cronjob '{cronjob_name}': {e}") from e
+    owned = [j for j in jobs if _cronjob_owner(j.metadata) == cronjob_name and j.metadata.creation_timestamp]
+    if not owned:
+        return None
+    latest_job = max(owned, key=lambda j: j.metadata.creation_timestamp)
+    return get_logs_for_job(latest_job.metadata.name, namespace, container_name,
+                            tail=tail, since_seconds=since_seconds, previous=previous)
+
+
+class PVCSummary(BaseModel):
+    """A summary of a PersistentVolumeClaim like returned by `kubectl get pvc`,
+    with the pods currently mounting it resolved where possible."""
+    name: str
+    namespace: str
+    status: str  # Bound / Pending / Lost
+    volume_name: Optional[str] = None
+    capacity: Optional[str] = None
+    access_modes: list[str] = Field(default_factory=list)
+    storage_class: Optional[str] = None
+    mounted_by: list[str] = Field(default_factory=list)
+    age: datetime.timedelta
+
+
+def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
+    """Retrieves a list of PVCSummary objects for PersistentVolumeClaims in a given
+    namespace or all namespaces, similar to `kubectl get pvc`.
+
+    For each PVC, this also resolves which pods currently mount it (by scanning pod
+    volumes in the same scope), which is useful for spotting orphaned PVCs — claims
+    with an empty `mounted_by` and no owning pod.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list PVCs from. If None, lists from all namespaces.
+
+    Returns
+    -------
+    list of PVCSummary
+        A list of PVCSummary objects, each with the following fields:
+
+        name : str
+            Name of the PVC.
+        namespace : str
+            Namespace of the PVC.
+        status : str
+            Phase of the PVC ("Bound", "Pending", or "Lost").
+        volume_name : Optional[str]
+            Name of the bound PersistentVolume (None if unbound).
+        capacity : Optional[str]
+            Storage capacity (e.g. "10Gi"); falls back to the requested size when
+            the claim is not yet bound.
+        access_modes : list[str]
+            Access modes (e.g. ["ReadWriteOnce"]).
+        storage_class : Optional[str]
+            StorageClass backing the claim.
+        mounted_by : list[str]
+            Names of pods (in the same scope) currently mounting this PVC. Empty
+            for orphaned/unmounted claims.
+        age : datetime.timedelta
+            Age of the PVC (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list PVCs fails.
+    """
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_pvc_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            claims = K8S.list_namespaced_persistent_volume_claim(namespace=namespace).items
+        else:
+            claims = K8S.list_persistent_volume_claim_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching persistent volume claims: {e}") from e
+
+    # Build a map of (namespace, claim_name) -> [pod names] by scanning pod volumes.
+    claim_to_pods: dict[tuple[str, str], list[str]] = {}
+    try:
+        if namespace:
+            pods = K8S.list_namespaced_pod(namespace=namespace).items
+        else:
+            pods = K8S.list_pod_for_all_namespaces().items
+        for pod in pods:
+            if not pod.spec or not getattr(pod.spec, "volumes", None):
+                continue
+            for volume in pod.spec.volumes:
+                pvc_ref = getattr(volume, "persistent_volume_claim", None)
+                if pvc_ref and getattr(pvc_ref, "claim_name", None):
+                    key = (pod.metadata.namespace, pvc_ref.claim_name)
+                    claim_to_pods.setdefault(key, []).append(pod.metadata.name)
+    except client.ApiException:
+        # Pod resolution is best-effort; leave mounted_by empty on failure.
+        claim_to_pods = {}
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[PVCSummary] = []
+    for claim in claims:
+        spec = claim.spec
+        status = claim.status
+        capacity = None
+        if status and getattr(status, "capacity", None) and status.capacity.get("storage"):
+            capacity = status.capacity["storage"]
+        elif spec and getattr(spec, "resources", None) and getattr(spec.resources, "requests", None):
+            capacity = spec.resources.requests.get("storage")
+        age = datetime.timedelta(0)
+        if claim.metadata.creation_timestamp:
+            age = now - claim.metadata.creation_timestamp
+        key = (claim.metadata.namespace, claim.metadata.name)
+        summaries.append(PVCSummary(
+            name=claim.metadata.name,
+            namespace=claim.metadata.namespace,
+            status=status.phase if status and status.phase else "Unknown",
+            volume_name=spec.volume_name if spec and getattr(spec, "volume_name", None) else None,
+            capacity=capacity,
+            access_modes=list(spec.access_modes) if spec and getattr(spec, "access_modes", None) else [],
+            storage_class=spec.storage_class_name if spec and getattr(spec, "storage_class_name", None) else None,
+            mounted_by=claim_to_pods.get(key, []),
+            age=age,
+        ))
+    return summaries
+
+
+def print_pvc_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_pvc_summaries and prints the output to stdout."""
+    summaries = get_pvc_summaries(namespace)
+    print(f"{'NAME':<40} {'NAMESPACE':<20} {'STATUS':<10} {'CAPACITY':<10} {'STORAGECLASS':<20} {'MOUNTED-BY':<24} {'AGE':<12}")
+    for pvc in summaries:
+        capacity = pvc.capacity if pvc.capacity else "<none>"
+        storage_class = pvc.storage_class if pvc.storage_class else "<none>"
+        mounted_by = ",".join(pvc.mounted_by) if pvc.mounted_by else "<none>"
+        age = _format_timedelta(pvc.age)
+        print(f"{pvc.name:<40} {pvc.namespace:<20} {pvc.status:<10} {capacity:<10} {storage_class:<20} {mounted_by:<24} {age:<12}")
+
+
+def get_events(namespace: Optional[str] = None,
+               reason: Optional[str] = None,
+               involved_kind: Optional[str] = None,
+               involved_name: Optional[str] = None,
+               event_type: Optional[str] = None) -> list[EventSummary]:
+    """Lists cluster- or namespace-wide events with optional server-side filtering.
+
+    Unlike `get_pod_events` (which is scoped to a single named pod), this supports
+    the sweep queries common in capacity/storage runbooks — e.g. all "Evicted"
+    events, or all "FailedScheduling" events — where the affected pods often have no
+    stable name to look up. Note the Kubernetes API only retains roughly the last
+    hour of events.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        Namespace to list events from. If None, lists across all namespaces.
+    reason : Optional[str], default=None
+        If set, only return events with this reason (e.g. "Evicted",
+        "FailedScheduling", "BackOff").
+    involved_kind : Optional[str], default=None
+        If set, only return events whose involved object is of this kind (e.g.
+        "Pod", "Node", "PersistentVolumeClaim").
+    involved_name : Optional[str], default=None
+        If set, only return events whose involved object has this name.
+    event_type : Optional[str], default=None
+        If set, only return events of this type ("Normal" or "Warning").
+
+    Returns
+    -------
+    list of EventSummary
+        Matching events. Each EventSummary has the following fields:
+
+        last_seen : Optional[datetime.timedelta]
+            Time since the event was last seen (if available).
+        type : str
+            Type of the event ("Normal" or "Warning").
+        reason : str
+            Reason for the event.
+        object : str
+            The involved object as "Kind/name" (or just the name when the kind is
+            unavailable).
+        message : str
+            Message describing the event.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list events fails.
+    """
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_events(namespace={namespace}, reason={reason}, "
+                 f"involved_kind={involved_kind}, involved_name={involved_name}, "
+                 f"event_type={event_type})")
+    selectors = []
+    if reason:
+        selectors.append(f"reason={reason}")
+    if involved_kind:
+        selectors.append(f"involvedObject.kind={involved_kind}")
+    if involved_name:
+        selectors.append(f"involvedObject.name={involved_name}")
+    if event_type:
+        selectors.append(f"type={event_type}")
+    field_selector = ",".join(selectors) if selectors else None
+
+    try:
+        if namespace:
+            events = K8S.list_namespaced_event(namespace, field_selector=field_selector).items
+        else:
+            events = K8S.list_event_for_all_namespaces(field_selector=field_selector).items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching events: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    results: list[EventSummary] = []
+    for event in events:
+        involved = getattr(event, "involved_object", None)
+        obj_name = getattr(involved, "name", None) or ""
+        obj_kind = getattr(involved, "kind", None)
+        obj = f"{obj_kind}/{obj_name}" if obj_kind else obj_name
+        results.append(EventSummary(
+            last_seen=(now - event.last_timestamp) if getattr(event, "last_timestamp", None) else None,
+            type=event.type or "",
+            reason=event.reason or "",
+            object=obj,
+            message=event.message or "",
+        ))
+    return results
+
+
+def print_events(namespace: Optional[str] = None,
+                 reason: Optional[str] = None,
+                 involved_kind: Optional[str] = None,
+                 involved_name: Optional[str] = None,
+                 event_type: Optional[str] = None) -> None:
+    """Calls get_events and prints the output to stdout, similar to
+    `kubectl get events`."""
+    events = get_events(namespace, reason, involved_kind, involved_name, event_type)
+    print(f"{'LAST SEEN':<12} {'TYPE':<10} {'REASON':<20} {'OBJECT':<40} {'MESSAGE':<40}")
+    for event in events:
+        last_seen = _format_timedelta(event.last_seen) if event.last_seen else "-"
+        message = (event.message[:37] + '...') if event.message and len(event.message) > 40 else event.message
+        print(f"{last_seen:<12} {event.type:<10} {event.reason:<20} {event.object:<40} {message:<40}")
+
+
 TOOLS = [
     get_namespaces,
     get_node_summaries,
@@ -1107,5 +2110,14 @@ TOOLS = [
     get_pod_spec,
     get_logs_for_pod_and_container,
     get_deployment_summaries,
-    get_service_summaries
+    get_service_summaries,
+    get_configmap_summaries,
+    get_configmap,
+    get_statefulset_summaries,
+    get_cronjob_summaries,
+    get_job_summaries,
+    get_logs_for_job,
+    get_logs_for_cronjob,
+    get_pvc_summaries,
+    get_events,
 ]

@@ -8,13 +8,17 @@ Kubernetes monitoring tools for AI agents, exposed as direct Python functions or
 src/k8stools/
   k8s_tools.py   - Core tools: Kubernetes API wrappers with Pydantic return types
   mock_tools.py  - Static mock versions of all tools (captured from real Minikube + OTel Demo)
+  redaction.py   - Secret-redaction pass applied at the MCP server output boundary
   mcp_server.py  - MCP server (stdio or streamable-http transport)
   mcp_client.py  - MCP client used for manual testing
 tests/
-  test_k8s_tools.py          - Unit tests (mocked K8s API)
+  test_k8s_tools.py          - Unit tests for the original tools (mocked K8s API)
+  test_new_tools.py          - Unit tests for the 1.1.0 tools (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, events, log enhancements)
+  test_redaction.py          - Unit tests for the secret-redaction pass
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
-  test_mock_tools.py         - Tests for mock_tools module
+  test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
   test_mcp_client.py         - MCP client tests
+  test_version.py            - Asserts pyproject and package __version__ agree
 ```
 
 ## Environment setup
@@ -53,7 +57,7 @@ Use `datetime.timedelta` for age/duration fields. Use snake_case field names. In
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
 
-`print_*` companion functions exist for each `get_*` function — for human-readable debugging output only.
+`print_*` companion functions exist for each `get_*` summary/spec function — for human-readable debugging output only. The log readers (`get_logs_for_pod_and_container`, `get_logs_for_job`, `get_logs_for_cronjob`) have no `print_*` companion since they already return a printable string.
 
 ## Error handling
 
@@ -85,7 +89,7 @@ agent = Agent(model="openai:gpt-4.1", system_prompt=SYSTEM_PROMPT, tools=TOOLS)
 ## MCP server
 
 ```bash
-# stdio (default) — for local coding agents (Copilot, Cursor)
+# stdio (default) — for local coding agents (e.g. Cursor)
 k8s-mcp-server
 
 # HTTP — for remote access
@@ -93,7 +97,22 @@ k8s-mcp-server --transport=streamable-http --port=8000
 
 # Mock mode (no real cluster needed)
 k8s-mcp-server --mock
+
+# Disable secret redaction (on by default)
+k8s-mcp-server --no-redact
 ```
+
+## Secret redaction
+
+`redaction.py` applies a single redaction pass to every tool's return value at the
+MCP server output boundary (`mcp_server.py` wraps each tool with
+`wrap_with_redaction`). It is **on by default** and opt-out via `--no-redact` or
+`K8STOOLS_REDACT=0`. It matches secret-shaped values (AWS keys, JWTs, PEM private
+keys) and values under keys/env-var names matching
+`key|secret|token|password|credential`, replacing them with a visible `[REDACTED]`
+marker. Direct Python callers of the tool functions get raw values (no redaction) and
+can call `redaction.redact_object` themselves. We never add a reader for `Secret`
+objects.
 
 Example `mcp.json`:
 ```json
