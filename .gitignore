@@ -11,3 +11,8 @@ wheels/
 
 # environment variables
 .envrc
+
+# editor swap files
+*.swp
+*.swo
+*~
