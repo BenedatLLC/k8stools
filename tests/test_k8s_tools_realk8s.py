@@ -209,3 +209,381 @@ def test_service_summaries():
     # Test namespace-specific services
     default_services = k8s_tools.get_service_summaries("default")
     assert isinstance(default_services, list)
+
+# ---------------------------------------------------------------------------
+# Tests for the 1.1.0 tools (ConfigMaps, StatefulSets, CronJobs/Jobs, PVCs,
+# cluster-wide events) and the node/service/log field enhancements.
+#
+# These scan all namespaces rather than just "default", since the resource
+# types below are often only present in system namespaces. Where a cluster has
+# none of a given resource, the test verifies the empty-result contract and
+# skips the per-object field checks.
+# ---------------------------------------------------------------------------
+
+def _find_running_pod(namespace: str = "default"):
+    """Returns a (pod_name, container_name) for a pod with a ready container, or None."""
+    if k8s_tools.K8S is None:
+        k8s_tools.K8S = k8s_tools._get_api_client()
+    for pod in k8s_tools.K8S.list_namespaced_pod(namespace=namespace).items:
+        if (pod.status.phase == "Running" and
+                pod.status.container_statuses and
+                any(cs.ready for cs in pod.status.container_statuses)):
+            ready = [cs.name for cs in pod.status.container_statuses if cs.ready]
+            return pod.metadata.name, ready[0]
+    return None
+
+
+def test_get_configmap_summaries():
+    configmaps = k8s_tools.get_configmap_summaries()
+    assert isinstance(configmaps, list)
+    if configmaps:
+        cm = configmaps[0]
+        assert isinstance(cm.name, str) and len(cm.name) > 0
+        assert isinstance(cm.namespace, str) and len(cm.namespace) > 0
+        assert isinstance(cm.key_count, int)
+        assert isinstance(cm.data_size, int)
+        assert isinstance(cm.age, datetime.timedelta)
+
+        # Logical constraints
+        assert cm.key_count >= 0
+        assert cm.data_size >= 0
+        if cm.key_count == 0:
+            assert cm.data_size == 0
+
+    # Namespace scoping should be a subset of the all-namespaces result
+    default_configmaps = k8s_tools.get_configmap_summaries("default")
+    assert isinstance(default_configmaps, list)
+    assert all(cm.namespace == "default" for cm in default_configmaps)
+    assert len(default_configmaps) <= len(configmaps)
+
+
+def test_get_configmap():
+    configmaps = k8s_tools.get_configmap_summaries()
+    if not configmaps:
+        pytest.skip("No ConfigMaps found in the cluster.")
+    summary = configmaps[0]
+    cm = k8s_tools.get_configmap(summary.name, summary.namespace)
+    assert isinstance(cm, dict)
+    assert set(cm.keys()) == {"name", "namespace", "data", "binary_data_keys"}
+    assert cm["name"] == summary.name
+    assert cm["namespace"] == summary.namespace
+    assert isinstance(cm["data"], dict)
+    assert isinstance(cm["binary_data_keys"], list)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in cm["data"].items())
+    assert all(isinstance(k, str) for k in cm["binary_data_keys"])
+
+    # The summary's key count should agree with the full read
+    assert summary.key_count == len(cm["data"]) + len(cm["binary_data_keys"])
+
+
+def test_get_configmap_not_found():
+    with pytest.raises(k8s_tools.K8sApiError):
+        k8s_tools.get_configmap("no-such-configmap-xyzzy", "default")
+
+
+def test_get_statefulset_summaries():
+    statefulsets = k8s_tools.get_statefulset_summaries()
+    assert isinstance(statefulsets, list)
+    if not statefulsets:
+        pytest.skip("No StatefulSets found in the cluster.")
+    ss = statefulsets[0]
+    assert isinstance(ss.name, str) and len(ss.name) > 0
+    assert isinstance(ss.namespace, str) and len(ss.namespace) > 0
+    assert isinstance(ss.total_replicas, int)
+    assert isinstance(ss.ready_replicas, int)
+    assert isinstance(ss.current_replicas, int)
+    assert isinstance(ss.update_strategy, str)
+    assert ss.service_name is None or isinstance(ss.service_name, str)
+    assert isinstance(ss.age, datetime.timedelta)
+
+    # Logical constraints
+    assert ss.total_replicas >= 0
+    assert ss.ready_replicas >= 0
+    assert ss.ready_replicas <= ss.total_replicas
+    assert ss.update_strategy in ["RollingUpdate", "OnDelete", ""]
+
+    scoped = k8s_tools.get_statefulset_summaries(ss.namespace)
+    assert all(s.namespace == ss.namespace for s in scoped)
+    assert ss.name in [s.name for s in scoped]
+
+
+def test_get_cronjob_summaries():
+    cronjobs = k8s_tools.get_cronjob_summaries()
+    assert isinstance(cronjobs, list)
+    if not cronjobs:
+        pytest.skip("No CronJobs found in the cluster.")
+    cj = cronjobs[0]
+    assert isinstance(cj.name, str) and len(cj.name) > 0
+    assert isinstance(cj.namespace, str) and len(cj.namespace) > 0
+    assert isinstance(cj.schedule, str) and len(cj.schedule) > 0
+    assert isinstance(cj.suspend, bool)
+    assert isinstance(cj.active, int) and cj.active >= 0
+    assert cj.last_schedule_time is None or isinstance(cj.last_schedule_time, datetime.timedelta)
+    assert cj.last_successful_time is None or isinstance(cj.last_successful_time, datetime.timedelta)
+    assert isinstance(cj.age, datetime.timedelta)
+    assert isinstance(cj.containers, list)
+    for container in cj.containers:
+        assert isinstance(container.name, str) and len(container.name) > 0
+        assert isinstance(container.image, str) and len(container.image) > 0
+        assert isinstance(container.env, dict)
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in container.env.items())
+
+    scoped = k8s_tools.get_cronjob_summaries(cj.namespace)
+    assert all(c.namespace == cj.namespace for c in scoped)
+
+
+def test_get_job_summaries():
+    jobs = k8s_tools.get_job_summaries()
+    assert isinstance(jobs, list)
+    if not jobs:
+        pytest.skip("No Jobs found in the cluster.")
+    job = jobs[0]
+    assert isinstance(job.name, str) and len(job.name) > 0
+    assert isinstance(job.namespace, str) and len(job.namespace) > 0
+    assert job.owner is None or isinstance(job.owner, str)
+    assert isinstance(job.active, int) and job.active >= 0
+    assert isinstance(job.succeeded, int) and job.succeeded >= 0
+    assert isinstance(job.failed, int) and job.failed >= 0
+    assert job.start_time is None or isinstance(job.start_time, datetime.timedelta)
+    assert job.completion_time is None or isinstance(job.completion_time, datetime.timedelta)
+    assert isinstance(job.conditions, list)
+    assert all(isinstance(c, str) for c in job.conditions)
+    assert isinstance(job.age, datetime.timedelta)
+    assert isinstance(job.containers, list)
+    for container in job.containers:
+        assert isinstance(container.name, str)
+        assert isinstance(container.image, str)
+        assert isinstance(container.env, dict)
+
+    # A completed job should have finished no earlier than it started. The fields
+    # are ages, so the completion age is the *smaller* of the two.
+    if job.start_time is not None and job.completion_time is not None:
+        assert job.completion_time <= job.start_time
+
+    scoped = k8s_tools.get_job_summaries(job.namespace)
+    assert all(j.namespace == job.namespace for j in scoped)
+
+
+def test_get_logs_for_job():
+    jobs = k8s_tools.get_job_summaries()
+    if not jobs:
+        pytest.skip("No Jobs found in the cluster.")
+    job = jobs[0]
+    try:
+        logs = k8s_tools.get_logs_for_job(job.name, job.namespace)
+    except k8s_tools.K8sApiError as e:
+        # A job's pods may have been garbage collected or not be ready yet
+        assert "Error fetching logs" in str(e)
+        return
+    assert logs is None or isinstance(logs, str)
+
+
+def test_get_logs_for_job_no_such_job():
+    # A job with no pods returns None rather than raising
+    assert k8s_tools.get_logs_for_job("no-such-job-xyzzy", "default") is None
+
+
+def test_get_logs_for_cronjob():
+    cronjobs = k8s_tools.get_cronjob_summaries()
+    if not cronjobs:
+        pytest.skip("No CronJobs found in the cluster.")
+    cj = cronjobs[0]
+    try:
+        logs = k8s_tools.get_logs_for_cronjob(cj.name, cj.namespace)
+    except k8s_tools.K8sApiError as e:
+        assert "Error fetching logs" in str(e)
+        return
+    assert logs is None or isinstance(logs, str)
+
+
+def test_get_logs_for_cronjob_no_such_cronjob():
+    # A cronjob that has never run (or does not exist) returns None
+    assert k8s_tools.get_logs_for_cronjob("no-such-cronjob-xyzzy", "default") is None
+
+
+def test_get_pvc_summaries():
+    pvcs = k8s_tools.get_pvc_summaries()
+    assert isinstance(pvcs, list)
+    if not pvcs:
+        pytest.skip("No PersistentVolumeClaims found in the cluster.")
+    pvc = pvcs[0]
+    assert isinstance(pvc.name, str) and len(pvc.name) > 0
+    assert isinstance(pvc.namespace, str) and len(pvc.namespace) > 0
+    assert isinstance(pvc.status, str)
+    assert pvc.status in ["Bound", "Pending", "Lost"]
+    assert pvc.volume_name is None or isinstance(pvc.volume_name, str)
+    assert pvc.capacity is None or isinstance(pvc.capacity, str)
+    assert isinstance(pvc.access_modes, list)
+    assert all(isinstance(m, str) for m in pvc.access_modes)
+    assert pvc.storage_class is None or isinstance(pvc.storage_class, str)
+    assert isinstance(pvc.mounted_by, list)
+    assert all(isinstance(p, str) for p in pvc.mounted_by)
+    assert isinstance(pvc.age, datetime.timedelta)
+
+    # A bound PVC should have a backing volume
+    if pvc.status == "Bound":
+        assert pvc.volume_name is not None
+
+    scoped = k8s_tools.get_pvc_summaries(pvc.namespace)
+    assert all(p.namespace == pvc.namespace for p in scoped)
+
+
+def test_get_events():
+    events = k8s_tools.get_events()
+    assert isinstance(events, list)
+    if not events:
+        # The API only retains roughly the last hour of events, so an idle
+        # cluster legitimately returns none.
+        pytest.skip("No events currently retained by the cluster.")
+    event = events[0]
+    assert event.last_seen is None or isinstance(event.last_seen, datetime.timedelta)
+    assert isinstance(event.type, str)
+    assert event.type in ["Normal", "Warning"]
+    assert isinstance(event.reason, str)
+    assert isinstance(event.object, str)
+    assert isinstance(event.message, str)
+
+
+def test_get_events_filters():
+    events = k8s_tools.get_events()
+    if not events:
+        pytest.skip("No events currently retained by the cluster.")
+
+    # Filter by type
+    for event_type in ["Normal", "Warning"]:
+        filtered = k8s_tools.get_events(event_type=event_type)
+        assert isinstance(filtered, list)
+        assert all(e.type == event_type for e in filtered)
+        assert len(filtered) <= len(events)
+
+    # Filter by involved kind: `object` is rendered as "Kind/name"
+    by_pod = k8s_tools.get_events(involved_kind="Pod")
+    assert isinstance(by_pod, list)
+    assert all(e.object.startswith("Pod/") for e in by_pod)
+
+    # Filter by reason, using a reason we know is present
+    reason = events[0].reason
+    by_reason = k8s_tools.get_events(reason=reason)
+    assert len(by_reason) > 0
+    assert all(e.reason == reason for e in by_reason)
+
+    # Filter by involved name, using an object we know is present
+    kind, _, name = events[0].object.partition("/")
+    if name:
+        by_name = k8s_tools.get_events(involved_kind=kind, involved_name=name)
+        assert len(by_name) > 0
+        assert all(e.object == events[0].object for e in by_name)
+
+    # A namespace filter should restrict the result set
+    scoped = k8s_tools.get_events(namespace="default")
+    assert isinstance(scoped, list)
+    assert len(scoped) <= len(events)
+
+    # A reason that cannot match returns an empty list, not an error
+    assert k8s_tools.get_events(reason="NoSuchReasonXyzzy") == []
+
+
+def test_get_logs_tail_and_since_seconds():
+    """Covers the 1.1.0 tail/since_seconds/previous log options."""
+    found = _find_running_pod("default")
+    if found is None:
+        pytest.skip("No running pods found in namespace 'default'.")
+    pod_name, container_name = found
+
+    full = k8s_tools.get_logs_for_pod_and_container(pod_name, "default", container_name)
+    assert isinstance(full, str)
+
+    # tail should never return more lines than the untruncated read
+    tailed = k8s_tools.get_logs_for_pod_and_container(
+        pod_name, "default", container_name, tail=5)
+    assert isinstance(tailed, str)
+    assert len(tailed.splitlines()) <= 5
+    assert len(tailed.splitlines()) <= len(full.splitlines())
+
+    # since_seconds is a time window, so it is also a subset of the full read
+    recent = k8s_tools.get_logs_for_pod_and_container(
+        pod_name, "default", container_name, since_seconds=60)
+    assert isinstance(recent, str)
+    assert len(recent.splitlines()) <= len(full.splitlines())
+
+    # previous=True fails on a container that has not restarted; both the
+    # success and the wrapped-error paths are acceptable, a crash is not.
+    try:
+        previous = k8s_tools.get_logs_for_pod_and_container(
+            pod_name, "default", container_name, previous=True)
+        assert previous is None or isinstance(previous, str)
+    except k8s_tools.K8sApiError as e:
+        assert "Error fetching logs" in str(e)
+
+
+def test_node_summaries_capacity_and_conditions():
+    """Covers the 1.1.0 NodeSummary additions used for capacity modelling."""
+    nodes = k8s_tools.get_node_summaries()
+    if not nodes:
+        pytest.skip("No nodes found in the cluster.")
+    node = nodes[0]
+    assert isinstance(node.capacity, dict)
+    assert isinstance(node.allocatable, dict)
+    assert isinstance(node.conditions, dict)
+    assert isinstance(node.taints, list)
+    assert isinstance(node.labels, dict)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in node.capacity.items())
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in node.allocatable.items())
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in node.conditions.items())
+    assert all(isinstance(t, str) for t in node.taints)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in node.labels.items())
+
+    # Every real node reports cpu/memory/pods capacity, and the Ready condition
+    for key in ["cpu", "memory", "pods"]:
+        assert key in node.capacity
+        assert key in node.allocatable
+    assert "Ready" in node.conditions
+    # The derived `status` field should agree with the Ready condition
+    if node.conditions["Ready"] == "True":
+        assert node.status == "Ready"
+
+    # kubernetes.io/hostname is set by the kubelet on every node
+    assert "kubernetes.io/hostname" in node.labels
+
+
+def test_service_summaries_selector_and_labels():
+    """Covers the 1.1.0 ServiceSummary additions (selector/labels/annotations)."""
+    services = k8s_tools.get_service_summaries()
+    if not services:
+        pytest.skip("No services found in the cluster.")
+    for service in services:
+        assert isinstance(service.selector, dict)
+        assert isinstance(service.labels, dict)
+        assert isinstance(service.annotations, dict)
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in service.selector.items())
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in service.labels.items())
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in service.annotations.items())
+
+    # The default/kubernetes service has no selector (its endpoints are managed
+    # by the apiserver), which is the case that must not become a None.
+    kubernetes_svc = [s for s in services
+                      if s.name == "kubernetes" and s.namespace == "default"]
+    if kubernetes_svc:
+        assert kubernetes_svc[0].selector == {}
+
+
+def test_selector_matches_pods():
+    """A service's selector should actually resolve to pods in the cluster."""
+    services = k8s_tools.get_service_summaries("default")
+    with_selectors = [s for s in services if s.selector]
+    if not with_selectors:
+        pytest.skip("No services with selectors in namespace 'default'.")
+    if k8s_tools.K8S is None:
+        k8s_tools.K8S = k8s_tools._get_api_client()
+
+    # At least one selector in the namespace should match a running pod;
+    # this catches a selector that is populated but malformed.
+    matched = False
+    for service in with_selectors:
+        label_selector = ",".join(f"{k}={v}" for k, v in service.selector.items())
+        pods = k8s_tools.K8S.list_namespaced_pod(
+            namespace="default", label_selector=label_selector).items
+        if pods:
+            matched = True
+            break
+    assert matched
