@@ -16,7 +16,7 @@ updated (2026-08-30) to cover the 1.1.0 tool batch — the JSON capture format,
 `MockState` query methods, and capture CLI below all include ConfigMaps,
 StatefulSets, CronJobs/Jobs, PVCs, and the unified flat events list.
 
-**Updated 2026-09-12 for 1.2.0 and for its first real consumer.** Three changes,
+**Updated 2026-09-12 for 1.2.0 and for its first real consumer.** Four changes,
 all driven by k8srca's scenario suite (`k8srca/designs/004-scenario-testing.md`),
 which replays captures as graded root-cause test fixtures:
 
@@ -32,6 +32,10 @@ which replays captures as graded root-cause test fixtures:
 3. **A frozen-time mode** for the replay clock. Advancing time is right for
    interactive use and wrong for a graded suite — see
    [Replay clock](#replay-clock).
+4. **Redaction is decided**: capture applies whatever redaction the tools would
+   have applied, which it must do explicitly because the capture CLI is a library
+   consumer and library consumers bypass the server's redaction boundary. See
+   [Redaction](#5-redaction).
 
 ## Goal
 
@@ -52,6 +56,7 @@ A single JSON file per capture. Top-level keys:
 {
   "version": "1",
   "captured_at": "2026-05-31T14:00:00Z",
+  "redacted": true,
   "namespaces": [ ... ],
   "nodes": [ ... ],
   "pods": [ ... ],
@@ -72,6 +77,10 @@ The `configmaps`..`events` keys were added alongside the 1.1.0 tool batch
 [Resource records added in 1.1.0](#resource-records-added-in-110) below for their
 shapes. `replicasets` was added alongside the 1.2.0 tool batch — see
 [Resource records added in 1.2.0](#resource-records-added-in-120).
+
+`redacted` records which mode the capture was taken in — see
+[Redaction](#redaction). It exists so a consumer can tell without guessing;
+redaction is lossy and one-way, so this cannot be inferred from the content.
 
 All lists are **flat** (not nested by namespace). Namespace filtering is handled at query time by `MockState`, matching how the real tools work. The `MockState` builds internal dicts for O(1) pod lookups at load time.
 
@@ -410,10 +419,14 @@ so is internally consistent either way.
 ```
 usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [--output FILE]
                           [--no-logs] [--max-log-lines N] [--no-previous-logs]
+                          [--no-redact]
 ```
 
 Behavior:
-1. Initializes the K8s client (respects `KUBECONFIG`).
+1. Initializes the K8s client (respects `KUBECONFIG`) and resolves the redaction
+   mode with `redaction_enabled(no_redact_flag=args.no_redact)` — the same helper
+   the MCP server uses, so `--no-redact` and `K8STOOLS_REDACT=0` behave identically
+   in both. See [Redaction](#redaction).
 2. Calls all `get_*` tools to collect state — including the 1.1.0 additions
    (`configmaps`, `statefulsets`, `cronjobs`, `jobs`, `pvcs`), the 1.2.0 addition
    (`replicasets`), and a namespace/cluster-wide `get_events` sweep. If
@@ -429,8 +442,10 @@ Behavior:
    omissions and report them at the end**: a crash-loop capture that lost its
    previous logs looks identical to one that never had any, and the scenario is
    worth little without them.
-5. Records `captured_at = datetime.now(UTC)`.
-6. Serializes to JSON using a custom Pydantic serializer (see below) and writes to `--output` (default: `k8s-state-<timestamp>.json`).
+5. Applies `redact_object` to the assembled state unless redaction is disabled,
+   and records the mode in the file's `redacted` field.
+6. Records `captured_at = datetime.now(UTC)`.
+7. Serializes to JSON using a custom Pydantic serializer (see below) and writes to `--output` (default: `k8s-state-<timestamp>.json`).
 
 **Serialization**: Pydantic v2 custom serializer registered on `timedelta` fields converts them to `float` seconds. `datetime` fields on `ContainerStateRunning` / `ContainerStateTerminated` are converted to offset seconds from `captured_at`. The capture function owns this transformation — `MockState.from_file` is the inverse.
 
@@ -478,6 +493,50 @@ Add `--state-file PATH` argument. When provided, calls `load_mock_state(path)` a
 than ignoring it: a suite that believes it froze the clock and did not would
 produce flaky results with no visible cause.
 
+### 5. Redaction
+
+**Capture applies whatever redaction the tools would have applied.** Redaction is
+on by default, so a capture is redacted by default; `--no-redact` (or
+`K8STOOLS_REDACT=0`) captures exactly what the tools return. Same flag, same env
+var, same `redaction_enabled()` helper as the MCP server, so there is one rule to
+remember rather than two.
+
+**Capture has to apply it explicitly — it does not get it for free.** Redaction
+lives in `redaction.py` and is applied by `mcp_server.py` at the *MCP output
+boundary*, by wrapping each tool with `wrap_with_redaction`. The capture CLI calls
+the `get_*` functions directly, as a library consumer, and `redaction.py`'s own
+docstring is explicit that library consumers bypass the redaction layer and get
+raw values. So without a deliberate `redact_object` pass, `k8s-capture-state`
+would write unredacted secrets to disk **while the server in front of the same
+cluster was redacting them** — the one combination nobody would expect.
+
+Three consequences worth knowing before the first capture is committed anywhere:
+
+- **Redaction is one-way.** `REDACTED` replaces the value; the original is gone.
+  Running a replay server with `--no-redact` over a redacted capture does *not*
+  restore anything, and should not be read as doing so. If a scenario genuinely
+  needs the real values, it has to be re-captured with `--no-redact`.
+- **Double redaction is a no-op, but the count is not.** A redacted capture
+  served by a redacting server passes through the pass twice. `[REDACTED]`
+  matches no value-shape pattern and sits under the same key names, so nothing
+  further changes — but the server reports *0* new redactions where the live
+  cluster reported *N*. Only relevant if something ever asserts on that count.
+- **Structure survives, so replay fidelity does not suffer.** Redaction never
+  drops a field; it substitutes a marker, which is what lets an agent tell
+  "absent" from "hidden". A redacted capture therefore has the same shape as the
+  cluster it came from, and an agent reasoning over it sees the same fields.
+
+**In practice this rarely bites**, because the clusters worth capturing are test
+clusters — the OTel demo has no real credentials to leak. The default is chosen
+for the case where that assumption is wrong, which is the only case where it
+matters: a capture file is far more portable than cluster access. It gets
+committed to git, attached to issues, and passed around, long after whoever made
+it remembers which cluster it came from.
+
+The cost of the default is that captures cannot be used to test redaction
+itself. That is fine — redaction has its own unit tests, and testing it through a
+capture would test the capture path, not the redaction path.
+
 ---
 
 ## Migration of existing mock data
@@ -509,7 +568,14 @@ New tests to add:
     when the key is absent.
   - frozen mode returns identical ages from two queries separated by a slept
     interval; advancing mode does not.
-- `tests/test_capture.py` — unit tests for the serializer/deserializer round-trip (no cluster needed). Add a
+- `tests/test_capture.py` — unit tests for the serializer/deserializer round-trip (no cluster needed). Add:
+  - a capture assembled from objects carrying a secret-shaped value (a JWT, an
+    `AWS_SECRET_ACCESS_KEY` env var) is written redacted by default, and raw under
+    `--no-redact`, with `redacted` set to match in both cases. This is the test
+    that would catch the library-consumer bypass described under
+    [Redaction](#redaction), which no existing test covers because no existing
+    caller has this shape.
+  - a
   round-trip for `replicasets` (including `owner_deployment: null` / `revision: null`)
   and one asserting that **relative intervals survive**: a deployment and its newest
   replica set captured 8 days and 7h34m old must still be 8 days and 7h34m apart
@@ -523,12 +589,8 @@ New tests to add:
 Previous-instance logs roughly double the log payload for a cluster in which many
 containers are restarting — which is exactly the cluster worth capturing.
 
-**Should capture redact?** The MCP server has `--no-redact`, so redaction is
-already a live concern, and a capture file is far more portable than a cluster:
-it gets committed to git, attached to issues, and shared. Capturing through the
-same redaction path the server uses is the safer default, at the cost of making
-captures useless for testing redaction itself. Unresolved — worth deciding before
-the first capture is committed anywhere.
+*(The redaction question raised here on 2026-09-12 was decided the same day; see
+[Redaction](#redaction) under Components.)*
 
 ---
 
@@ -537,7 +599,7 @@ the first capture is committed anywhere.
 | File | Change |
 |---|---|
 | `src/k8stools/mock_state.py` | New — `MockState` class, incl. `get_replicaset_summaries` and the frozen replay clock |
-| `src/k8stools/capture.py` | New — `k8s-capture-state` CLI, incl. `replicasets` and previous-instance logs |
+| `src/k8stools/capture.py` | New — `k8s-capture-state` CLI, incl. `replicasets`, previous-instance logs, and an explicit `redact_object` pass |
 | `tests/fixtures/otel-demo.json` | New — migrated builtin mock data |
 | `scripts/migrate_mock_data.py` | New (temporary) — one-shot migration script |
 | `src/k8stools/mock_tools.py` | Refactor — delegate to `MockState` |
