@@ -16,6 +16,23 @@ updated (2026-08-30) to cover the 1.1.0 tool batch — the JSON capture format,
 `MockState` query methods, and capture CLI below all include ConfigMaps,
 StatefulSets, CronJobs/Jobs, PVCs, and the unified flat events list.
 
+**Updated 2026-09-12 for 1.2.0 and for its first real consumer.** Three changes,
+all driven by k8srca's scenario suite (`k8srca/designs/004-scenario-testing.md`),
+which replays captures as graded root-cause test fixtures:
+
+1. **ReplicaSets** (the 1.2.0 tool batch) — a `replicasets` top-level list, a
+   `MockState.get_replicaset_summaries` with the same filters and *the same
+   ordering guarantee* as the real tool, and capture support. Without this a
+   replayed capture cannot answer "did something change recently?", which is
+   the question a deploy-caused incident turns on.
+2. **Previous-instance logs** are now captured, not deferred. For a
+   crash-looping container the current instance's logs are usually empty or
+   post-restart; `previous=True` is the call that carries the diagnosis. A
+   capture without them silently omits the best evidence in the scenario.
+3. **A frozen-time mode** for the replay clock. Advancing time is right for
+   interactive use and wrong for a graded suite — see
+   [Replay clock](#replay-clock).
+
 ## Goal
 
 Enable complex, multi-scenario agent testing without a live cluster by:
@@ -39,6 +56,7 @@ A single JSON file per capture. Top-level keys:
   "nodes": [ ... ],
   "pods": [ ... ],
   "deployments": [ ... ],
+  "replicasets": [ ... ],
   "services": [ ... ],
   "configmaps": [ ... ],
   "statefulsets": [ ... ],
@@ -52,7 +70,8 @@ A single JSON file per capture. Top-level keys:
 The `configmaps`..`events` keys were added alongside the 1.1.0 tool batch
 (ConfigMaps, StatefulSets, CronJobs/Jobs, PVCs, and cluster-wide events). See
 [Resource records added in 1.1.0](#resource-records-added-in-110) below for their
-shapes.
+shapes. `replicasets` was added alongside the 1.2.0 tool batch — see
+[Resource records added in 1.2.0](#resource-records-added-in-120).
 
 All lists are **flat** (not nested by namespace). Namespace filtering is handled at query time by `MockState`, matching how the real tools work. The `MockState` builds internal dicts for O(1) pod lookups at load time.
 
@@ -156,9 +175,25 @@ Each element of the `pods` array bundles all per-pod data together so a single c
   "spec": { },
   "logs": {
     "ad": "2025-07-21 10:00:00 starting up\n..."
+  },
+  "previous_logs": {
+    "ad": "2025-07-21 09:54:00 starting up\n...\nAllocating 512MB heap\n"
   }
 }
 ```
+
+`previous_logs` holds the logs of the container's *previous terminated
+instance* — what `get_logs_for_pod_and_container(..., previous=True)` returns.
+It is present only for containers that had a previous instance at capture time
+(`restart_count > 0`); the key is absent otherwise, and `previous=True` against
+an absent key behaves like the real tool does with no previous instance.
+
+**This is not an optional nicety.** In a crash loop the current instance is
+typically seconds old and its logs are empty, truncated, or show only startup —
+the stack trace, the OOM message and the exit path all live in the previous
+instance. A capture that omits them replays a cluster where the decisive
+evidence simply does not exist, and any agent tested against it will look worse,
+or differently wrong, than against the cluster it was captured from.
 
 `ContainerStateRunning.started_at` → `started_at_offset_seconds` (seconds before `captured_at`).  
 `ContainerStateTerminated.started_at` / `finished_at` → same pattern.  
@@ -219,6 +254,51 @@ become `*_offset_seconds` before `captured_at`.
   also lets captures include events with no surviving pod (Evicted, FailedScheduling),
   which is precisely the `get_events` use case.
 
+### Resource records added in 1.2.0
+
+- **`replicasets`** — one flat list of every captured ReplicaSet.
+  `ReplicaSetSummary` fields verbatim with `age` → `age_seconds`:
+
+  ```json
+  {
+    "name": "ad-647b4947cc",
+    "namespace": "default",
+    "owner_deployment": "ad",
+    "revision": 2,
+    "desired_replicas": 1,
+    "current_replicas": 1,
+    "ready_replicas": 0,
+    "images": ["ghcr.io/open-telemetry/demo:2.2.0-ad"],
+    "age_seconds": 27240.0
+  }
+  ```
+
+  `owner_deployment` and `revision` are `Optional` on the model and may be
+  `null` — a ReplicaSet created directly, or one whose
+  `deployment.kubernetes.io/revision` annotation is missing. Capture stores
+  `null`; it does not invent a revision.
+
+**Ordering is part of the contract, not a presentation detail.** The real tool
+documents that results are grouped by namespace and owning deployment and,
+within each deployment, **sorted by revision, oldest first** — so that when
+filtered to one deployment "the last entry is that deployment's current
+revision." Callers rely on that sentence. `MockState.get_replicaset_summaries`
+must reproduce the ordering rather than echo capture order, or a replayed
+capture quietly violates a guarantee the tool's own docstring makes. Sort at
+query time, after filtering, on `(namespace, owner_deployment, revision)` with
+`null` revisions last.
+
+**Why this list earns its place in a capture.** ReplicaSets are a Deployment's
+change history, and they are the only such history reachable through the tool
+surface: no git, no CI, no deployment tooling. Their value in a replayed
+scenario is *relational* — the shape that answers a question is a deployment
+aged 8 days whose current ReplicaSet is aged 7h34m, meaning it was upgraded
+7h34m ago. That inference survives replay only because every age in the capture
+is stored against the same `captured_at` and advanced by the same offset, so
+the intervals between them are preserved exactly. Capturing ReplicaSets without
+that invariant would be worse than not capturing them: it would support
+confident arithmetic on drifting numbers.
+
 ---
 
 ## Components
@@ -246,6 +326,9 @@ class MockState:
     ) -> str | None: ...
     def get_deployment_summaries(self, namespace: str | None = None) -> list[DeploymentSummary]: ...
     def get_service_summaries(self, namespace: str | None = None) -> list[ServiceSummary]: ...
+    # added in 1.2.0
+    def get_replicaset_summaries(self, namespace: str | None = None,
+                                 deployment: str | None = None) -> list[ReplicaSetSummary]: ...
     # added in 1.1.0
     def get_configmap_summaries(self, namespace: str | None = None) -> list[ConfigMapSummary]: ...
     def get_configmap(self, name: str, namespace: str) -> dict[str, Any]: ...
@@ -264,49 +347,90 @@ class MockState:
                    event_type: str | None = None) -> list[EventSummary]: ...
 ```
 
-The log enhancements to `get_logs_for_pod_and_container` (`tail` / `since_seconds` /
-`previous`) affect replay only in that `previous=True` should serve a separately
-captured "previous instance" log when available — capture stores current-instance
-logs by default. `get_logs_for_job` / `get_logs_for_cronjob` resolve to the captured
-logs of the relevant pod using the same job/owner lookup the real tools use.
+The log enhancements to `get_logs_for_pod_and_container` map onto replay as
+follows. `previous=True` serves the pod record's `previous_logs` entry for the
+container, or behaves as the real tool does with no previous instance when the
+key is absent. `tail=N` returns the last `N` lines of the stored text.
+`since_seconds` is honoured only when the stored lines carry a parseable leading
+timestamp, and is otherwise ignored rather than applied approximately — replay
+must not return an empty log for a filter it cannot actually evaluate.
+`get_logs_for_job` / `get_logs_for_cronjob` resolve to the captured logs of the
+relevant pod using the same job/owner lookup the real tools use.
 
 Internal structure built at load time:
 - `_pods: dict[tuple[str, str], PodRecord]` — keyed by `(namespace, name)`
 - `_deployments: dict[str, list[DeploymentSummary]]` — keyed by namespace, `""` for all
+- `_replicasets: list[ReplicaSetSummary]` — flat; filtered and *then* sorted at query
+  time, because the `(namespace, owner_deployment, revision)` ordering has to survive
+  filtering
 - `_services: dict[str, list[ServiceSummary]]` — same
 - `_configmaps`, `_statefulsets`, `_cronjobs`, `_jobs`, `_pvcs` — same namespace-keyed
   pattern as `_services`
 - `_events: list[EventRecord]` — flat; `get_events` / `get_pod_events` filter it
 
-Time helpers (called at query time, not load time, so ages advance correctly):
+#### Replay clock
+
+Time helpers are called at query time, not load time, so ages advance correctly:
 
 ```python
+def _elapsed(self) -> float:
+    if self._frozen:
+        return 0.0
+    return (datetime.now(UTC) - self._server_start_time).total_seconds()
+
 def _age(self, seconds: float) -> timedelta:
-    elapsed = (datetime.now(UTC) - self._server_start_time).total_seconds()
-    return timedelta(seconds=seconds + elapsed)
+    return timedelta(seconds=seconds + self._elapsed())
 
 def _dt(self, offset_seconds: float) -> datetime:
     return self._server_start_time - timedelta(seconds=offset_seconds)
 ```
 
+`_frozen` is off by default: an advancing clock is what makes an interactive
+session feel like a cluster, and it keeps `age` and `last_restart` moving the
+way someone poking at the mock expects.
+
+**It is wrong for an automated suite, so it has to be switchable.** Two problems
+appear the moment a capture becomes a graded test fixture:
+
+- *Across runs*, the same scenario yields different ages, so an expectation
+  written as "restarts began about five minutes ago" passes or fails depending
+  on how long the harness took to get there.
+- *Within a run*, a session spanning several minutes sees ages drift between its
+  first tool call and its last. An agent that reads pod summaries early and
+  events late can derive an interval that never existed — a self-inflicted
+  version of exactly the inconsistency such a test exists to detect.
+
+Frozen mode pins `elapsed` at zero, so every query returns precisely the ages
+recorded at `captured_at` and every derived interval is stable. Datetime
+reconstruction is unaffected: it is already anchored to `server_start_time` and
+so is internally consistent either way.
+
 ### 2. `k8s-capture-state` CLI (`src/k8stools/capture.py`)
 
 ```
 usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [--output FILE]
-                          [--no-logs] [--max-log-lines N]
+                          [--no-logs] [--max-log-lines N] [--no-previous-logs]
 ```
 
 Behavior:
 1. Initializes the K8s client (respects `KUBECONFIG`).
 2. Calls all `get_*` tools to collect state — including the 1.1.0 additions
-   (`configmaps`, `statefulsets`, `cronjobs`, `jobs`, `pvcs`) and a namespace/
-   cluster-wide `get_events` sweep. If `--namespace` is given, only captures
-   namespaced resources (pods/deployments/services/configmaps/statefulsets/
-   cronjobs/jobs/pvcs/events) in those namespaces; namespaces and nodes are always
-   captured in full.
+   (`configmaps`, `statefulsets`, `cronjobs`, `jobs`, `pvcs`), the 1.2.0 addition
+   (`replicasets`), and a namespace/cluster-wide `get_events` sweep. If
+   `--namespace` is given, only captures namespaced resources (pods/deployments/
+   replicasets/services/configmaps/statefulsets/cronjobs/jobs/pvcs/events) in those
+   namespaces; namespaces and nodes are always captured in full.
 3. For each pod and each container, calls `get_logs_for_pod_and_container` unless `--no-logs`. Default log cap: 1000 lines (override with `--max-log-lines`).
-4. Records `captured_at = datetime.now(UTC)`.
-5. Serializes to JSON using a custom Pydantic serializer (see below) and writes to `--output` (default: `k8s-state-<timestamp>.json`).
+4. For each container whose `restart_count > 0`, calls the same tool with
+   `previous=True` and stores the result under `previous_logs`, unless
+   `--no-previous-logs`. A failure here is expected and non-fatal — the previous
+   instance may have been garbage-collected, and the real tool raises rather than
+   returning empty — so catch it, omit the key, and carry on. But **count the
+   omissions and report them at the end**: a crash-loop capture that lost its
+   previous logs looks identical to one that never had any, and the scenario is
+   worth little without them.
+5. Records `captured_at = datetime.now(UTC)`.
+6. Serializes to JSON using a custom Pydantic serializer (see below) and writes to `--output` (default: `k8s-state-<timestamp>.json`).
 
 **Serialization**: Pydantic v2 custom serializer registered on `timedelta` fields converts them to `float` seconds. `datetime` fields on `ContainerStateRunning` / `ContainerStateTerminated` are converted to offset seconds from `captured_at`. The capture function owns this transformation — `MockState.from_file` is the inverse.
 
@@ -342,9 +466,17 @@ Docstrings are still mirrored from `k8s_tools` as today.
 Add `--state-file PATH` argument. When provided, calls `load_mock_state(path)` at startup instead of `load_mock_state()` (builtin). The existing `--mock` flag becomes shorthand for `--state-file` with the builtin fixture path — or equivalently, `--mock` remains and `--state-file` is a new flag that implies mock mode.
 
 ```
---mock              Use built-in mock state (OTel Demo snapshot)
---state-file FILE   Use captured state from FILE (implies mock mode)
+--mock                 Use built-in mock state (OTel Demo snapshot)
+--state-file FILE      Use captured state from FILE (implies mock mode)
+--state-time {advancing,frozen}
+                       Replay clock (default: advancing). `frozen` pins every age at
+                       its captured value so repeated runs are identical; see
+                       [Replay clock](#replay-clock).
 ```
+
+`--state-time` is meaningful only with a state file. Reject it otherwise rather
+than ignoring it: a suite that believes it froze the clock and did not would
+produce flaky results with no visible cause.
 
 ---
 
@@ -369,14 +501,34 @@ The migration script is a one-shot tool; it can be deleted after the fixture fil
 Tests that currently use `MockK8S` / `MockAppsV1Api` in `test_k8s_tools.py` are unaffected — they test `k8s_tools.py` directly and bypass `mock_tools` entirely.
 
 New tests to add:
-- `tests/test_mock_state.py` — unit tests for `MockState`: load from file, namespace filtering, time adjustment math, missing pod returns empty list, etc.
-- `tests/test_capture.py` — unit tests for the serializer/deserializer round-trip (no cluster needed).
+- `tests/test_mock_state.py` — unit tests for `MockState`: load from file, namespace filtering, time adjustment math, missing pod returns empty list, etc. Add:
+  - `get_replicaset_summaries` ordering — revision ascending within a deployment,
+    after both filters, `null` revisions last. Assert against a fixture whose
+    capture order is deliberately shuffled, so that echoing the file fails.
+  - `previous=True` serves `previous_logs`, and behaves like no-previous-instance
+    when the key is absent.
+  - frozen mode returns identical ages from two queries separated by a slept
+    interval; advancing mode does not.
+- `tests/test_capture.py` — unit tests for the serializer/deserializer round-trip (no cluster needed). Add a
+  round-trip for `replicasets` (including `owner_deployment: null` / `revision: null`)
+  and one asserting that **relative intervals survive**: a deployment and its newest
+  replica set captured 8 days and 7h34m old must still be 8 days and 7h34m apart
+  after a reload at an arbitrary later time.
 
 ---
 
 ## Open decisions
 
 **Log capture scope**: Capturing logs for every container in a large cluster can produce very large JSON files. The default cap of 1000 lines per container is a reasonable starting point. If this proves too large or too small in practice, it can be tuned. Agents that need to test log-based RCA should use `--max-log-lines` explicitly.
+Previous-instance logs roughly double the log payload for a cluster in which many
+containers are restarting — which is exactly the cluster worth capturing.
+
+**Should capture redact?** The MCP server has `--no-redact`, so redaction is
+already a live concern, and a capture file is far more portable than a cluster:
+it gets committed to git, attached to issues, and shared. Capturing through the
+same redaction path the server uses is the safer default, at the cost of making
+captures useless for testing redaction itself. Unresolved — worth deciding before
+the first capture is committed anywhere.
 
 ---
 
@@ -384,12 +536,12 @@ New tests to add:
 
 | File | Change |
 |---|---|
-| `src/k8stools/mock_state.py` | New — `MockState` class |
-| `src/k8stools/capture.py` | New — `k8s-capture-state` CLI |
+| `src/k8stools/mock_state.py` | New — `MockState` class, incl. `get_replicaset_summaries` and the frozen replay clock |
+| `src/k8stools/capture.py` | New — `k8s-capture-state` CLI, incl. `replicasets` and previous-instance logs |
 | `tests/fixtures/otel-demo.json` | New — migrated builtin mock data |
 | `scripts/migrate_mock_data.py` | New (temporary) — one-shot migration script |
 | `src/k8stools/mock_tools.py` | Refactor — delegate to `MockState` |
-| `src/k8stools/mcp_server.py` | Add `--state-file` argument |
+| `src/k8stools/mcp_server.py` | Add `--state-file` and `--state-time` arguments |
 | `pyproject.toml` | Add `k8s-capture-state` entry point |
 | `tests/test_mock_state.py` | New — `MockState` unit tests |
 | `tests/test_capture.py` | New — serialization round-trip tests |
