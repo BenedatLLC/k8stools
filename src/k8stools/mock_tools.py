@@ -72,6 +72,43 @@ def _get_static_mock_data():
                 node="minikube"
             )
         ],
+        'replicasets': [
+            # Two revisions of `ad`: an image upgrade with the old revision
+            # scaled to zero, which is what a Deployment's history looks like.
+            k8s_tools.ReplicaSetSummary(
+                name="ad-d5c94c49b",
+                namespace="default",
+                owner_deployment="ad",
+                revision=1,
+                desired_replicas=0,
+                current_replicas=0,
+                ready_replicas=0,
+                images=["ghcr.io/open-telemetry/demo:2.0.2-ad"],
+                age=now - datetime.datetime(2025, 7, 20, tzinfo=datetime.timezone.utc)
+            ),
+            k8s_tools.ReplicaSetSummary(
+                name="ad-5547bd5bd9",
+                namespace="default",
+                owner_deployment="ad",
+                revision=2,
+                desired_replicas=1,
+                current_replicas=1,
+                ready_replicas=0,
+                images=["ghcr.io/open-telemetry/demo:2.2.0-ad"],
+                age=now - datetime.datetime(2025, 7, 28, tzinfo=datetime.timezone.utc)
+            ),
+            k8s_tools.ReplicaSetSummary(
+                name="cart-74f5bf48d9",
+                namespace="default",
+                owner_deployment="cart",
+                revision=1,
+                desired_replicas=1,
+                current_replicas=1,
+                ready_replicas=1,
+                images=["ghcr.io/open-telemetry/demo:2.2.0-cart"],
+                age=now - datetime.datetime(2025, 7, 20, tzinfo=datetime.timezone.utc)
+            ),
+        ],
         'deployments': [
             k8s_tools.DeploymentSummary(
                 name="ad",
@@ -511,6 +548,20 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[k8s_tools.
 get_deployment_summaries.__doc__ = k8s_tools.get_deployment_summaries.__doc__
 
 
+def get_replicaset_summaries(namespace: Optional[str] = None,
+                             deployment: Optional[str] = None) -> list[k8s_tools.ReplicaSetSummary]:
+    """Mock implementation returning static replica set data, filtered by namespace and deployment"""
+    replicasets = _MOCK_DATA['replicasets']
+
+    if namespace is not None:
+        replicasets = [rs for rs in replicasets if rs.namespace == namespace]
+    if deployment is not None:
+        replicasets = [rs for rs in replicasets if rs.owner_deployment == deployment]
+    return replicasets
+
+get_replicaset_summaries.__doc__ = k8s_tools.get_replicaset_summaries.__doc__
+
+
 def get_service_summaries(namespace: Optional[str] = None) -> list[k8s_tools.ServiceSummary]:
     """Mock implementation that returns static service data, filtered by namespace if specified"""
     services = _MOCK_DATA['services']
@@ -531,6 +582,7 @@ TOOLS = [
     get_pod_spec,
     get_logs_for_pod_and_container,
     get_deployment_summaries,
+    get_replicaset_summaries,
     get_service_summaries,
     get_configmap_summaries,
     get_configmap,

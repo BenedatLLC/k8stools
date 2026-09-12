@@ -14,6 +14,7 @@ src/k8stools/
 tests/
   test_k8s_tools.py          - Unit tests for the original tools (mocked K8s API)
   test_new_tools.py          - Unit tests for the 1.1.0 tools (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, events, log enhancements)
+  test_replicaset_tool.py    - Unit tests for get_replicaset_summaries (1.2.0)
   test_redaction.py          - Unit tests for the secret-redaction pass
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)

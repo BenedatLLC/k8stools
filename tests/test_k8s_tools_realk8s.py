@@ -587,3 +587,39 @@ def test_selector_matches_pods():
             matched = True
             break
     assert matched
+
+
+def test_replicaset_summaries():
+    replicasets = k8s_tools.get_replicaset_summaries()
+    assert isinstance(replicasets, list)
+    if replicasets:
+        rs = replicasets[0]
+        for field in ('name', 'namespace', 'owner_deployment', 'revision',
+                      'desired_replicas', 'current_replicas', 'ready_replicas',
+                      'images', 'age'):
+            assert hasattr(rs, field)
+
+
+def test_replicaset_summaries_filtered_by_deployment():
+    """A deployment's replica sets are its revision history, newest last."""
+    deployments = k8s_tools.get_deployment_summaries()
+    if not deployments:
+        pytest.skip("no deployments in the cluster")
+    target = deployments[0]
+
+    owned = k8s_tools.get_replicaset_summaries(namespace=target.namespace,
+                                               deployment=target.name)
+    assert all(rs.owner_deployment == target.name for rs in owned)
+    assert all(rs.namespace == target.namespace for rs in owned)
+
+    revisions = [rs.revision for rs in owned if rs.revision is not None]
+    assert revisions == sorted(revisions), "revisions must be oldest first"
+
+
+def test_replicaset_summaries_namespace_filter():
+    all_rs = k8s_tools.get_replicaset_summaries()
+    if not all_rs:
+        pytest.skip("no replica sets in the cluster")
+    ns = all_rs[0].namespace
+    assert all(rs.namespace == ns
+               for rs in k8s_tools.get_replicaset_summaries(namespace=ns))

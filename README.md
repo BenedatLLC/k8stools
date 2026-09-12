@@ -60,6 +60,7 @@ These are the tools we define:
 * `get_pod_spec` - retrieves the spec for a given pod
 * `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`)
 * `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
+* `get_replicaset_summaries` - get a deployment's replica sets with their revision numbers and images. A deployment's replica sets are its change history: use this to see when a workload last changed and what the change was.
 * `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
 * `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
 * `get_configmap` - retrieve the full contents of a single ConfigMap
