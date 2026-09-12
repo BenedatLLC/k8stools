@@ -6,6 +6,7 @@ import re
 import pytest
 import json
 import asyncio
+import tempfile
 
 from k8stools.k8s_tools import TOOLS
 EXPECTED_TOOLS = [tool.__name__ for tool in TOOLS]
@@ -21,30 +22,62 @@ from mcp.types import TextContent
 
 
 
-def run_server():
-    # Start the server with streamable-http transport on port 8000
+def free_port():
+    """Ask the OS for an unused localhost port.
+
+    Using an ephemeral port instead of a fixed one keeps the test from
+    colliding with -- and worse, silently testing against -- some other
+    k8s-mcp-server that happens to be listening on the same machine.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+def run_server(port, logfile):
+    # Start the server with streamable-http transport on the given port.
+    # Server output goes to a temp file (not a pipe) so it can't deadlock on a
+    # full pipe buffer, and can be reported if startup fails.
     proc = subprocess.Popen([
         sys.executable, '-m', 'k8stools.mcp_server',
         '--transport', 'streamable-http',
-    ], env={**os.environ, 'PYTHONPATH': 'src'})
+        '--port', str(port),
+    ], env={**os.environ, 'PYTHONPATH': 'src'},
+       stdout=logfile, stderr=subprocess.STDOUT)
     return proc
 
-def wait_for_server(timeout=5):
+def wait_for_server(port, proc, timeout=10):
+    """Wait for our own server subprocess to answer on port.
+
+    Returns False as soon as the subprocess exits (e.g. it could not bind the
+    port), so a failure is reported against our server rather than being
+    masked by whatever else may be listening.
+    """
     start = time.time()
     while time.time() - start < timeout:
+        if proc.poll() is not None:
+            return False
         try:
-            r = requests.post('http://127.0.0.1:8000/mcp', timeout=0.5)
+            requests.post(f'http://127.0.0.1:{port}/mcp', timeout=0.5)
             return True
         except Exception:
             time.sleep(0.1)
     return False
 
+def server_output(logfile):
+    logfile.seek(0)
+    return logfile.read()
+
 def test_k8s_mcp_server_http_tools():
     """Test that k8s-mcp-server (streamable-http) returns the expected set of tools via HTTP POST."""
-    proc = run_server()
+    port = free_port()
+    logfile = tempfile.TemporaryFile(mode='w+')
+    proc = run_server(port, logfile)
     try:
-        assert wait_for_server(), "Server did not start on port 8000"
-        url = 'http://127.0.0.1:8000/mcp'
+        assert wait_for_server(port, proc), (
+            f"Server did not start on port {port} "
+            f"(subprocess exit code {proc.returncode}). Server output:\n"
+            f"{server_output(logfile)}")
+        url = f'http://127.0.0.1:{port}/mcp'
         headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream',
@@ -87,6 +120,7 @@ def test_k8s_mcp_server_http_tools():
             proc.wait(timeout=3)
         except Exception:
             proc.kill()
+        logfile.close()
 
 def test_k8s_mcp_client_stdio_short():
     """Test that k8s-mcp-client --short returns the expected set of tools."""

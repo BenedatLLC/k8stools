@@ -587,3 +587,116 @@ def test_selector_matches_pods():
             matched = True
             break
     assert matched
+
+
+def _replicasets_or_skip():
+    """Replica sets from the cluster, skipping the test if there are none.
+
+    Every assertion below is written to fail on an empty result rather than
+    pass vacuously: a tool that silently returned nothing must not look green.
+    """
+    replicasets = k8s_tools.get_replicaset_summaries()
+    assert isinstance(replicasets, list)
+    if not replicasets:
+        # A Deployment always has at least one ReplicaSet, so "no replica sets"
+        # is only believable when there are no deployments either. Otherwise
+        # the tool is broken and must not be excused as an empty cluster.
+        assert not k8s_tools.get_deployment_summaries(), \
+            "cluster has deployments but get_replicaset_summaries returned nothing"
+        pytest.skip("no replica sets in the cluster")
+    return replicasets
+
+
+def test_replicaset_summaries():
+    replicasets = _replicasets_or_skip()
+    for rs in replicasets:
+        assert rs.name and isinstance(rs.name, str)
+        assert rs.namespace and isinstance(rs.namespace, str)
+        assert rs.owner_deployment is None or isinstance(rs.owner_deployment, str)
+        assert rs.revision is None or isinstance(rs.revision, int)
+        assert rs.desired_replicas >= 0
+        assert rs.current_replicas >= 0
+        assert rs.ready_replicas >= 0
+        # A replica set always carries the revision's pod template, so the
+        # image list is the payload of this tool and must never be empty.
+        assert rs.images, f"{rs.name} reported no images"
+        assert all(isinstance(i, str) and i for i in rs.images)
+        assert isinstance(rs.age, datetime.timedelta)
+        assert rs.age >= datetime.timedelta(0)
+
+
+def test_replicaset_summaries_are_owned_by_real_deployments():
+    """owner_deployment must name a deployment that actually exists."""
+    replicasets = _replicasets_or_skip()
+    deployments = {(d.namespace, d.name)
+                   for d in k8s_tools.get_deployment_summaries()}
+    owned = [rs for rs in replicasets if rs.owner_deployment is not None]
+    assert owned, "expected at least one deployment-owned replica set"
+    for rs in owned:
+        assert (rs.namespace, rs.owner_deployment) in deployments, \
+            f"{rs.name} claims owner {rs.owner_deployment}, which does not exist"
+
+
+def test_replicaset_summaries_filtered_by_deployment():
+    """A deployment's replica sets are its revision history, newest last."""
+    replicasets = _replicasets_or_skip()
+    target = next((rs for rs in replicasets if rs.owner_deployment), None)
+    if target is None:
+        pytest.skip("no deployment-owned replica sets in the cluster")
+
+    owned = k8s_tools.get_replicaset_summaries(namespace=target.namespace,
+                                               deployment=target.owner_deployment)
+    # Non-empty is the point: an always-empty filter would satisfy every
+    # all(...) check below without ever exercising the tool.
+    assert owned, f"deployment {target.owner_deployment} has no replica sets"
+    assert all(rs.owner_deployment == target.owner_deployment for rs in owned)
+    assert all(rs.namespace == target.namespace for rs in owned)
+
+    # The filtered result must be exactly what filtering the full list gives.
+    expected = {rs.name for rs in replicasets
+                if rs.namespace == target.namespace
+                and rs.owner_deployment == target.owner_deployment}
+    assert {rs.name for rs in owned} == expected
+
+    revisions = [rs.revision for rs in owned if rs.revision is not None]
+    assert revisions == sorted(revisions), "revisions must be oldest first"
+
+
+def test_replicaset_revision_history_is_ordered_oldest_first():
+    """For a deployment that has been upgraded, check the history reads in order."""
+    replicasets = _replicasets_or_skip()
+    by_deployment = {}
+    for rs in replicasets:
+        if rs.owner_deployment and rs.revision is not None:
+            by_deployment.setdefault((rs.namespace, rs.owner_deployment), []).append(rs)
+    multi = {k: v for k, v in by_deployment.items() if len(v) > 1}
+    if not multi:
+        pytest.skip("no deployment in the cluster has more than one revision")
+
+    for (namespace, deployment), _ in multi.items():
+        history = k8s_tools.get_replicaset_summaries(namespace=namespace,
+                                                     deployment=deployment)
+        revisions = [rs.revision for rs in history if rs.revision is not None]
+        assert revisions == sorted(revisions)
+        assert len(set(revisions)) == len(revisions), \
+            f"{deployment} has duplicate revision numbers: {revisions}"
+        # The newest revision is the most recently created, so it is youngest.
+        newest = history[-1]
+        assert all(newest.age <= rs.age for rs in history[:-1]), \
+            f"{deployment}: newest revision {newest.revision} is not the youngest"
+
+
+def test_replicaset_summaries_namespace_filter():
+    replicasets = _replicasets_or_skip()
+    ns = replicasets[0].namespace
+    filtered = k8s_tools.get_replicaset_summaries(namespace=ns)
+    assert filtered, f"namespace {ns} has replica sets but the filter returned none"
+    assert all(rs.namespace == ns for rs in filtered)
+    assert {rs.name for rs in filtered} == {rs.name for rs in replicasets
+                                            if rs.namespace == ns}
+
+
+def test_replicaset_summaries_unknown_deployment_is_empty():
+    _replicasets_or_skip()
+    assert k8s_tools.get_replicaset_summaries(
+        deployment="no-such-deployment-xyzzy") == []

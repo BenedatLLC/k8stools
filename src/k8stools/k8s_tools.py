@@ -1029,6 +1029,159 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
     return deployment_summaries
 
 
+class ReplicaSetSummary(BaseModel):
+    """A summary of a replica set, like `kubectl get replicasets` with revision info.
+
+    A Deployment's replica sets are its change history: each update creates a new
+    replica set holding that revision's pod template. Comparing the images and
+    revisions across a deployment's replica sets answers "what changed, and when".
+    """
+    name: str
+    namespace: str
+    owner_deployment: Optional[str]
+    revision: Optional[int]
+    desired_replicas: int
+    current_replicas: int
+    ready_replicas: int
+    images: list[str]
+    age: datetime.timedelta
+
+
+def get_replicaset_summaries(namespace: Optional[str] = None,
+                             deployment: Optional[str] = None) -> list[ReplicaSetSummary]:
+    """
+    Retrieves a list of ReplicaSetSummary objects, similar to `kubectl get replicasets`
+    but including each replica set's deployment revision and container images.
+
+    A Deployment's replica sets are its revision history: every update to a Deployment
+    creates a new replica set carrying that revision's pod template, and older replica
+    sets are retained (scaled to zero). Listing them for one deployment therefore shows
+    when it last changed and what its image was at each revision - which is how you
+    answer "did something change recently?" without access to deployment tooling or
+    version control.
+
+    Results are grouped by namespace and owning deployment, and within each
+    deployment sorted by revision, oldest first. So when filtered to a single
+    deployment, the last entry is that deployment's current revision.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list replica sets from. If None, lists from all namespaces.
+    deployment : Optional[str], default=None
+        If given, return only replica sets owned by this deployment. This is the common
+        case: one deployment's revision history.
+
+    Returns
+    -------
+    list of ReplicaSetSummary
+        A list of ReplicaSetSummary objects with the following fields:
+
+        name : str
+            Name of the replica set.
+        namespace : str
+            Namespace in which the replica set is defined.
+        owner_deployment : Optional[str]
+            Name of the Deployment that owns this replica set, or None if it is
+            standalone (not managed by a Deployment).
+        revision : Optional[int]
+            The deployment revision this replica set represents, taken from the
+            `deployment.kubernetes.io/revision` annotation. None if not set.
+        desired_replicas : int
+            Replicas desired for this replica set. Old revisions are scaled to 0.
+        current_replicas : int
+            Replicas currently running.
+        ready_replicas : int
+            Replicas currently ready.
+        images : list[str]
+            Container images in this revision's pod template, in container order.
+            Comparing this across revisions shows what an upgrade changed.
+        age : datetime.timedelta
+            Age of the replica set (current time minus creation timestamp). For the
+            newest revision this is how long ago the deployment last changed.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list replica sets fails.
+    """
+    global APPS_V1_API
+
+    if APPS_V1_API is None:
+        APPS_V1_API = _get_apps_v1_api_client()
+
+    logging.info(f"get_replicaset_summaries(namespace={namespace}, deployment={deployment})")
+    summaries: list[ReplicaSetSummary] = []
+
+    try:
+        if namespace:
+            replicasets = APPS_V1_API.list_namespaced_replica_set(namespace=namespace)
+        else:
+            replicasets = APPS_V1_API.list_replica_set_for_all_namespaces()
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching replica sets: {e}") from e
+
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    for rs in replicasets.items:
+        owner = None
+        for ref in (rs.metadata.owner_references or []):
+            if ref.kind == "Deployment":
+                owner = ref.name
+                break
+        if deployment is not None and owner != deployment:
+            continue
+
+        annotations = rs.metadata.annotations or {}
+        raw_revision = annotations.get("deployment.kubernetes.io/revision")
+        try:
+            revision = int(raw_revision) if raw_revision is not None else None
+        except ValueError:
+            # A malformed annotation should not lose the replica set entirely.
+            revision = None
+
+        containers = []
+        if rs.spec is not None and rs.spec.template is not None and rs.spec.template.spec is not None:
+            containers = rs.spec.template.spec.containers or []
+
+        status = rs.status
+        summaries.append(ReplicaSetSummary(
+            name=rs.metadata.name,
+            namespace=rs.metadata.namespace,
+            owner_deployment=owner,
+            revision=revision,
+            desired_replicas=(rs.spec.replicas if rs.spec is not None and rs.spec.replicas else 0),
+            current_replicas=(status.replicas if status is not None and status.replicas else 0),
+            ready_replicas=(status.ready_replicas if status is not None and status.ready_replicas else 0),
+            images=[c.image for c in containers if c.image is not None],
+            age=current_time_utc - rs.metadata.creation_timestamp,
+        ))
+
+    # Oldest revision first, so the last entry is the current one. Replica sets
+    # without a revision sort first rather than being dropped.
+    summaries.sort(key=lambda r: (r.namespace, r.owner_deployment or "",
+                                  r.revision if r.revision is not None else -1))
+    return summaries
+
+
+def print_replicaset_summaries(namespace: Optional[str] = None,
+                               deployment: Optional[str] = None) -> None:
+    """
+    Calls get_replicaset_summaries and prints the output to stdout, using a format
+    similar to `kubectl get replicasets` with the deployment revision and image added.
+    """
+    summaries = get_replicaset_summaries(namespace, deployment)
+    print(f"{'NAME':<40} {'NAMESPACE':<16} {'REV':<5} {'DESIRED':<8} {'CURRENT':<8} {'READY':<7} {'AGE':<10} IMAGES")
+    for rs in summaries:
+        revision = str(rs.revision) if rs.revision is not None else "-"
+        age = _format_timedelta(rs.age)
+        images = ", ".join(rs.images)
+        print(f"{rs.name:<40} {rs.namespace:<16} {revision:<5} {rs.desired_replicas:<8} "
+              f"{rs.current_replicas:<8} {rs.ready_replicas:<7} {age:<10} {images}")
+
+
 def print_deployment_summaries(namespace: Optional[str] = None) -> None:
     """
     Calls get_deployment_summaries and prints the output to stdout, using
@@ -2110,6 +2263,7 @@ TOOLS = [
     get_pod_spec,
     get_logs_for_pod_and_container,
     get_deployment_summaries,
+    get_replicaset_summaries,
     get_service_summaries,
     get_configmap_summaries,
     get_configmap,
