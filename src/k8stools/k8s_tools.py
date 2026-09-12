@@ -1060,7 +1060,9 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
     answer "did something change recently?" without access to deployment tooling or
     version control.
 
-    Results are sorted by revision, oldest first, so the last entry is current.
+    Results are grouped by namespace and owning deployment, and within each
+    deployment sorted by revision, oldest first. So when filtered to a single
+    deployment, the last entry is that deployment's current revision.
 
     Parameters
     ----------

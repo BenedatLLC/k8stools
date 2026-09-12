@@ -159,3 +159,57 @@ class TestMock:
     def test_registered_in_both_tool_lists(self):
         for tools in (k8s_tools.TOOLS, mock_tools.TOOLS):
             assert any(t.__name__ == "get_replicaset_summaries" for t in tools)
+
+
+class TestMockConsistency:
+    """The mock data is a single pretend cluster, so the replica sets have to
+    agree with the deployments and pods an agent sees from the other tools.
+    An agent reasoning over contradictory mock data is being tested against a
+    cluster that could not exist.
+    """
+
+    def test_every_replica_set_is_owned_by_a_mock_deployment(self):
+        deployments = {(d.namespace, d.name)
+                       for d in mock_tools.get_deployment_summaries()}
+        for rs in mock_tools.get_replicaset_summaries():
+            assert (rs.namespace, rs.owner_deployment) in deployments, \
+                f"{rs.name} is owned by a deployment the mock does not have"
+
+    def test_no_replica_set_is_older_than_its_deployment(self):
+        # A replica set is created by its deployment, so it cannot predate it.
+        deployments = {(d.namespace, d.name): d
+                       for d in mock_tools.get_deployment_summaries()}
+        for rs in mock_tools.get_replicaset_summaries():
+            owner = deployments[(rs.namespace, rs.owner_deployment)]
+            assert rs.age <= owner.age, \
+                f"{rs.name} ({rs.age}) is older than deployment {owner.name} ({owner.age})"
+
+    def test_ages_are_fixed_not_computed_from_a_hardcoded_date(self):
+        # Ages derived from a fixed calendar date grow without bound as the
+        # repo ages; every other mock resource uses a fixed timedelta.
+        for rs in mock_tools.get_replicaset_summaries():
+            assert rs.age < datetime.timedelta(days=365), \
+                f"{rs.name} age {rs.age} looks computed from a hardcoded date"
+
+    def test_running_pods_belong_to_a_listed_replica_set(self):
+        # A pod's name is "<replicaset name>-<suffix>", so the replica set a
+        # running pod belongs to should appear in the replica set list.
+        names = {(rs.namespace, rs.name)
+                 for rs in mock_tools.get_replicaset_summaries()}
+        for pod in mock_tools.get_pod_summaries():
+            prefix = pod.name.rsplit("-", 1)[0]
+            if (pod.namespace, prefix) in names:
+                return
+        pytest.fail("no mock pod maps onto a mock replica set")
+
+    def test_current_revision_agrees_with_its_deployment(self):
+        # The newest replica set is the one actually running, so its counts
+        # should match what get_deployment_summaries reports.
+        for deployment in mock_tools.get_deployment_summaries():
+            owned = mock_tools.get_replicaset_summaries(
+                namespace=deployment.namespace, deployment=deployment.name)
+            if not owned:
+                continue
+            current = owned[-1]
+            assert current.desired_replicas == deployment.total_replicas
+            assert current.ready_replicas == deployment.ready_replicas

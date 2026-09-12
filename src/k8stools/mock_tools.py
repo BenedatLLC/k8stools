@@ -75,6 +75,8 @@ def _get_static_mock_data():
         'replicasets': [
             # Two revisions of `ad`: an image upgrade with the old revision
             # scaled to zero, which is what a Deployment's history looks like.
+            # The `ad` deployment is 8 days old; it was upgraded 7h34m ago,
+            # which created revision 2 and the pod ad-647b4947cc-s5mpm.
             k8s_tools.ReplicaSetSummary(
                 name="ad-d5c94c49b",
                 namespace="default",
@@ -84,10 +86,12 @@ def _get_static_mock_data():
                 current_replicas=0,
                 ready_replicas=0,
                 images=["ghcr.io/open-telemetry/demo:2.0.2-ad"],
-                age=now - datetime.datetime(2025, 7, 20, tzinfo=datetime.timezone.utc)
+                age=datetime.timedelta(days=8)
             ),
+            # Current revision. Named to match the running pod
+            # ad-647b4947cc-s5mpm, and not ready, like the `ad` deployment.
             k8s_tools.ReplicaSetSummary(
-                name="ad-5547bd5bd9",
+                name="ad-647b4947cc",
                 namespace="default",
                 owner_deployment="ad",
                 revision=2,
@@ -95,18 +99,19 @@ def _get_static_mock_data():
                 current_replicas=1,
                 ready_replicas=0,
                 images=["ghcr.io/open-telemetry/demo:2.2.0-ad"],
-                age=now - datetime.datetime(2025, 7, 28, tzinfo=datetime.timezone.utc)
+                age=datetime.timedelta(hours=7, minutes=34)
             ),
+            # A never-upgraded deployment: a single revision, fully ready.
             k8s_tools.ReplicaSetSummary(
-                name="cart-74f5bf48d9",
+                name="test-deployment-7d4b9c85f",
                 namespace="default",
-                owner_deployment="cart",
+                owner_deployment="test-deployment",
                 revision=1,
-                desired_replicas=1,
-                current_replicas=1,
-                ready_replicas=1,
+                desired_replicas=3,
+                current_replicas=3,
+                ready_replicas=3,
                 images=["ghcr.io/open-telemetry/demo:2.2.0-cart"],
-                age=now - datetime.datetime(2025, 7, 20, tzinfo=datetime.timezone.utc)
+                age=datetime.timedelta(hours=2)
             ),
         ],
         'deployments': [
@@ -117,7 +122,9 @@ def _get_static_mock_data():
                 ready_replicas=0,
                 up_to_date_relicas=1,
                 available_replicas=0,
-                age=datetime.timedelta(hours=7, minutes=34)
+                # Older than its newest replica set: created 8 days ago,
+                # last upgraded 7h34m ago. See 'replicasets' above.
+                age=datetime.timedelta(days=8)
             ),
             k8s_tools.DeploymentSummary(
                 name="test-deployment",
@@ -137,7 +144,7 @@ def _get_static_mock_data():
                 cluster_ip="10.96.1.100",
                 external_ip=None,
                 ports=[k8s_tools.PortInfo(port=8080, protocol="TCP")],
-                age=datetime.timedelta(hours=7, minutes=34)
+                age=datetime.timedelta(days=8)
             ),
             k8s_tools.ServiceSummary(
                 name="test-service",
