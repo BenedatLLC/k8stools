@@ -1,41 +1,127 @@
 # Mock State Capture & Replay
 
-## Status — PAUSED (2026-08-29)
+## Status — IMPLEMENTED (2026-09-13)
 
-**Implementation has not started.** This design is complete and has no open
-blockers, but none of the new/changed files below exist yet — `mock_tools.py`
-still ships the hardcoded `_get_static_mock_data()` from a single OTel-Demo
-snapshot. The full build (new `MockState`, capture CLI, fixture migration,
-`mock_tools.py`/MCP-server refactor, two test modules) is several hours of work,
-so it is intentionally paused rather than half-started.
+Built to this design. All nine files in [New and changed files](#new-and-changed-files)
+exist, the whole tool surface (19 tools) replays from a capture, and `--mock` now
+serves the migrated OTel-Demo snapshot rather than `_get_static_mock_data()`.
 
-When resumed, follow the plan below verbatim. Suggested first step:
-`src/k8stools/mock_state.py` + the serialization round-trip (`tests/test_capture.py`),
-then the capture CLI, then wire `mock_tools.py` and the MCP server. This design was
-updated (2026-08-30) to cover the 1.1.0 tool batch — the JSON capture format,
-`MockState` query methods, and capture CLI below all include ConfigMaps,
-StatefulSets, CronJobs/Jobs, PVCs, and the unified flat events list.
+The design below is kept as written; this section records where the build
+deviated from it and why, and what changed for existing callers.
 
-**Updated 2026-09-12 for 1.2.0 and for its first real consumer.** Four changes,
-all driven by k8srca's scenario suite (`k8srca/designs/004-scenario-testing.md`),
-which replays captures as graded root-cause test fixtures:
+### Deviations from the design as written
 
-1. **ReplicaSets** (the 1.2.0 tool batch) — a `replicasets` top-level list, a
-   `MockState.get_replicaset_summaries` with the same filters and *the same
-   ordering guarantee* as the real tool, and capture support. Without this a
-   replayed capture cannot answer "did something change recently?", which is
-   the question a deploy-caused incident turns on.
-2. **Previous-instance logs** are now captured, not deferred. For a
-   crash-looping container the current instance's logs are usually empty or
-   post-restart; `previous=True` is the call that carries the diagnosis. A
-   capture without them silently omits the best evidence in the scenario.
-3. **A frozen-time mode** for the replay clock. Advancing time is right for
-   interactive use and wrong for a graded suite — see
-   [Replay clock](#replay-clock).
-4. **Redaction is decided**: capture applies whatever redaction the tools would
-   have applied, which it must do explicitly because the capture CLI is a library
-   consumer and library consumers bypass the server's redaction boundary. See
-   [Redaction](#5-redaction).
+1. **The built-in fixture lives at `src/k8stools/fixtures/otel-demo.json`, not
+   `tests/fixtures/`.** `MockState.from_builtin()` is production code — it is what
+   `k8s-mcp-server --mock` serves — so the fixture has to ship in the wheel, and
+   `tests/` does not. (Verified: it is present in the built wheel.)
+
+2. **Null revisions sort *first*, not last** — *resolved 2026-09-13: keep this
+   behavior.* An earlier draft of this design said "last";
+   `k8s_tools.get_replicaset_summaries` has always sorted them first (keying on
+   `revision if revision is not None else -1`). Since the point of that section is
+   that replay must not violate a guarantee the real tool makes, the real tool
+   wins and `MockState` matches it. The design body above is corrected, and both
+   docstrings now state the ordering and what a missing revision means.
+
+3. **Pod records carry a `labels` map**, which the design's pod record does not
+   mention. `get_logs_for_job` resolves a Job to its pod through the `job-name`
+   label; labels are not part of any tool's return value, so a capture built only
+   from tool output could not answer that call on replay. The capture reads them
+   from the pod list directly.
+
+4. **ConfigMap records store `key_count` and `data_size`** alongside the content
+   rather than deriving both from it, as the design suggests. `data_size` counts
+   the bytes of *binary* values and `get_configmap` returns only their key names,
+   so the derivation is not possible from captured data. The derivation is kept as
+   a fallback for hand-written fixtures.
+
+5. **The replay clock quantizes elapsed time to whole seconds and samples it once
+   per query.** The design's `_elapsed()` returns microsecond-precise time sampled
+   per call, which breaks the interval guarantee the design leans on: two
+   resources captured at the same instant come back tens of microseconds apart,
+   and a deployment can be reported as younger than its own replica set. Kubernetes
+   ages are meaningful at second granularity (`kubectl` prints `8d`, `7h34m`), so
+   the extra precision was false precision with a real cost. Frozen mode is
+   unaffected, and cross-query drift in advancing mode is unchanged — that is
+   inherent to advancing time and is what frozen mode is for.
+
+6. **`scripts/migrate_mock_data.py` was run and then deleted**, as the design
+   permits. It could not survive its own migration: its input,
+   `mock_tools._get_static_mock_data()`, is removed by the change it performs, so
+   keeping it would leave a script in the tree that raises `AttributeError` on
+   sight. What it did is recorded below instead.
+
+### Added during implementation, not in the original design
+
+These are capabilities the design did not call for, added because implementing or
+using the thing made the need obvious:
+
+7. **Captures can be gzipped.** An output name ending in `.gz` is written
+   compressed (3.3 MB → 364 KB on a real 38-pod cluster), and reads detect gzip by
+   magic bytes rather than file name, so a renamed capture still loads.
+
+   **Plain `.json` remains the default, and is the right choice for anything
+   checked into git.** Git already stores blobs compressed *and* deltas successive
+   versions of a text file against each other, which it cannot do for a gzip blob.
+   Measured by committing two captures of the same cluster in sequence: the first
+   commit costs about the same either way (404 KB vs 388 KB), but updating the
+   fixture later costs **+61 KB as `.json` and +358 KB as `.gz`** — so a `.gz`
+   fixture grows the repo roughly 6x faster per re-capture. This is also why
+   captures are written indented rather than compact: it gives git something to
+   delta. And why git-lfs is likely the wrong tool here — LFS stores every version
+   whole, giving up exactly that delta compression. Reach for `.gz` when the file
+   travels on its own: attached to an issue, or in object storage.
+
+8. **Redaction is applied per tool result, not once to the assembled capture.**
+   See [Redaction](#5-redaction) — this turned out to be a correctness matter, not
+   a stylistic one.
+
+9. **`--no-logs` skips previous-instance logs too.** As first built it skipped only
+   the current instance and still captured the previous one, uncapped, which made a
+   "structure-only" capture *larger* than a normal one (3.6 MB vs 1.4 MB).
+   Previous-instance logs are logs; `--no-previous-logs` remains the finer-grained
+   option for keeping the current instance and dropping the previous.
+
+### What the migration did to the mock data
+
+Beyond re-encoding, four deliberate changes, all of which made the fixture a more
+coherent cluster than the hardcoded data was:
+
+- **Events were unified into one flat list.** The old mock kept a per-pod list and
+  a separate cluster-wide one, and they disagreed: the ad pod's `BackOff` event was
+  4 minutes old through `get_pod_events` and 1 minute old through `get_events`. One
+  list, one age. The visible consequence is that a cluster-wide `get_events` sweep
+  now also returns the ad pod's `Normal`/`Pulled` event, which it previously could
+  not see.
+- **The ad pod gained previous-instance logs.** It is `OOMKilled` with 93 restarts
+  and its captured logs show only JVM startup — precisely the case `previous=True`
+  exists for. Without a `previous_logs` entry the built-in fixture could not
+  exercise the tool at all.
+- **The cleanup Job gained its pod.** The old data had a Job that completed a
+  minute ago but no pod for it, so `get_logs_for_job` / `get_logs_for_cronjob`
+  would have had nothing to resolve to on replay.
+- **Deployments now strictly predate their own replica sets.** The old data gave
+  each deployment and its revision-1 replica set the *identical* age, which held
+  together only because both were the same literal `timedelta`. Any clock that
+  samples time twice orders them arbitrarily. The revision-1 replica sets are aged
+  down by a second so the relationship lives in the data rather than in a tie.
+
+The fixture is committed **unredacted** (`"redacted": false`). Its one
+secret-shaped value is AWS's own documented example key, present so that redaction
+can be seen working end to end through the mock server — `--mock` with redaction on
+returns `[REDACTED]` for it, which a test asserts.
+
+### Behavior changes for existing callers of `mock_tools`
+
+`mock_tools` used to synthesize a plausible answer for any pod name it was handed.
+It now serves one captured cluster, so **a pod that is not in the capture does not
+exist for any tool**: `get_pod_container_statuses` returns `[]`, `get_pod_events`
+returns `[]`, and `get_pod_spec` / `get_logs_for_pod_and_container` raise
+`K8sApiError` the way the real tools do on a 404. This is the point of the change —
+the old behavior let an agent "discover" pods that appeared in no listing — but it
+is a breaking change for any caller that relied on the synthesis. Four tests in
+`tests/test_mock_tools.py` asserted the old behavior and were rewritten.
 
 ## Goal
 
@@ -181,6 +267,7 @@ Each element of the `pods` array bundles all per-pod data together so a single c
       "message": "Back-off restarting failed container ad in pod ad-647b4947cc-s5mpm_default"
     }
   ],
+  "labels": {"app": "ad", "pod-template-hash": "647b4947cc"},
   "spec": { },
   "logs": {
     "ad": "2025-07-21 10:00:00 starting up\n..."
@@ -287,6 +374,10 @@ become `*_offset_seconds` before `captured_at`.
   `deployment.kubernetes.io/revision` annotation is missing. Capture stores
   `null`; it does not invent a revision.
 
+  Only the Deployment controller writes that annotation, so the two nulls travel
+  together: a ReplicaSet with no revision has no owning deployment either, and
+  appears in neither `kubectl rollout history` nor a `deployment`-filtered call.
+
 **Ordering is part of the contract, not a presentation detail.** The real tool
 documents that results are grouped by namespace and owning deployment and,
 within each deployment, **sorted by revision, oldest first** — so that when
@@ -294,8 +385,14 @@ filtered to one deployment "the last entry is that deployment's current
 revision." Callers rely on that sentence. `MockState.get_replicaset_summaries`
 must reproduce the ordering rather than echo capture order, or a replayed
 capture quietly violates a guarantee the tool's own docstring makes. Sort at
-query time, after filtering, on `(namespace, owner_deployment, revision)` with
-`null` revisions last.
+query time, after filtering, on `(namespace, owner_deployment, revision)`.
+
+**`null` revisions sort first**, ahead of revision 1, matching what
+`k8s_tools.get_replicaset_summaries` already does (it keys on `revision if
+revision is not None else -1`). An earlier draft of this design said "last";
+that was decided in favor of the real tool's existing behavior on 2026-09-13,
+and both docstrings now state it. Since a null revision implies a null
+`owner_deployment`, these are only ever visible in an unfiltered listing.
 
 **Why this list earns its place in a capture.** ReplicaSets are a Deployment's
 change history, and they are the only such history reachable through the tool
@@ -319,9 +416,11 @@ Loads a capture file and serves subsets of it in response to tool queries.
 ```python
 class MockState:
     @classmethod
-    def from_file(cls, path: Path) -> MockState: ...
+    def from_file(cls, path: Path, frozen: bool = False) -> MockState: ...
     @classmethod
-    def from_builtin(cls) -> MockState: ...   # loads tests/fixtures/otel-demo.json
+    def from_builtin(cls, frozen: bool = False) -> MockState: ...
+    # loads src/k8stools/fixtures/otel-demo.json; gzipped captures are read
+    # transparently, detected by magic bytes rather than by file name
 
     # Query methods — same signatures as k8s_tools counterparts
     def get_namespaces(self) -> list[NamespaceSummary]: ...
@@ -331,7 +430,9 @@ class MockState:
     def get_pod_events(self, pod_name: str, namespace: str) -> list[EventSummary]: ...
     def get_pod_spec(self, pod_name: str, namespace: str) -> dict[str, Any]: ...
     def get_logs_for_pod_and_container(
-        self, pod_name: str, namespace: str, container_name: str | None = None
+        self, pod_name: str, namespace: str, container_name: str | None = None,
+        tail: int | None = None, since_seconds: int | None = None,
+        previous: bool = False
     ) -> str | None: ...
     def get_deployment_summaries(self, namespace: str | None = None) -> list[DeploymentSummary]: ...
     def get_service_summaries(self, namespace: str | None = None) -> list[ServiceSummary]: ...
@@ -417,9 +518,10 @@ so is internally consistent either way.
 ### 2. `k8s-capture-state` CLI (`src/k8stools/capture.py`)
 
 ```
-usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [--output FILE]
-                          [--no-logs] [--max-log-lines N] [--no-previous-logs]
-                          [--no-redact]
+usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [-o FILE] [--no-logs]
+                         [--max-log-lines MAX_LOG_LINES] [--no-previous-logs]
+                         [--no-redact]
+                         [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
 ```
 
 Behavior:
@@ -459,20 +561,32 @@ k8s-capture-state = "k8stools.capture:main"
 Replace the module-level `_MOCK_DATA` dict and parallel function bodies with a `MockState` delegate:
 
 ```python
-_STATE: MockState | None = None
+_STATE: Optional[MockState] = None
 
-def load_mock_state(path: Path | None = None) -> None:
+def load_mock_state(path: Optional[Path] = None, frozen: bool = False) -> MockState:
     global _STATE
-    _STATE = MockState.from_file(path) if path else MockState.from_builtin()
+    _STATE = MockState.from_file(path, frozen=frozen) if path \
+        else MockState.from_builtin(frozen=frozen)
+    return _STATE
+
+def _state() -> MockState:
+    """The loaded state, loading the built-in capture on first use."""
+    global _STATE
+    if _STATE is None:
+        _STATE = MockState.from_builtin()
+    return _STATE
 
 def get_namespaces() -> list[NamespaceSummary]:
-    assert _STATE is not None, "call load_mock_state() first"
-    return _STATE.get_namespaces()
+    return _state().get_namespaces()
 
 # ... same pattern for all other tools
 ```
 
-`_STATE` is initialized lazily on first call if `load_mock_state` hasn't been called (uses `from_builtin()`), so existing callers that import `mock_tools` directly continue to work without changes.
+`_STATE` is initialized lazily on first call if `load_mock_state` hasn't been called
+(uses `from_builtin()`), so existing callers that import `mock_tools` directly
+continue to work without changes. As built, `load_mock_state` takes a `frozen` flag
+and returns the state, so a test suite can load a capture and assert against it
+without reaching for the module global.
 
 Docstrings are still mirrored from `k8s_tools` as today.
 
@@ -526,6 +640,25 @@ Three consequences worth knowing before the first capture is committed anywhere:
   "absent" from "hidden". A redacted capture therefore has the same shape as the
   cluster it came from, and an agent reasoning over it sees the same fields.
 
+**Two redaction bugs this work surfaced** (both fixed 2026-09-13, found by
+capturing a real 38-pod cluster and reading every redaction):
+
+- *Redaction is applied per tool result, not once to the assembled capture.* An
+  envelope-wide pass subjects capture-internal structure to the key-name
+  heuristic, which the MCP output boundary never sees. Captured logs are stored in
+  a dict keyed by container name, so a container named `valkey-cart` matched the
+  heuristic's `key` pattern and its **entire log — current and previous — was
+  replaced by the marker**. The live server does not do this, because it returns
+  the log as a bare string. Per-result redaction is also what this design's own
+  words ask for: a capture holds whatever the tools would have returned, and the
+  tools never return the envelope. Pod labels, likewise capture-internal, are not
+  redacted at all.
+- *`redaction.py`'s key-name rule matched substrings and treated a bare `key` as
+  sensitive.* Of 139 redactions in that capture, 3 were secrets. The fix (whole-word
+  matching, plus exempting a field named exactly `key` as Kubernetes structural)
+  brought it to 5 while keeping all 3. See the module docstring; the residual two
+  are `topology_key`.
+
 **In practice this rarely bites**, because the clusters worth capturing are test
 clusters — the OTel demo has no real credentials to leak. The default is chosen
 for the case where that assumption is wrong, which is the only case where it
@@ -544,17 +677,22 @@ capture would test the capture path, not the redaction path.
 The current hardcoded data in `mock_tools.py` was captured from a Minikube instance running the OpenTelemetry Demo. Migration steps:
 
 1. Write a one-off script `scripts/migrate_mock_data.py` that instantiates the existing Pydantic objects from `_get_static_mock_data()` and serializes them to the new JSON format using the capture serializer.
-2. Save the output as `tests/fixtures/otel-demo.json`.
+2. Save the output as `src/k8stools/fixtures/otel-demo.json` (see deviation 1 —
+   the design originally said `tests/`, but `--mock` serves this file so it must
+   ship in the wheel).
 3. Update `MockState.from_builtin()` to load this file.
 4. Remove `_get_static_mock_data()` and the hardcoded data from `mock_tools.py`.
 
-The migration script is a one-shot tool; it can be deleted after the fixture file is committed.
+The migration script is a one-shot tool; it can be deleted after the fixture file is
+committed. It was — see deviation 6, and "What the migration did to the mock data"
+above for what it changed along the way.
 
 ---
 
 ## Test fixture organization
 
-- `tests/fixtures/otel-demo.json` — migrated builtin snapshot (OTel Demo on Minikube)
+- `src/k8stools/fixtures/otel-demo.json` — migrated builtin snapshot (OTel Demo on
+  Minikube), shipped in the wheel because `--mock` serves it.
 - Additional fixtures can be added by any consumer of the library in their own repo; only `otel-demo.json` lives here.
 
 Tests that currently use `MockK8S` / `MockAppsV1Api` in `test_k8s_tools.py` are unaffected — they test `k8s_tools.py` directly and bypass `mock_tools` entirely.
@@ -562,7 +700,7 @@ Tests that currently use `MockK8S` / `MockAppsV1Api` in `test_k8s_tools.py` are 
 New tests to add:
 - `tests/test_mock_state.py` — unit tests for `MockState`: load from file, namespace filtering, time adjustment math, missing pod returns empty list, etc. Add:
   - `get_replicaset_summaries` ordering — revision ascending within a deployment,
-    after both filters, `null` revisions last. Assert against a fixture whose
+    after both filters, `null` revisions first. Assert against a fixture whose
     capture order is deliberately shuffled, so that echoing the file fails.
   - `previous=True` serves `previous_logs`, and behaves like no-previous-instance
     when the key is absent.
@@ -596,14 +734,21 @@ containers are restarting — which is exactly the cluster worth capturing.
 
 ## New and changed files
 
+As built:
+
 | File | Change |
 |---|---|
-| `src/k8stools/mock_state.py` | New — `MockState` class, incl. `get_replicaset_summaries` and the frozen replay clock |
+| `src/k8stools/mock_state.py` | New — `MockState`, the temporal codec, and the replay clock |
 | `src/k8stools/capture.py` | New — `k8s-capture-state` CLI, incl. `replicasets`, previous-instance logs, and an explicit `redact_object` pass |
-| `tests/fixtures/otel-demo.json` | New — migrated builtin mock data |
-| `scripts/migrate_mock_data.py` | New (temporary) — one-shot migration script |
-| `src/k8stools/mock_tools.py` | Refactor — delegate to `MockState` |
-| `src/k8stools/mcp_server.py` | Add `--state-file` and `--state-time` arguments |
-| `pyproject.toml` | Add `k8s-capture-state` entry point |
-| `tests/test_mock_state.py` | New — `MockState` unit tests |
-| `tests/test_capture.py` | New — serialization round-trip tests |
+| `src/k8stools/fixtures/otel-demo.json` | New — migrated builtin mock data (moved out of `tests/`; see deviation 1) |
+| `scripts/migrate_mock_data.py` | Added, run, and deleted (see deviation 6) |
+| `src/k8stools/mock_tools.py` | Rewritten — delegates to `MockState` |
+| `src/k8stools/mcp_server.py` | Added `--state-file` and `--state-time` arguments |
+| `pyproject.toml` | Added `k8s-capture-state` entry point |
+| `tests/test_mock_state.py` | New — 29 `MockState` unit tests |
+| `tests/test_capture.py` | New — 16 serialization, redaction and compression tests |
+| `src/k8stools/redaction.py` | Fixed — whole-word name matching and a structural `key` exemption (see [Redaction](#5-redaction)) |
+| `tests/test_redaction.py` | Updated — 23 → 51 tests for the tightened name rule |
+| `tests/test_mock_tools.py` | Updated — four tests asserted the removed synthesis |
+| `tests/test_new_tools.py` | Updated — one test asserted the split event lists |
+| `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` | Documented the CLI, the flags, and the new layout |

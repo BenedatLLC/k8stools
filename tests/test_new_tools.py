@@ -336,4 +336,7 @@ def test_mock_tools_new_functions():
     assert mock_tools.get_pvc_summaries(namespace="default")
     evicted = mock_tools.get_events(reason="Evicted")
     assert len(evicted) == 1 and evicted[0].reason == "Evicted"
-    assert mock_tools.get_events(event_type="Normal") == []
+    # The capture keeps one flat event list, so a cluster-wide sweep also sees the
+    # pod-scoped events that get_pod_events returns - including Normal ones.
+    normal = mock_tools.get_events(event_type="Normal")
+    assert [e.reason for e in normal] == ["Pulled"]

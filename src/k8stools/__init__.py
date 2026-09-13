@@ -33,6 +33,7 @@ These are the tools we define:
 * get_pod_spec - retrieves the spec for a given pod
 * get_logs_for_pod_and_container - retrieves logs from a pod and container (supports tail/since/previous)
 * get_deployment_summaries - get a list of deployments, like `kubectl get deployments`
+* get_replicaset_summaries - get a deployment's revision history, like `kubectl get replicasets`
 * get_service_summaries - get a list of services, like `kubectl get services`
 * get_configmap_summaries - get a list of ConfigMaps, like `kubectl get configmaps`
 * get_configmap - retrieve the full contents of a single ConfigMap
@@ -53,6 +54,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_pod_events
 * print_pod_spec
 * print_deployment_summaries
+* print_replicaset_summaries
 * print_service_summaries
 * print_configmap_summaries
 * print_configmap
@@ -68,6 +70,12 @@ k8stools.mcp_server can be run to start an MCP server based on these
 tools. It can be called directly through the script k8s-mcp-server.
 k8stools.mcp_client is a test client that starts the server and makes
 a list_tools request through the stdio transport.
+
+For testing without a cluster, k8stools.capture (the k8s-capture-state script)
+snapshots a live cluster to a JSON file and k8stools.mock_state.MockState replays
+it through the same tool surface. k8stools.mock_tools serves such a capture -
+the built-in OTel Demo snapshot by default, or your own via load_mock_state() or
+the server's --state-file option.
 """
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"

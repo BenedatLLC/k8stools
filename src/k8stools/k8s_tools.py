@@ -1038,7 +1038,10 @@ class ReplicaSetSummary(BaseModel):
     """
     name: str
     namespace: str
+    #: None when no Deployment owns this replica set.
     owner_deployment: Optional[str]
+    #: From the `deployment.kubernetes.io/revision` annotation, which only the
+    #: Deployment controller writes; None for a replica set no Deployment created.
     revision: Optional[int]
     desired_replicas: int
     current_replicas: int
@@ -1064,6 +1067,13 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
     deployment sorted by revision, oldest first. So when filtered to a single
     deployment, the last entry is that deployment's current revision.
 
+    Replica sets with no revision (see `revision` below) sort *first*, ahead of
+    revision 1, rather than being dropped. They have no place in any deployment's
+    history, so they are listed before it rather than appended to it. In practice
+    they are only visible in an unfiltered listing: a replica set without a
+    revision has no owning deployment either, so passing `deployment` filters them
+    out, and the "last entry is the current revision" guarantee above is unaffected.
+
     Parameters
     ----------
     namespace : Optional[str], default=None
@@ -1086,7 +1096,13 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
             standalone (not managed by a Deployment).
         revision : Optional[int]
             The deployment revision this replica set represents, taken from the
-            `deployment.kubernetes.io/revision` annotation. None if not set.
+            `deployment.kubernetes.io/revision` annotation. None when that
+            annotation is absent, which means no Deployment created this replica
+            set - only the Deployment controller writes it. A hand-written replica
+            set, or one created by another controller, therefore has no revision
+            (and no `owner_deployment`), and appears in neither `kubectl rollout
+            history` nor a `deployment`-filtered call here. Also None if the
+            annotation is present but not an integer.
         desired_replicas : int
             Replicas desired for this replica set. Old revisions are scaled to 0.
         current_replicas : int

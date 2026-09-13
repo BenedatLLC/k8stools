@@ -161,15 +161,15 @@ class TestMockPodEvents:
             assert isinstance(event.reason, str)
             assert event.object == "ad-647b4947cc-s5mpm"
             
-    def test_get_pod_events_generic_pod(self):
-        """Test events for a generic pod."""
+    def test_get_pod_events_pod_not_in_state(self):
+        """A pod the capture does not contain has no events.
+
+        The mock serves one captured cluster rather than synthesizing an answer
+        per tool, so a pod that does not exist has no events - the same as
+        querying a real cluster for a pod that isn't there.
+        """
         events = mock_tools.get_pod_events("test-pod", "default")
-        assert len(events) == 2
-        
-        for event in events:
-            assert isinstance(event, k8s_tools.EventSummary)
-            assert event.object == "test-pod"
-            assert event.type == "Normal"
+        assert events == []
 
 
 class TestMockPodSpec:
@@ -194,17 +194,21 @@ class TestMockPodSpec:
         assert spec["restart_policy"] == "Always"
         assert spec["node_name"] == "minikube"
         
-    def test_get_pod_spec_generic_pod(self):
-        """Test spec for a generic pod."""
-        spec = mock_tools.get_pod_spec("test-pod", "default")
+    def test_get_pod_spec_captured_pod(self):
+        """Test spec for another pod in the capture."""
+        spec = mock_tools.get_pod_spec("test-pod-123", "default")
         assert "containers" in spec
         assert "restart_policy" in spec
         assert "node_name" in spec
-        
+
         containers = spec["containers"]
         assert len(containers) == 1
-        assert containers[0]["name"] == "test"
         assert containers[0]["image"] == "nginx:latest"
+
+    def test_get_pod_spec_pod_not_in_state(self):
+        """A pod the capture does not contain raises, as the real tool does on a 404."""
+        with pytest.raises(k8s_tools.K8sApiError, match="not found"):
+            mock_tools.get_pod_spec("test-pod", "default")
 
 
 class TestMockPodLogs:
@@ -223,18 +227,35 @@ class TestMockPodLogs:
         assert "JAVA_TOOL_OPTIONS" in logs
         assert "opentelemetry-javaagent.jar" in logs
         
-    def test_get_logs_generic_pod(self):
-        """Test logs for a generic pod."""
-        logs = mock_tools.get_logs_for_pod_and_container("test-pod", "default")
+    def test_get_logs_captured_pod(self):
+        """Test logs for another pod in the capture."""
+        logs = mock_tools.get_logs_for_pod_and_container("test-pod-123", "default")
         assert logs is not None
-        assert "Starting test container" in logs
-        assert "Ready to serve traffic" in logs
-        
+        assert "container started successfully" in logs
+
     def test_get_logs_with_container_name(self):
-        """Test logs with specific container name."""
-        logs = mock_tools.get_logs_for_pod_and_container("test-pod", "default", "mycontainer")
+        """Test logs for a named container of a captured pod."""
+        logs = mock_tools.get_logs_for_pod_and_container(
+            "test-pod-123", "default", "container-2")
         assert logs is not None
-        assert "Starting mycontainer container" in logs
+        assert "container-2" in logs
+
+    def test_get_logs_pod_not_in_state(self):
+        """A pod the capture does not contain has no logs to read."""
+        with pytest.raises(k8s_tools.K8sApiError):
+            mock_tools.get_logs_for_pod_and_container("test-pod", "default")
+
+    def test_get_previous_logs_for_crashlooping_pod(self):
+        """The crash-looping pod's previous instance is where the diagnosis is.
+
+        Its current instance shows only JVM startup; the OOM that actually killed
+        it is in the previous instance's logs.
+        """
+        current = mock_tools.get_logs_for_pod_and_container("ad-647b4947cc-s5mpm", "default")
+        previous = mock_tools.get_logs_for_pod_and_container(
+            "ad-647b4947cc-s5mpm", "default", previous=True)
+        assert previous is not None and previous != current
+        assert "OutOfMemoryError" in previous
 
 
 class TestMockDeployments:

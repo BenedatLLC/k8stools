@@ -119,6 +119,22 @@ class TestEdgeCases:
         apps([_rs("ad-1", revision=None)])
         assert k8s_tools.get_replicaset_summaries()[0].revision is None
 
+    def test_revisionless_replica_sets_sort_first(self, apps):
+        # Documented ordering: a replica set with no revision has no place in the
+        # deployment's history, so it is listed ahead of it rather than appended.
+        apps([_rs("ad-2", revision=2), _rs("solo", owner=None, revision=None),
+              _rs("ad-1", revision=1)])
+        out = k8s_tools.get_replicaset_summaries()
+        assert [r.name for r in out] == ["solo", "ad-1", "ad-2"]
+
+    def test_the_revisionless_case_is_invisible_to_a_filtered_call(self, apps):
+        # Only the Deployment controller writes the revision annotation, so no
+        # revision implies no owning deployment - and the deployment filter, which
+        # is the common call, never sees these at all.
+        apps([_rs("ad-1", revision=1), _rs("solo", owner=None, revision=None)])
+        out = k8s_tools.get_replicaset_summaries(deployment="ad")
+        assert [r.name for r in out] == ["ad-1"]
+
     def test_malformed_revision_does_not_lose_the_replica_set(self, apps):
         # A bad annotation should degrade the field, not drop the history entry.
         apps([_rs("ad-1", bad_revision=True)])

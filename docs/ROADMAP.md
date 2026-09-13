@@ -4,7 +4,7 @@ This tracks planned and deferred work. It has three parts:
 
 1. What shipped in **1.1.0** (for context).
 2. **Deferred feature requests**, kept in the original requester's priority order.
-3. **Paused internal work** (mock state capture).
+3. **Completed internal work** (mock state capture).
 
 The guiding principles from the feature-request intake still hold: **read-only
 tools only**, strongly typed with Pydantic return models and full docstrings,
@@ -88,13 +88,15 @@ vendor CRDs remain the caller's problem.
 
 ---
 
-## Paused internal work: mock state capture & replay
+## Completed internal work: mock state capture & replay
 
-Design is complete in [`designs/mock-state-capture.md`](../designs/mock-state-capture.md)
-but **implementation has not started** (paused 2026-08-29). It replaces the hardcoded
-single-scenario `mock_tools.py` fixture with a capture-and-replay system:
-`k8s-capture-state` CLI → JSON snapshot → `MockState` loader → MCP `--state-file`.
+**Implemented 2026-09-13**, to the design in
+[`designs/mock-state-capture.md`](../designs/mock-state-capture.md). The hardcoded
+single-scenario `mock_tools.py` fixture is replaced by a capture-and-replay system:
+`k8s-capture-state` CLI → JSON snapshot → `MockState` loader → MCP `--state-file`,
+covering all 19 tools including the 1.1.0 (ConfigMaps, CronJobs/Jobs, PVCs,
+StatefulSets, cluster-wide events) and 1.2.0 (ReplicaSets) batches.
 
-When resumed, the JSON capture format and `MockState` must be extended to cover the
-resources added in 1.1.0 (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, cluster-wide
-events) in addition to the original nine tools. See the design doc's status note.
+The old hardcoded data was migrated to `src/k8stools/fixtures/otel-demo.json`, which
+is now what `--mock` serves. See the design doc's status section for the deviations
+from the written design and for the behavior changes in `mock_tools`.

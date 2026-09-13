@@ -1,7 +1,7 @@
 
 [project]
 name = "k8stools"
-version = "1.2.0"
+version = "2.0.0"
 description = "Tools and an MCP server for building Kubernetes agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,7 @@ urls = { "Homepage" = "https://github.com/BenedatLLC/k8stools" }
 [project.scripts]
 k8s-mcp-server = "k8stools.mcp_server:main"
 k8s-mcp-client = "k8stools.mcp_client:main"
+k8s-capture-state = "k8stools.capture:main"
 
 [dependency-groups]
 dev = [
