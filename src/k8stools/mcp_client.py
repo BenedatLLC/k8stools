@@ -16,11 +16,9 @@ from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.types import ListToolsResult, Tool
 
-from rich import print
 from rich.console import Console
 from rich.markdown import Markdown
 
-print(f"sys.argv[0] = {sys.argv[0]}") # XXX
 if sys.argv[0].endswith('ks8-mcp-client'):
     # this was run as an installed script
     COMMAND = join(dirname(abspath(sys.argv[0])), 'k8s-mcp-server')
