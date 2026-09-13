@@ -7,7 +7,6 @@ Based on sample client from the MCP python SDK.
 import argparse
 import asyncio
 import os
-from os.path import dirname, join, abspath, exists
 import sys
 from typing import Any
 
@@ -19,19 +18,20 @@ from mcp.types import ListToolsResult, Tool
 from rich.console import Console
 from rich.markdown import Markdown
 
-if sys.argv[0].endswith('ks8-mcp-client'):
-    # this was run as an installed script
-    COMMAND = join(dirname(abspath(sys.argv[0])), 'k8s-mcp-server')
-    if not exists(COMMAND):
-        raise Exception(f"Did not find server script at {COMMAND}")
-    ENV = {}
-    ARGS = []
-else:
-    COMMAND=sys.executable
-    ENV =  {"PYTHONPATH":'src',}
-    ARGS = ["-m", "k8stools.mcp_server"]
+# Launch the server as a module of the current interpreter. This works for an
+# installed package and an editable checkout alike, and does not depend on where
+# the console scripts were placed - which the previous approach did, by looking
+# for k8s-mcp-server next to argv[0].
+COMMAND = sys.executable
+ARGS = ["-m", "k8stools.mcp_server"]
 
-# Create server parameters for stdio connection
+# StdioServerParameters replaces the child's environment rather than adding to
+# it, so anything the server needs has to be passed explicitly. PYTHONPATH goes
+# through so an uninstalled checkout (the tests run with PYTHONPATH=src) can
+# still import k8stools in the spawned server.
+ENV: dict[str, str] = {}
+if 'PYTHONPATH' in os.environ:
+    ENV['PYTHONPATH'] = os.environ['PYTHONPATH']
 if 'KUBECONFIG' in os.environ:
     ENV['KUBECONFIG'] = os.environ['KUBECONFIG']
 server_params = StdioServerParameters(
