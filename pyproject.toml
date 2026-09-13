@@ -1,7 +1,7 @@
 
 [project]
 name = "k8stools"
-version = "2.0.0"
+version = "2.0.1"
 description = "Tools and an MCP server for building Kubernetes agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,7 +17,9 @@ classifiers = [
 dependencies = [
     "kubernetes>=36.0.3",
     "mcp>=2.1.1",
+    "pydantic>=2.0",
     "pyyaml>=6.0",
+    "rich>=14.0.0",
 ]
 
 urls = { "Homepage" = "https://github.com/BenedatLLC/k8stools" }
@@ -29,11 +31,7 @@ k8s-capture-state = "k8stools.capture:main"
 
 [dependency-groups]
 dev = [
-    "build>=1.2.2.post1",
-    "Pygments>=2.19",
     "pytest>=8.4.1",
-    "rich>=14.0.0",
-    "twine>=6.1.0",
 ]
 
 [build-system]
