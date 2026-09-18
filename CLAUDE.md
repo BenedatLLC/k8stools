@@ -60,7 +60,22 @@ Tools in `k8s_tools.py` follow three patterns:
 2. **API-typed** — Pydantic models that match K8s client types with lesser-used fields omitted (e.g. `get_pod_container_statuses`)
 3. **Raw dict** — `to_dict()` on the K8s client object; return type is `dict[str, Any]` with fields documented in the docstring (e.g. `get_pod_spec`)
 
-Use `datetime.timedelta` for age/duration fields. Use snake_case field names. Include `pod_name`/`namespace` in container-level models for context.
+Use the `Duration` type (`k8s_tools.Duration`) for age/duration fields, not a bare
+`datetime.timedelta`. It is a `timedelta` that normalizes to whole, non-negative
+seconds on validation. Pydantic describes a `timedelta` as
+`{"type": "string", "format": "duration"}` but serializes a microsecond-bearing one
+as `"P2DT5M27.978616S"`; JSON Schema's `duration` format points at RFC 3339
+Appendix A, whose grammar allows neither a decimal point nor a sign. An MCP client
+that validates structured output against the declared schema (ajv does; Python's
+`jsonschema` skips `duration` unless the optional `isoduration` extra is installed)
+therefore rejected the whole call, on every row of every list tool. Since every age
+is `now() - <k8s timestamp>` and Kubernetes timestamps are whole-second, the
+fractional part was never information — just the microseconds of that one `now()`.
+This is the same rule `MockState`'s replay clock already applies, for the same
+reason. `tests/test_duration_format.py` checks each model's serialized output
+against the format its own schema declares.
+
+Use snake_case field names. Include `pod_name`/`namespace` in container-level models for context.
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
 
@@ -162,6 +177,31 @@ keys) and values under keys/env-var names matching
 `key|secret|token|password|credential` **as a whole word** (names split on
 separators and camelCase, so `apiKey` matches and `VALKEY_ADDR` does not),
 replacing them with a visible `[REDACTED]` marker.
+
+Redaction is **span-granular, with two deliberate exceptions.** A matched token
+(AWS key, JWT) is replaced where it sits, leaving the surrounding text readable.
+The exceptions:
+
+- **PEM blocks go whole.** The pattern matches only the `-----BEGIN ... PRIVATE
+  KEY-----` header, and the secret is the base64 body *after* it — substituting
+  just the matched span would black out the header and publish the key. Hence the
+  `_TOKEN_SHAPE_RES` / `_CONTAINMENT_SHAPE_RES` split: never move a pattern into
+  the former unless its match is the entire secret.
+- **A string that parses as a JSON object/array is recursed into** and
+  re-serialized, rather than treated as one opaque value. Config-as-JSON under a
+  single ConfigMap key is common, and opacity failed in both directions: one
+  incidental token match blacked out an entire non-secret config file, while a real
+  `{"password": ...}` inside a blob was invisible to the name rule and passed
+  through verbatim. Nothing is re-serialized when nothing matched, so clean values
+  keep their exact formatting.
+
+  The `key` exemption below applies *inside* these blobs too. Lifting it there
+  looked obviously right — those names are the author's, not Kubernetes schema —
+  and re-measuring said otherwise: on the 38-pod cluster it added 12 redactions,
+  every one `tags[].key: "instance"` in a Grafana dashboard ConfigMap, and no
+  secrets. Structural `key` fields dominate inside config documents just as they do
+  in the API. With the exemption kept, this whole change is redaction-neutral on
+  that cluster: same 6 redactions, same paths, same values as before it.
 
 A field named *exactly* `key` is exempt — in the Kubernetes API that is always
 structural (taint, map entry, label selector, projected-volume item), never a

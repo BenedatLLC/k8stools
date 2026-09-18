@@ -288,10 +288,14 @@ def test_a_containers_name_cannot_redact_its_own_logs(monkeypatch):
     assert pod["previous_logs"]["valkey-cart"] == log
 
     # A secret-shaped value inside a log is still caught, as on the live server.
+    # Only the token's own span goes: a log line is mostly diagnostics, and the
+    # surrounding text is the part an agent is reading the log for.
     monkeypatch.setattr(k8s_tools, "get_logs_for_pod_and_container",
                         lambda *a, **kw: f"token={_FakeCluster.JWT}")
     state = capture_state(redact=True)
-    assert state["pods"][0]["logs"]["valkey-cart"] == "[REDACTED]"
+    captured_log = state["pods"][0]["logs"]["valkey-cart"]
+    assert _FakeCluster.JWT not in captured_log
+    assert captured_log == "token=[REDACTED]"
 
 
 def test_pod_labels_are_not_subject_to_the_key_name_heuristic(monkeypatch):

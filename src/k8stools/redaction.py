@@ -29,7 +29,9 @@ Two independent signals trigger a redaction:
 
 1. **Value shape** — the string looks like a credential regardless of where it
    sits: AWS access keys (``AKIA...``), bearer/JWT tokens (``eyJ...``), or PEM
-   private-key blocks.
+   private-key blocks. A self-contained token is replaced where it sits, leaving
+   the rest of the surrounding text readable; a PEM header stands for a secret
+   that continues past the match, so that value goes in full.
 2. **Key / field name** — the enclosing map key, model field, or env-var name
    contains one of ``key``, ``secret``, ``token``, ``password``, ``passwd``,
    ``credential``, ``cred`` **as a whole word**. Names are split on separators and
@@ -48,6 +50,14 @@ Two independent signals trigger a redaction:
    nothing. The exemption does not apply to env-var names, where a variable a user
    named ``KEY`` plausibly does hold one.
 
+A string value that is itself a JSON object or array — config-as-JSON under a
+single ConfigMap key is a common pattern — is parsed and redacted entry by entry
+rather than treated as one opaque blob, then re-serialized (which normalizes its
+whitespace). Both rules apply inside, so an incidental token match no longer
+blacks out a whole config file and a ``{"password": ...}`` buried in one no longer
+escapes the name rule. Inside such a blob the ``key`` exemption is lifted: those
+names are the author's, not Kubernetes schema.
+
 Expect occasional false positives on high-entropy-but-non-secret values. The
 visible marker and the opt-out make that tolerable. This is a defense-in-depth
 aid, not a guarantee — callers that need strong guarantees should still scrub on
@@ -60,10 +70,11 @@ redaction layer) get raw, un-redacted return values and can call
 
 import copy
 import functools
+import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -127,17 +138,91 @@ def _field_name_is_sensitive(name: str) -> bool:
         return False
     return _name_is_sensitive(name)
 
-#: Value-shape patterns — a string value matching any of these is redacted
-#: regardless of the key it lives under.
-_VALUE_SHAPE_RES = (
+#: Value-shape patterns whose match *is* the whole secret. Because the match is
+#: self-contained, only the matched span needs to go — the surrounding text is
+#: ordinary config and stays readable.
+_TOKEN_SHAPE_RES = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                              # AWS access key id
     re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),  # JWT / bearer token
+)
+
+#: Value-shape patterns that merely *mark* a secret whose sensitive part lies
+#: outside the match. A PEM header is the whole of the match but none of the
+#: secret - the key material is the base64 body that follows - so a value matching
+#: one of these is replaced in full. Substituting only the matched span here would
+#: black out the `-----BEGIN RSA PRIVATE KEY-----` line and publish the key.
+_CONTAINMENT_SHAPE_RES = (
     re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"),       # PEM private key block
 )
 
 
 def _value_is_secret_shaped(s: str) -> bool:
-    return any(rx.search(s) for rx in _VALUE_SHAPE_RES)
+    """Whether ``s`` matches any value-shape pattern, anywhere in the string."""
+    return any(
+        rx.search(s) for rx in (*_TOKEN_SHAPE_RES, *_CONTAINMENT_SHAPE_RES)
+    )
+
+
+def _redact_json_string(s: str) -> Optional[tuple[str, int]]:
+    """Redact inside a string that is itself a JSON document.
+
+    Storing config-as-JSON under a single ConfigMap key is a common pattern, and
+    it defeats a redactor that treats every string as one opaque value in *both*
+    directions: one incidental token match blacks out an entire config file, while
+    a real ``{"password": "..."}`` inside the blob is invisible to the key-name
+    rule and passes through verbatim. Parsing, recursing, and re-serializing fixes
+    both — a match redacts its own entry and nothing else.
+
+    Returns ``None`` when ``s`` is not a JSON object/array, or when recursion found
+    nothing, so the caller falls through and the original text is left byte-for-byte
+    intact. Re-serialization otherwise normalizes whitespace, which is why it only
+    happens when there is actually something to hide.
+    """
+    stripped = s.strip()
+    # Cheap gate: only objects and arrays are worth parsing. It also keeps bare
+    # scalars ("5", "true") from round-tripping through json.dumps.
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(parsed, (dict, list)):
+        return None
+    # The `key` exemption applies in here too. Lifting it looked right - these are
+    # the author's field names, not Kubernetes schema - but measured against a real
+    # cluster it added 12 redactions, all of them `tags[].key: "instance"` in a
+    # Grafana dashboard ConfigMap, and no secrets. Structural `key` fields dominate
+    # inside config documents exactly as they do in the API. A credential-shaped
+    # value under a `key` field is still caught by the value-shape rules.
+    redacted, count = _redact(parsed)
+    if not count:
+        return None
+    return json.dumps(redacted, indent=2 if "\n" in s else None), count
+
+
+def _redact_string(value: str, key_is_sensitive: bool) -> tuple[str, int]:
+    """Redact a single string value. See :func:`_redact` for the parameters."""
+    if value == REDACTED:
+        return value, 0
+    if key_is_sensitive:
+        return REDACTED, 1
+
+    # Before treating the string as opaque text, see whether it is structured. A
+    # PEM block nested inside a JSON blob is handled by this recursion too: it
+    # arrives back here as a leaf and hits the containment rule below.
+    nested = _redact_json_string(value)
+    if nested is not None:
+        return nested
+
+    if any(rx.search(value) for rx in _CONTAINMENT_SHAPE_RES):
+        return REDACTED, 1
+
+    count = 0
+    for rx in _TOKEN_SHAPE_RES:
+        value, n = rx.subn(REDACTED, value)
+        count += n
+    return value, count
 
 
 def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
@@ -147,11 +232,7 @@ def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
     strings are immutable so the parent assigns the replacement.
     """
     if isinstance(value, str):
-        if value == REDACTED:
-            return value, 0
-        if key_is_sensitive or _value_is_secret_shaped(value):
-            return REDACTED, 1
-        return value, 0
+        return _redact_string(value, key_is_sensitive)
 
     if isinstance(value, BaseModel):
         count = 0

@@ -246,3 +246,125 @@ def test_value_shape_still_wins_regardless_of_name():
     assert out["key"] == REDACTED
     assert out["hockey"] == REDACTED
     assert count == 2
+
+
+# --- granularity: a match should not black out unrelated text ----------------
+#
+# Reported against 2.0.2: a ConfigMap holding config-as-JSON under one key came
+# back as `{"warm-runtimes.json": "[REDACTED]"}` because one substring inside the
+# blob matched a value-shape pattern. The whole file - warm-pool sizing, nothing
+# secret - became unreadable. The same opacity cut the other way too: secrets
+# named inside such a blob were invisible to the key-name rule entirely.
+
+_JWT = "eyJhbGciOiJIUzI1Ni.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w"
+_PEM = ("-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEAsecretkeymaterial123456\n"
+        "-----END RSA PRIVATE KEY-----")
+
+
+def test_a_token_inside_a_plain_string_redacts_only_its_own_span():
+    out, count = redact_object({"note": f"use {_JWT} to authenticate"})
+    assert out["note"] == f"use {REDACTED} to authenticate"
+    assert count == 1
+
+
+def test_a_pem_block_is_still_redacted_in_full():
+    """The PEM pattern matches only the header; the key material is what follows.
+    Substituting just the matched span would black out the BEGIN line and publish
+    the key, so a value containing a PEM header goes in its entirety."""
+    out, count = redact_object({"blob": f"leading text\n{_PEM}\ntrailing text"})
+    assert out["blob"] == REDACTED
+    assert "MIIEowIBAAKCAQEAsecretkeymaterial123456" not in str(out)
+    assert count == 1
+
+
+def test_json_configmap_value_keeps_everything_but_the_match():
+    """The reported case: one incidental token match must not hide the config."""
+    import json
+    blob = json.dumps({"target_count": 5, "runtimes": ["v1", "v2"],
+                       "bootstrap": _JWT}, indent=2)
+    out, count = redact_object({
+        "name": "warm-runtimes-config", "namespace": "openhands-cloud-c3",
+        "data": {"warm-runtimes.json": blob}, "binary_data_keys": []})
+    redacted = json.loads(out["data"]["warm-runtimes.json"])
+    assert redacted["target_count"] == 5          # the number they needed
+    assert redacted["runtimes"] == ["v1", "v2"]
+    assert redacted["bootstrap"] == REDACTED
+    assert count == 1
+
+
+def test_secrets_named_inside_a_json_blob_are_found():
+    """The under-redaction half: before this, the key-name rule could not see
+    into a JSON string, so these passed through verbatim."""
+    import json
+    blob = json.dumps({"db": {"password": "hunter2", "api_token": "abc"},
+                       "host": "db.internal"})
+    out, count = redact_object({"data": {"app.json": blob}})
+    redacted = json.loads(out["data"]["app.json"])
+    assert redacted["db"]["password"] == REDACTED
+    assert redacted["db"]["api_token"] == REDACTED
+    assert redacted["host"] == "db.internal"
+    assert count == 2
+
+
+def test_a_pem_nested_in_a_json_blob_goes_whole_but_takes_nothing_else():
+    import json
+    blob = json.dumps({"cert": "public-cert-data", "priv": _PEM, "port": 443})
+    out, count = redact_object({"data": {"tls.json": blob}})
+    redacted = json.loads(out["data"]["tls.json"])
+    assert redacted["priv"] == REDACTED
+    assert redacted["cert"] == "public-cert-data"
+    assert redacted["port"] == 443
+    assert count == 1
+
+
+def test_the_key_exemption_holds_inside_a_json_blob_too():
+    """Lifting the exemption in here looked right - these are the author's field
+    names, not Kubernetes schema - but measured against a real 38-pod cluster it
+    added 12 redactions, every one of them `tags[].key: "instance"` in a Grafana
+    dashboard ConfigMap, and not one secret. Structural `key` fields dominate
+    inside config documents just as they do in the API."""
+    import json
+    blob = json.dumps({"targets": [{"tags": [{"key": "instance", "value": "db-1"}]}]})
+    out, count = redact_object({"data": {"dash.json": blob}})
+    assert out["data"]["dash.json"] == blob   # untouched, not even re-serialized
+    assert count == 0
+
+
+def test_a_credential_shaped_value_under_key_is_still_caught_inside_a_blob():
+    """What keeps the exemption affordable: the value-shape rules do not care
+    what the field is called."""
+    import json
+    blob = json.dumps({"key": "AKIAIOSFODNN7EXAMPLE"})
+    out, count = redact_object({"data": {"cfg.json": blob}})
+    assert json.loads(out["data"]["cfg.json"])["key"] == REDACTED
+    assert count == 1
+
+
+def test_a_clean_json_value_is_left_byte_for_byte_alone():
+    """No match means no re-serialization, so formatting is never churned."""
+    original = '{\n    "count": 5,\n    "name": "pool"\n}'
+    out, count = redact_object({"data": {"cfg.json": original}})
+    assert out["data"]["cfg.json"] == original
+    assert count == 0
+
+
+@pytest.mark.parametrize("value", [
+    "not json at all", "{broken json", "", "   ",
+    "5", "true", "null", '"just a string"',
+])
+def test_non_container_json_values_are_untouched(value):
+    """Bare scalars must not round-trip through the JSON path."""
+    out, count = redact_object({"data": {"k": value}})
+    assert out["data"]["k"] == value
+    assert count == 0
+
+
+def test_a_json_array_blob_is_also_recursed():
+    import json
+    blob = json.dumps([{"name": "a", "token": "s3kr1t"}, {"name": "b", "port": 80}])
+    out, count = redact_object({"data": {"list.json": blob}})
+    redacted = json.loads(out["data"]["list.json"])
+    assert redacted[0]["token"] == REDACTED
+    assert redacted[1]["port"] == 80
+    assert count == 1

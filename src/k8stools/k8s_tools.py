@@ -16,9 +16,9 @@ import sys
 import os
 import logging
 import datetime
-from typing import Optional, Union, Literal, Any
+from typing import Optional, Union, Literal, Any, Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AfterValidator
 import yaml
 
 from kubernetes import client, config
@@ -85,12 +85,47 @@ def _get_batch_v1_api_client() -> client.BatchV1Api:
             raise K8sConfigError(f"Unexpected error: {e}") from e
 
 
+def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
+    """Truncate a duration to whole seconds, flooring at zero.
+
+    Both adjustments keep the value inside the grammar our own JSON Schema
+    declares for it (see :data:`Duration`).
+
+    Truncation: every age here is ``now() - <k8s timestamp>``, and Kubernetes
+    timestamps are whole-second, so the sub-second part of an age is nothing but
+    the microseconds of the ``now()`` that happened to compute it - noise, and
+    identical across every row of a single response. This matches the rule
+    ``MockState``'s replay clock already follows for the same reason.
+
+    Flooring: a cluster whose clock is ahead of ours yields a small negative age,
+    which pydantic renders as ``-PT5S``. A duration has no sign in this grammar,
+    so clamp it; at this granularity "just created" is the honest reading anyway.
+    """
+    return datetime.timedelta(seconds=max(int(td.total_seconds()), 0))
+
+
+#: A ``timedelta`` field on a response model.
+#:
+#: Pydantic's default JSON Schema for ``timedelta`` is
+#: ``{"type": "string", "format": "duration"}``, but its default *serialization*
+#: emits fractional seconds (``"P2DT5M27.978616S"``) whenever the value carries
+#: microseconds. JSON Schema's ``duration`` format references RFC 3339 Appendix A,
+#: whose grammar admits only integer components - so pydantic's own schema and its
+#: own serializer disagree, and an MCP client that validates structured output
+#: against the declared schema (ajv does; Python's ``jsonschema`` skips ``duration``
+#: unless the optional ``isoduration`` extra is installed) rejects the tool call
+#: outright, on every row, before the caller sees any data.
+#:
+#: Normalizing the value rather than the schema keeps ``format: "duration"``
+#: accurate and keeps direct Python callers' fields real ``timedelta`` objects.
+Duration = Annotated[datetime.timedelta, AfterValidator(_to_whole_seconds)]
+
 
 class NamespaceSummary(BaseModel):
     """Summary information about a namespace, like returned by `kubectl get namespace`"""
     name: str
     status: str
-    age: datetime.timedelta
+    age: Duration
 
 
 def get_namespaces() -> list[NamespaceSummary]:
@@ -142,7 +177,7 @@ class NodeSummary(BaseModel):
     name: str
     status: str
     roles: list[str]
-    age: datetime.timedelta
+    age: Duration
     version: str
     internal_ip: Optional[str] = None
     external_ip: Optional[str] = None
@@ -347,8 +382,8 @@ class PodSummary(BaseModel):
     total_containers: int
     ready_containers: int
     restarts: int
-    last_restart: Optional[datetime.timedelta]
-    age: datetime.timedelta
+    last_restart: Optional[Duration]
+    age: Duration
     ip: Optional[str] = None
     node: Optional[str] = None
 
@@ -501,7 +536,7 @@ def _format_timedelta(td: Optional[datetime.timedelta]) -> str:
 
 class EventSummary(BaseModel):
     """This is the representation of a Kubernetes Event"""
-    last_seen: Optional[datetime.timedelta]  # Time since event occurred
+    last_seen: Optional[Duration]  # Time since event occurred
     type: str
     reason: str
     object: str
@@ -942,7 +977,7 @@ class DeploymentSummary(BaseModel):
     ready_replicas: int
     up_to_date_relicas: int
     available_replicas: int
-    age: datetime.timedelta
+    age: Duration
 
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]:
     """
@@ -1047,7 +1082,7 @@ class ReplicaSetSummary(BaseModel):
     current_replicas: int
     ready_replicas: int
     images: list[str]
-    age: datetime.timedelta
+    age: Duration
 
 
 def get_replicaset_summaries(namespace: Optional[str] = None,
@@ -1227,7 +1262,7 @@ class ServiceSummary(BaseModel):
     cluster_ip: Optional[str] = None
     external_ip: Optional[str] = None
     ports: list[PortInfo]
-    age: datetime.timedelta
+    age: Duration
     selector: dict[str, str] = Field(default_factory=dict)
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
@@ -1378,7 +1413,7 @@ class ConfigMapSummary(BaseModel):
     namespace: str
     key_count: int
     data_size: int  # total bytes across all values (data + binary_data)
-    age: datetime.timedelta
+    age: Duration
 
 
 def _configmap_key_count_and_size(config_map) -> tuple[int, int]:
@@ -1548,7 +1583,7 @@ class StatefulSetSummary(BaseModel):
     current_replicas: int
     update_strategy: str
     service_name: Optional[str] = None
-    age: datetime.timedelta
+    age: Duration
 
 
 def get_statefulset_summaries(namespace: Optional[str] = None) -> list[StatefulSetSummary]:
@@ -1679,9 +1714,9 @@ class CronJobSummary(BaseModel):
     schedule: str
     suspend: bool
     active: int
-    last_schedule_time: Optional[datetime.timedelta] = None
-    last_successful_time: Optional[datetime.timedelta] = None
-    age: datetime.timedelta
+    last_schedule_time: Optional[Duration] = None
+    last_successful_time: Optional[Duration] = None
+    age: Duration
     containers: list[ContainerTemplateSummary] = Field(default_factory=list)
 
 
@@ -1791,10 +1826,10 @@ class JobSummary(BaseModel):
     active: int
     succeeded: int
     failed: int
-    start_time: Optional[datetime.timedelta] = None
-    completion_time: Optional[datetime.timedelta] = None
+    start_time: Optional[Duration] = None
+    completion_time: Optional[Duration] = None
     conditions: list[str] = Field(default_factory=list)
-    age: datetime.timedelta
+    age: Duration
     containers: list[ContainerTemplateSummary] = Field(default_factory=list)
 
 
@@ -2041,7 +2076,7 @@ class PVCSummary(BaseModel):
     access_modes: list[str] = Field(default_factory=list)
     storage_class: Optional[str] = None
     mounted_by: list[str] = Field(default_factory=list)
-    age: datetime.timedelta
+    age: Duration
 
 
 def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:

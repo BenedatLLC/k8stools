@@ -76,9 +76,18 @@ class CaptureFormatError(Exception):
 # ---------------------------------------------------------------------------
 
 def _annotation_contains(annotation: Any, target: type) -> bool:
-    """True if ``target`` appears anywhere in ``annotation`` (unwrapping Optional/Union)."""
+    """True if ``target`` appears anywhere in ``annotation``.
+
+    Unwraps ``Optional``/``Union`` and ``Annotated``. The latter matters because
+    ``k8s_tools.Duration`` is an annotated ``timedelta``: pydantic strips the
+    metadata from a bare field's ``annotation`` but keeps it inside an
+    ``Optional[...]``, so without this an optional duration would silently encode
+    under its plain name instead of ``<field>_seconds`` and fail to round-trip.
+    """
     if annotation is target:
         return True
+    if hasattr(annotation, "__metadata__"):  # Annotated[X, ...] -> X
+        return _annotation_contains(typing.get_args(annotation)[0], target)
     origin = typing.get_origin(annotation)
     if origin is Union or origin is types.UnionType:
         return any(_annotation_contains(arg, target) for arg in typing.get_args(annotation))
