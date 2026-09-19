@@ -64,7 +64,7 @@ These are the tools we define:
 * `get_pod_container_statuses` - return the status for each of the container in a pod
 * `get_pod_events` - return the events for a pod
 * `get_pod_spec` - retrieves the spec for a given pod
-* `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`)
+* `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`). See [Previous-instance log semantics](#previous-instance-log-semantics) for when `previous=True` returns the same text as `previous=False` — it is Kubernetes behavior, not a bug.
 * `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
 * `get_replicaset_summaries` - get a deployment's replica sets with their revision numbers and images. A deployment's replica sets are its change history: use this to see when a workload last changed and what the change was.
 * `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
@@ -347,6 +347,26 @@ which is exactly the cluster worth capturing. `--no-previous-logs` skips them. T
 summary reports how many could not be read (the previous instance may have been
 garbage-collected), because a crash-loop capture that lost them looks identical to
 one that never had any.
+
+### Previous-instance log semantics
+
+`previous=True` asks the kubelet for the container's last *terminated* instance.
+Three of its behaviors read as bugs and are not, and all three show up in captures
+as well as in live queries:
+
+- **In CrashLoopBackOff, both calls return the same text.** There is no running
+  instance during the backoff, so the kubelet serves the most recently terminated
+  one for `previous=False` too. Check `get_pod_container_statuses` before
+  concluding the flag was ignored.
+- **A restart between two calls shifts the window.** The instance that was current
+  becomes the previous one, so a container crash-looping every few seconds can
+  return byte-identical output for both. Compare the log timestamps, not the flag.
+- **A reclaimed log file returns 200, not an error**, with the body
+  `unable to retrieve container logs for <container-id>`. It is a successful call
+  whose content is an error message.
+
+Only the single most recent terminated instance is retained; there is no way to
+reach further back than one.
 
 ### Replay clock
 

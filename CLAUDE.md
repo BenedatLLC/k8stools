@@ -24,6 +24,7 @@ tests/
   test_capture.py            - Capture serialization round-trip and capture-time redaction
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
+  test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
 ```
@@ -78,6 +79,26 @@ against the format its own schema declares.
 Use snake_case field names. Include `pod_name`/`namespace` in container-level models for context.
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
+
+The log readers decode the response themselves and pass `_preload_content=False`.
+The log endpoint is the only call whose body is a bare scalar rather than a model,
+and the generated client declares its response type as `str`, then produces it with
+`str(data)`. Since kubernetes 36 the body reaching that call is `bytes` (older
+clients decoded it in `rest.py`), so it returned `repr(bytes)` — one `b'...'` line
+with newlines as the two characters `\n`, useless as logs and silently breaking any
+caller that greps. Asking for the raw response and decoding in
+`_decode_log_response` bypasses that deserialization; non-2xx responses still raise
+`ApiException` either way, so error handling is unchanged. Decoding is
+`errors="replace"`, not strict: container logs are arbitrary bytes and `limit_bytes`
+truncates at a byte offset that can split a character. Don't set
+`_preload_content=True` here again — `tests/test_log_decoding.py` pins it off, and a
+test fake that returns `str` hides the whole failure, which is how it shipped.
+
+`previous=True` has three Kubernetes behaviors that read as bugs (identical output
+during CrashLoopBackOff, a restart shifting the window between two calls, and a
+reclaimed log file answering 200 with `unable to retrieve container logs`). They are
+documented in the tool's docstring — which is the MCP tool description — and in
+README's "Previous-instance log semantics". Don't "fix" them in code.
 
 `print_*` companion functions exist for each `get_*` summary/spec function — for human-readable debugging output only. The log readers (`get_logs_for_pod_and_container`, `get_logs_for_job`, `get_logs_for_cronjob`) have no `print_*` companion since they already return a printable string.
 
@@ -202,6 +223,10 @@ The exceptions:
   secrets. Structural `key` fields dominate inside config documents just as they do
   in the API. With the exemption kept, this whole change is redaction-neutral on
   that cluster: same 6 redactions, same paths, same values as before it.
+
+`bytes` values are decoded, redacted, and re-encoded rather than falling through
+to the scalar branch — no tool returns bytes now that the log readers decode at the
+API boundary, but that branch is what let container logs nearly escape this pass.
 
 A field named *exactly* `key` is exempt — in the Kubernetes API that is always
 structural (taint, map entry, label selector, projected-volume item), never a

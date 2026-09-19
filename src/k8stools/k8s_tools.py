@@ -899,6 +899,35 @@ def print_pod_spec(pod_name: str, namespace: str = "default") -> None:
         print(f"Error printing pod spec: {e}")
 
 
+def _decode_log_response(resp: Any) -> str:
+    """Decode what ``read_namespaced_pod_log`` hands back into usable text.
+
+    The log endpoint serves ``text/plain``, but the generated client declares the
+    response type as ``str`` and runs the body through
+    ``ApiClient.__deserialize_primitive``, which is ``str(data)``. Since
+    kubernetes 36 the body arriving there is ``bytes`` (older clients decoded it
+    in ``rest.py``), so that call yields ``repr(bytes)`` - one ``b'...'`` line
+    with every newline as the two characters ``\\n``. That is useless as logs and
+    silently breaks anything a caller greps for. Requesting the raw response and
+    decoding here bypasses that deserialization entirely; status handling is
+    unaffected, since the REST client raises ``ApiException`` for non-2xx
+    responses whether or not the content was preloaded.
+
+    ``errors="replace"`` rather than strict: container logs are arbitrary bytes,
+    and ``limit_bytes`` truncates at a byte offset that can land inside a
+    multi-byte character, so a ``UnicodeDecodeError`` here would fail a whole
+    investigation over one bad byte.
+    """
+    # The raw urllib3 response carries the body on `.data`; a preloaded response
+    # is already a str, and is passed through rather than decoded twice.
+    data = None if resp is None else getattr(resp, "data", resp)
+    if data is None:
+        return ''
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data if isinstance(data, str) else str(data)
+
+
 def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
                                     container_name:Optional[str]=None,
                                     tail:Optional[int]=None,
@@ -925,8 +954,36 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
                               where the current instance's logs are empty or
                               post-restart. Fails if there is no previous instance.
 
+                              Three Kubernetes behaviors make `previous=True`
+                              look as though it were ignored or broken; none is a
+                              fault in this tool, and all are worth knowing before
+                              drawing a conclusion from the output:
+
+                              * While a container sits in CrashLoopBackOff there
+                                is no running instance, so the kubelet serves the
+                                most recently *terminated* one for `previous=False`
+                                as well - both calls then return the same text.
+                                Check the container's state with
+                                `get_pod_container_statuses` before concluding the
+                                flag had no effect.
+                              * A restart between two calls shifts the window: the
+                                instance that was current becomes the previous one,
+                                so a container crash-looping every few seconds can
+                                legitimately return identical bytes for both.
+                                Compare the log timestamps, not just the flag.
+                              * Once the previous instance's log file has been
+                                reclaimed, the API answers 200 with the text
+                                `unable to retrieve container logs for <id>` -
+                                a successful call whose body is an error message,
+                                not a raised error.
+
+                              Only the single most recent terminated instance is
+                              retained by the kubelet; there is no way to reach
+                              further back than one.
+
     Returns:
-        str, optional: Log content if any found for this pod/container, or None otherwise
+        str: The log content as text, with real newlines. An empty string if the
+             container has produced no log output (never None).
 
     Raises
     ------
@@ -947,7 +1004,7 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
             namespace=namespace,
             container=container_name,  # Pass container_name if specified
             follow=False,              # Set to False to get all current logs
-            _preload_content=True,     # Important: This loads all content into memory
+            _preload_content=False,    # Raw response; see _decode_log_response()
             timestamps=True,           # Optional: Include timestamps
             tail_lines=tail if tail is not None else 1000,  # Default: last 1000 lines
             limit_bytes=1024*1024,     # Limit to 1MB to avoid memory issues
@@ -958,11 +1015,9 @@ def get_logs_for_pod_and_container(pod_name:str, namespace:str = "default",
             log_kwargs["previous"] = True
         resp = K8S.read_namespaced_pod_log(**log_kwargs)
 
-        # The response is a single string containing all logs
-        if resp:
-            return resp
-        else:
-            return ''
+        # A single string containing all logs, with real newlines. An empty log
+        # is '', never None - callers treat the two the same.
+        return _decode_log_response(resp)
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching logs: {e}") from e
     except Exception as e:
@@ -1989,6 +2044,10 @@ def get_logs_for_job(job_name: str, namespace: str = "default",
         If set, only return logs newer than this many seconds.
     previous : bool, default False
         If True, return logs from the previous terminated container instance.
+        See `get_logs_for_pod_and_container` for the cases - CrashLoopBackOff, a
+        restart racing the call, a reclaimed log file - where that legitimately
+        returns the same text as `previous=False`, or a 200 whose body is an
+        error message.
 
     Returns
     -------
@@ -2036,6 +2095,10 @@ def get_logs_for_cronjob(cronjob_name: str, namespace: str = "default",
         If set, only return logs newer than this many seconds.
     previous : bool, default False
         If True, return logs from the previous terminated container instance.
+        See `get_logs_for_pod_and_container` for the cases - CrashLoopBackOff, a
+        restart racing the call, a reclaimed log file - where that legitimately
+        returns the same text as `previous=False`, or a 200 whose body is an
+        error message.
 
     Returns
     -------

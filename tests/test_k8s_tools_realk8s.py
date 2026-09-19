@@ -155,8 +155,20 @@ def test_retrieve_logs_for_pod_and_container():
     
     pod_name = running_pod.metadata.name
     try:
-        logs = k8s_tools.get_logs_for_pod_and_container(pod_name, "default")
+        logs = k8s_tools.get_logs_for_pod_and_container(pod_name, "default", tail=5)
         assert isinstance(logs, str)
+        if logs:
+            # Real text, not `repr(bytes)` - the failure mode of issue #6, which only
+            # a real client reproduces (a fake returning str hides it entirely).
+            assert not logs.startswith("b'")
+            assert "\\n" not in logs
+            assert logs.count("\n") <= 5
+            # Every line is timestamped, so a decoded log always has a real newline.
+            assert logs.endswith("\n")
+        # `previous` is not asserted to differ from the above: while a container is in
+        # CrashLoopBackOff the kubelet serves the same terminated instance for both,
+        # and a reclaimed log file comes back 200 with "unable to retrieve container
+        # logs". Both are correct, so the only stable assertion is on the format.
     except k8s_tools.K8sApiError as e:
         # If we still get an error (e.g., no logs available yet), that's acceptable for this test
         # We just want to make sure the function doesn't crash unexpectedly

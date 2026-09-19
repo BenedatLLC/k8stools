@@ -135,8 +135,10 @@ class MockK8S:
         )
         return SimpleNamespace(items=[event1, event2])
 
-    def read_namespaced_pod_log(self, name, namespace, container=None, follow=False, _preload_content=True, timestamps=True, tail_lines=None, limit_bytes=None):
-        # Return a sample log string for testing
+    def read_namespaced_pod_log(self, name, namespace, container=None, follow=False, _preload_content=False, timestamps=True, tail_lines=None, limit_bytes=None):
+        # Returns an already-decoded str, unlike the bytes-bearing response the real
+        # client hands back; this is the deliberate counterpart to MockCoreV1 in
+        # test_new_tools.py, and covers the pass-through (no double-decode) branch.
         if name == "pod-1" and namespace == "default" and container == "container-1":
             return "2025-07-12T00:00:00Z container-1 log line 1\n2025-07-12T00:01:00Z container-1 log line 2"
         return ""

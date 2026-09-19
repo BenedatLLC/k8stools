@@ -113,7 +113,10 @@ class MockCoreV1:
 
     def read_namespaced_pod_log(self, name, namespace, container=None, **kwargs):
         self.last_log_kwargs = dict(name=name, namespace=namespace, container=container, **kwargs)
-        return f"logs for {name}"
+        # Faithful to the real client under `_preload_content=False`: the raw
+        # response object, with the body as bytes on `.data`. A fake returning a
+        # plain str is what let the repr-of-bytes bug (issue #6) reach a release.
+        return SimpleNamespace(data=f"logs for {name}".encode())
 
     # --- events ---
     def list_event_for_all_namespaces(self, field_selector=None):

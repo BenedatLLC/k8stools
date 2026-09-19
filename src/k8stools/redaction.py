@@ -234,6 +234,19 @@ def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
     if isinstance(value, str):
         return _redact_string(value, key_is_sensitive)
 
+    if isinstance(value, bytes):
+        # No tool returns bytes today - `get_logs_for_pod_and_container` decodes at
+        # the API boundary - but letting them fall through to the scalar branch at
+        # the end would publish the single largest payload we handle unredacted,
+        # which is how container logs nearly escaped this pass (issue #6). Redact
+        # the decoded text and hand back bytes, so the caller's type is unchanged
+        # and a future bytes-returning tool cannot silently repeat it.
+        text, count = _redact_string(value.decode("utf-8", errors="replace"),
+                                     key_is_sensitive)
+        # Nothing is re-encoded when nothing matched, for the same reason nothing is
+        # re-serialized in `_redact_json_string`: clean values keep their exact bytes.
+        return (text.encode("utf-8"), count) if count else (value, 0)
+
     if isinstance(value, BaseModel):
         count = 0
         for name in type(value).model_fields:
@@ -275,6 +288,7 @@ def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
         return value, count
 
     # int / float / bool / None / datetime / timedelta / etc. — never secret-shaped.
+    # Anything that can carry text is handled above, not here.
     return value, 0
 
 
