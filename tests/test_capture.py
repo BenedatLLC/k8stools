@@ -115,6 +115,31 @@ def test_container_state_datetimes_round_trip_and_discriminate():
     # The 60s between the previous instance starting and being killed survives.
     assert (back.last_state.finished_at - back.last_state.started_at
             == datetime.timedelta(seconds=60))
+    assert back.last_state.ran_for == datetime.timedelta(seconds=60)
+
+
+def test_a_capture_recorded_before_ran_for_existed_still_gets_it():
+    """Old captures have no ran_for; replay derives it rather than dropping it."""
+    captured_at = datetime.datetime.now(UTC)
+    status = k8s_tools.ContainerStatus(
+        pod_name="p", namespace="default", container_name="c", image="img",
+        ready=False, restart_count=3, started=False, stop_signal=None,
+        state=None,
+        last_state=k8s_tools.ContainerStateTerminated(
+            exit_code=137,
+            started_at=captured_at - datetime.timedelta(seconds=360),
+            finished_at=captured_at - datetime.timedelta(seconds=297)),
+        volume_mounts=[], resource_requests={}, resource_limits={},
+        allocated_resources={})
+    record = encode_model(status, captured_at)
+    record["last_state"].pop("ran_for_seconds", None)
+    state = _reload(_state(pods=[{
+        "summary": {"name": "p", "namespace": "default", "total_containers": 1,
+                    "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
+                    "age_seconds": 100.0},
+        "container_statuses": [record]}]))
+    back = state.get_pod_container_statuses("p", "default")[0]
+    assert back.last_state.ran_for == datetime.timedelta(seconds=63)
 
 
 def test_relative_intervals_survive_a_later_reload():

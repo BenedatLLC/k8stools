@@ -18,7 +18,7 @@ import logging
 import datetime
 from typing import Optional, Union, Literal, Any, Annotated
 
-from pydantic import BaseModel, Field, AfterValidator
+from pydantic import BaseModel, Field, AfterValidator, model_validator
 import yaml
 
 from kubernetes import client, config
@@ -626,6 +626,26 @@ class ContainerStateTerminated(BaseModel):
     reason: Optional[str] = None
     message: Optional[str] = None
     started_at: Optional[datetime.datetime] = None
+    #: How long this instance of the container ran: ``finished_at - started_at``.
+    #:
+    #: Derived rather than left to the caller because a crash-looping container
+    #: has three durations that are easy to confuse, and an agent reading two
+    #: absolute timestamps will reach for whichever number it computed last:
+    #: how long an instance ran (this), how long its log covers (often far less
+    #: -- a process can go silent long before it is killed), and how often it
+    #: restarts (this plus the kubelet's back-off, named in the Waiting state's
+    #: message). Only the first is in the API; stating it removes one subtraction
+    #: that answers kept getting wrong.
+    ran_for: Optional[Duration] = None
+
+    @model_validator(mode="after")
+    def _derive_ran_for(self) -> "ContainerStateTerminated":
+        # Computed here rather than at the API boundary so a replayed capture
+        # recorded before this field existed gets it too.
+        if self.ran_for is None and self.started_at and self.finished_at:
+            self.ran_for = datetime.timedelta(seconds=max(
+                int((self.finished_at - self.started_at).total_seconds()), 0))
+        return self
 
 # see kubernetes.client.models.v1_container_state.V1ContainerState
 ContainerState = Union[ContainerStateRunning, ContainerStateWaiting, ContainerStateTerminated]
@@ -718,7 +738,11 @@ def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> lis
         state : Optional[ContainerState]
             Current state of the container.
         last_state : Optional[ContainerState]
-            Last state of the container.
+            Last state of the container. When Terminated, ``ran_for`` is how long
+            that instance ran (``finished_at - started_at``). It is not the
+            restart interval, which adds the back-off named in a Waiting
+            ``state``'s message, and it is not how much time the container's log
+            covers: a process can stop logging long before it is killed.
         volume_mounts : list[VolumeMountStatus]
             Status of volume mounts for the container
         resource_requests : dict[str, str]

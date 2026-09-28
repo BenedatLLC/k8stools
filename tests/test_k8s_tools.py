@@ -514,3 +514,36 @@ def test_service_summaries():
     assert default_services[0].namespace == "default"
     assert default_services[1].name == "external-service" 
     assert default_services[1].namespace == "default"
+
+
+class TestRanFor:
+    """A terminated container states how long it ran, so the caller need not
+    subtract two timestamps -- the step answers kept confusing with log span
+    and restart cadence."""
+
+    T0 = datetime.datetime(2026, 9, 27, 21, 50, 53, tzinfo=datetime.timezone.utc)
+
+    def test_derived_from_the_two_timestamps(self):
+        s = k8s_tools.ContainerStateTerminated(
+            started_at=self.T0, finished_at=self.T0 + datetime.timedelta(seconds=63.4))
+        assert s.ran_for == datetime.timedelta(seconds=63)
+
+    def test_serialises_as_a_whole_second_duration(self):
+        s = k8s_tools.ContainerStateTerminated(
+            started_at=self.T0, finished_at=self.T0 + datetime.timedelta(seconds=63))
+        assert s.model_dump(mode="json")["ran_for"] == "PT1M3S"
+
+    def test_absent_when_either_timestamp_is(self):
+        assert k8s_tools.ContainerStateTerminated(started_at=self.T0).ran_for is None
+        assert k8s_tools.ContainerStateTerminated(finished_at=self.T0).ran_for is None
+
+    def test_clock_skew_does_not_produce_a_negative_duration(self):
+        s = k8s_tools.ContainerStateTerminated(
+            started_at=self.T0, finished_at=self.T0 - datetime.timedelta(seconds=1))
+        assert s.ran_for == datetime.timedelta(0)
+
+    def test_an_explicit_value_is_kept(self):
+        s = k8s_tools.ContainerStateTerminated(
+            started_at=self.T0, finished_at=self.T0 + datetime.timedelta(seconds=63),
+            ran_for=datetime.timedelta(seconds=5))
+        assert s.ran_for == datetime.timedelta(seconds=5)
