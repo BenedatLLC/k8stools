@@ -224,7 +224,62 @@ def test_since_seconds_filters_on_parseable_timestamps():
     state = MockState(_capture(pods=[_pod_with_logs({"c": "\n".join(lines)})]),
                       frozen=True, server_start_time=now)
     out = state.get_logs_for_pod_and_container("p", "default", "c", since_seconds=120)
-    assert out.splitlines() == [lines[-1]]
+    # Compare messages: replay re-anchors the prefix by the (here, microseconds)
+    # between capture and server start. See TestReplayedLogTimestamps.
+    assert [l.split(" ", 1)[1] for l in out.splitlines()] == ["at -30s"]
+
+
+class TestReplayedLogTimestamps:
+    """Log lines carry their timestamps in the text, so replay has to move them
+    the way it moves every other datetime. Before 2.2.0 it did not: a replayed
+    log kept its original dates, and since_seconds - compared against the
+    replay's "now" - dropped every line of any capture older than the window.
+    The since_seconds test above could not see it: it captures and replays at
+    the same instant."""
+
+    CAPTURED = datetime.datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC)
+
+    def _state(self, logs, previous_logs=None, frozen=True, start=None):
+        capture = _capture(pods=[_pod_with_logs(logs, previous_logs)])
+        capture["captured_at"] = self.CAPTURED.isoformat()
+        return MockState(capture, frozen=frozen,
+                         server_start_time=start or datetime.datetime.now(UTC))
+
+    def _line(self, seconds_before_capture, text, fmt="%Y-%m-%dT%H:%M:%S.%f"):
+        ts = self.CAPTURED - datetime.timedelta(seconds=seconds_before_capture)
+        return f"{ts.strftime(fmt)}123Z {text}"   # nanosecond precision, as the kubelet writes
+
+    @pytest.mark.parametrize("frozen", [True, False])
+    def test_since_seconds_works_on_an_old_capture(self, frozen):
+        lines = [self._line(s, f"at -{s}s") for s in (600, 300, 30)]
+        state = self._state({"c": "\n".join(lines)}, frozen=frozen)
+        out = state.get_logs_for_pod_and_container("p", "default", "c", since_seconds=120)
+        assert [l.split(" ", 1)[1] for l in out.splitlines()] == ["at -30s"]
+
+    def test_prefixes_move_with_the_other_replayed_datetimes(self):
+        start = datetime.datetime.now(UTC)
+        state = self._state({"c": self._line(30, "killed")}, start=start)
+        line = state.get_logs_for_pod_and_container("p", "default", "c")
+        stamp = datetime.datetime.fromisoformat(line.split(" ", 1)[0][:26] + "+00:00")
+        # 30s before capture reads as 30s before the replay's anchor, like
+        # every started_at/finished_at the tools return.
+        assert abs(stamp - (start - datetime.timedelta(seconds=30))) < datetime.timedelta(microseconds=2)
+
+    def test_format_and_message_are_preserved(self):
+        app_stamp = "2026-08-01T11:59:00Z"
+        text = "\n".join([self._line(30, f"app says {app_stamp}"), "a continuation line"])
+        out = self._state({"c": text}).get_logs_for_pod_and_container("p", "default", "c")
+        first, second = out.splitlines()
+        prefix, message = first.split(" ", 1)
+        assert len(prefix) == len("2026-08-01T11:59:30.000000123Z")
+        assert prefix.endswith("123Z")                   # nanosecond digits kept
+        assert message == f"app says {app_stamp}"         # the app's own timestamp is not ours to move
+        assert second == "a continuation line"
+
+    def test_previous_logs_are_re_anchored_too(self):
+        state = self._state({"c": "current"}, {"c": self._line(30, "the OOM")})
+        out = state.get_logs_for_pod_and_container("p", "default", "c", previous=True)
+        assert not out.startswith("2026-08-01")
 
 
 def test_since_seconds_is_ignored_when_lines_carry_no_timestamp():

@@ -253,6 +253,8 @@ def _capture_events(namespace: str, captured_at: datetime.datetime,
             kind, name = None, event.object
         records.append({
             "last_seen_seconds": event.last_seen.total_seconds() if event.last_seen else None,
+            "first_seen_seconds": event.first_seen.total_seconds() if event.first_seen else None,
+            "count": event.count,
             "type": event.type,
             "reason": event.reason,
             "namespace": namespace,

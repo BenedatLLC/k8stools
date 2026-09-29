@@ -464,6 +464,15 @@ long session cannot see ages drift between its first tool call and its last.
 a suite that believed it had frozen the clock and had not would be flaky with no
 visible cause.)
 
+Absolute times are replayed the same way: every timestamp a tool returns is moved
+so the moment of capture becomes the moment the server started. A container killed
+5 minutes before the capture reads as killed 5 minutes before server start, and
+`get_cluster_info`'s `captured_at` is that start time, not the date in the file,
+so the agent sees one consistent clock. Log line timestamps (the kubelet's
+prefix) are moved too, so `since_seconds` works on a capture of any age;
+timestamps an application writes inside its own log messages are left as
+recorded. The file's own capture date is in the server's startup log.
+
 ### Replaying from Python
 
 For a test suite, skip the server and load the capture directly. `MockState` has

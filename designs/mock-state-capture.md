@@ -341,12 +341,15 @@ become `*_offset_seconds` before `captured_at`.
   (a filtered view where `involved_kind == "Pod"` and `involved_name == pod_name`):
   ```json
   {
-    "last_seen_seconds": 120.0, "type": "Warning", "reason": "Evicted",
+    "last_seen_seconds": 120.0, "first_seen_seconds": 120.0, "count": 1,
+    "type": "Warning", "reason": "Evicted",
     "namespace": "default", "involved_kind": "Pod", "involved_name": "session-abc",
     "object": "Pod/session-abc",
     "message": "The node was low on resource: ephemeral-storage."
   }
   ```
+  `first_seen_seconds` and `count` were added in 2.2.0; captures without them
+  replay those fields as `null`.
   This is the one structural change from the original design: pods no longer embed
   their own `events`; `MockState.get_pod_events` filters the flat list instead. This
   also lets captures include events with no surviving pod (Evicted, FailedScheduling),

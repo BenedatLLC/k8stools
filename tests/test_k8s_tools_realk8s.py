@@ -758,3 +758,15 @@ def test_get_cluster_info():
     if info.source == "kubeconfig":
         _, current = config.list_kube_config_contexts()
         assert info.context == current["name"]
+
+def test_events_carry_count_and_first_seen():
+    """On a real cluster every event record reports how many occurrences it
+    combines, and its window runs forwards: first_seen is no newer than last_seen."""
+    events = k8s_tools.get_events()
+    if not events:
+        pytest.skip("No events found in the cluster.")
+    for event in events:
+        assert event.count is None or event.count >= 1
+        if event.first_seen is not None and event.last_seen is not None:
+            assert event.first_seen >= event.last_seen
+    assert any(e.count is not None for e in events)

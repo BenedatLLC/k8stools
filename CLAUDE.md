@@ -24,6 +24,7 @@ tests/
   test_capture.py            - Capture serialization round-trip and capture-time redaction
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
+  test_events.py             - Event aggregation (count/first_seen), incl. the events.k8s.io fallback
   test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
@@ -213,6 +214,12 @@ Invariants worth preserving when touching this code:
   replay — "deployment 8d old, current replica set 7h34m old, so it was upgraded
   7h34m ago". The replay clock quantizes to whole seconds and samples once per
   query to keep that exact; don't reintroduce per-field `datetime.now()`.
+  One clock for everything replay returns: datetimes are re-anchored so
+  capture time becomes server start time, and that includes
+  `get_cluster_info().captured_at` (the anchor itself) and the kubelet's
+  timestamp prefix on each log line (`_reanchor_log`). Anything that reports a
+  time from the file verbatim contradicts the rest. Tests that capture and
+  replay at the same instant cannot see this; use a capture date in the past.
   Only ages advance: an `Interval` field is stored under the same `_seconds` key
   but read back unchanged. Replay tests that freeze the clock can't tell the two
   apart (frozen elapsed time is zero), so test a new duration field on an

@@ -48,6 +48,7 @@ import datetime
 import functools
 import gzip
 import json
+import re
 import types
 import typing
 import zlib
@@ -319,8 +320,21 @@ class MockState:
             server_start_time or datetime.datetime.now(datetime.timezone.utc),
             frozen=frozen)
 
+        #: When the capture was recorded, as the file says. Tools never report
+        #: this: on replay every datetime is re-anchored to the server's start
+        #: time (see get_cluster_info), and this is for logs and humans.
         self.captured_at: Optional[str] = data.get("captured_at")
         self.redacted: bool = bool(data.get("redacted", False))
+        # How far replay moves every datetime: capture instant -> server start.
+        # Stored datetimes are offsets and need no shift, but log lines carry
+        # their original timestamps in the text.
+        self._log_shift: Optional[datetime.timedelta] = None
+        if self.captured_at:
+            try:
+                recorded = datetime.datetime.fromisoformat(self.captured_at.replace("Z", "+00:00"))
+                self._log_shift = self._clock.server_start_time - recorded
+            except ValueError:
+                pass  # an unparseable captured_at leaves log timestamps as recorded
 
         # Index the pod records for O(1) lookup; every other list is small enough
         # to filter linearly, which keeps the filtering identical to the real tools'.
@@ -383,6 +397,12 @@ class MockState:
         ``source`` is always "capture", so an agent can tell replayed evidence
         from a live cluster. Captures taken before the cluster was recorded
         (including the built-in one) report only when they were taken.
+
+        ``captured_at`` is the replay's anchor, not the date in the file. Every
+        other datetime a tool returns is re-anchored to the server's start
+        time, and the recorded date beside them contradicted them all - a pod
+        killed "5 minutes ago" in a capture taken a month ago. The recorded
+        date is on :attr:`captured_at` and in the server's startup log.
         """
         cluster = self._data.get("cluster") or {}
         return k8s_tools.ClusterInfo(
@@ -390,7 +410,7 @@ class MockState:
             context=cluster.get("context"),
             server=cluster.get("server"),
             server_version=cluster.get("server_version"),
-            captured_at=self.captured_at,
+            captured_at=self._clock.server_start_time,
         )
 
     @_pinned_query
@@ -468,12 +488,16 @@ class MockState:
     def _event_summary(self, record: dict[str, Any],
                        object_name: Optional[str] = None) -> k8s_tools.EventSummary:
         last_seen = record.get("last_seen_seconds")
+        # Both absent from captures taken before 2.2.0; they replay as None.
+        first_seen = record.get("first_seen_seconds")
         if object_name is None:
             kind = record.get("involved_kind")
             name = record.get("involved_name") or ""
             object_name = record.get("object") or (f"{kind}/{name}" if kind else name)
         return k8s_tools.EventSummary(
             last_seen=self._clock.age(last_seen) if last_seen is not None else None,
+            first_seen=self._clock.age(first_seen) if first_seen is not None else None,
+            count=record.get("count"),
             type=record.get("type", ""),
             reason=record.get("reason", ""),
             object=object_name,
@@ -506,7 +530,8 @@ class MockState:
                     f"Error fetching logs: previous terminated instance of container "
                     f"'{container_name}' in pod '{pod_name}' not found.")
             return ''
-        return _slice_log(logs[container_name], tail=tail, since_seconds=since_seconds,
+        return _slice_log(_reanchor_log(logs[container_name], self._log_shift),
+                          tail=tail, since_seconds=since_seconds,
                           now=self._clock.server_start_time + datetime.timedelta(
                               seconds=self._clock.elapsed()))
 
@@ -687,6 +712,44 @@ def _slice_log(text: str, tail: Optional[int], since_seconds: Optional[int],
         # The real tool defaults to the last 1000 lines.
         lines = lines[-1000:]
     return "\n".join(lines)
+
+
+#: The RFC 3339 timestamp the kubelet prefixes to each log line when asked for
+#: timestamps, split so the fractional digits (nanoseconds, in practice) and the
+#: zone spelling can be written back exactly as they came.
+_LOG_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})(?=\s|$)")
+
+
+def _reanchor_log(text: str, shift: Optional[datetime.timedelta]) -> str:
+    """Move each line's leading timestamp by ``shift``, as replay moves every datetime.
+
+    Without this, a replayed log kept its original dates beside re-anchored pod
+    and event times, and ``since_seconds`` - compared against the replay's "now"
+    - dropped every line of any capture older than the window, returning an
+    empty log as if the container had logged nothing.
+
+    Only the kubelet's prefix is moved. Timestamps an application writes inside
+    its own message are part of the message, and stay as recorded.
+    """
+    if not shift:
+        return text
+    return "\n".join(_shift_line(line, shift) for line in text.split("\n"))
+
+
+def _shift_line(line: str, shift: datetime.timedelta) -> str:
+    m = _LOG_TS_RE.match(line)
+    if m is None:
+        return line
+    base, frac, zone = m.group(1), m.group(2) or "", m.group(3)
+    micros = int((frac + "000000")[:6])
+    stamp = datetime.datetime.fromisoformat(base + ("+00:00" if zone == "Z" else zone))
+    shifted = stamp + datetime.timedelta(microseconds=micros) + shift
+    # Same number of fractional digits as the original: microseconds from the
+    # shifted time, any digits past them (nanoseconds) kept as they were.
+    new_frac = (f"{shifted.microsecond:06d}" + frac[6:])[:len(frac)]
+    head = shifted.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
+    return head + (f".{new_frac}" if frac else "") + zone + line[m.end():]
 
 
 def _leading_timestamp(line: str) -> Optional[datetime.datetime]:

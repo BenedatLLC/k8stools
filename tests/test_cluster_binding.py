@@ -217,8 +217,34 @@ def test_replayed_cluster_info_says_it_is_a_capture():
     assert info.source == "capture"
     assert (info.context, info.server, info.server_version) == \
         ("prod", "https://prod.example:6443", "v1.31.2")
-    assert info.captured_at.isoformat() == "2026-09-27T21:50:53+00:00"
     assert info.kubeconfig is None
+
+
+@pytest.mark.parametrize("frozen", [True, False])
+def test_replayed_captured_at_is_on_the_same_clock_as_everything_else(frozen):
+    """Issue #7: captured_at was the date in the file while every other datetime
+    was re-anchored to the server's start, so a pod killed "5 minutes ago"
+    appeared beside a capture taken a month ago."""
+    import datetime, json
+    recorded = "2026-08-01T12:00:00+00:00"
+    start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+    status = {"pod_name": "p", "namespace": "default", "container_name": "c",
+              "image": "img", "ready": False, "restart_count": 1, "started": False,
+              "stop_signal": None, "state": None, "volume_mounts": [],
+              "resource_requests": {}, "resource_limits": {}, "allocated_resources": {},
+              "last_state": {"state_name": "Terminated", "exit_code": 137,
+                             "started_at_offset_seconds": 360.0,
+                             "finished_at_offset_seconds": 297.0}}
+    state = MockState(json.loads(json.dumps({
+        "version": "1", "captured_at": recorded, "redacted": False,
+        "pods": [{"summary": {"name": "p", "namespace": "default"},
+                  "container_statuses": [status]}]})),
+        frozen=frozen, server_start_time=start)
+    captured_at = state.get_cluster_info().captured_at
+    finished_at = state.get_pod_container_statuses("p", "default")[0].last_state.finished_at
+    assert captured_at == start
+    assert captured_at - finished_at == datetime.timedelta(seconds=297)
+    assert state.captured_at == recorded   # the file's own date stays available
 
 
 def test_a_capture_without_a_cluster_record_still_answers():

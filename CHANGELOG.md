@@ -3,6 +3,39 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 2.2.0 — 2026-09-28
+
+### Added
+- **`count` and `first_seen` on events** (issue #8). `get_pod_events` and
+  `get_events` now report how many occurrences Kubernetes combined into each
+  event record, and how long ago the first one was, next to `last_seen`. For a
+  crash-looping container this gives the restart rate directly: on one cluster,
+  a `Created` count of 579 over 2 days 8 hours is a restart every ~5.8 minutes,
+  a number agents kept getting wrong from the other durations. The tool
+  descriptions explain the window the count covers and warn that `BackOff`
+  counts are several times the number of restarts. `print_pod_events` and
+  `print_events` gain a COUNT column.
+- Captures store both fields; captures from before 2.2.0 replay them as `None`.
+
+### Fixed
+- **Replayed `captured_at` was on a different clock** (issue #7).
+  `get_cluster_info` returned the date in the capture file while every other
+  replayed timestamp was re-anchored to the server's start, so a pod killed
+  "5 minutes ago" appeared beside a capture taken a month ago. `captured_at` is
+  now the replay's anchor (the server's start time); the recorded date is in the
+  startup log and on `MockState.captured_at`.
+- **Replayed logs kept their original timestamps.** Log line timestamps were not
+  re-anchored, so they contradicted every other replayed time, and
+  `since_seconds` (compared against the replay's "now") returned an empty log for
+  any capture older than the window, as if the container had logged nothing.
+  The kubelet's timestamp prefix on each line is now moved like every other
+  datetime, keeping its original precision and format. Timestamps an application
+  writes inside its messages are left as recorded.
+- **Events recorded through `events.k8s.io/v1` had no time.** Their core/v1 view
+  leaves `lastTimestamp` empty and records the time in `eventTime` (and
+  repetition in `series`), so `last_seen` came back `None`. Both are now read
+  when the older fields are empty.
+
 ## 2.1.0 — 2026-09-28
 
 ### Added

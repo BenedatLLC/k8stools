@@ -667,10 +667,43 @@ def _format_timedelta(td: Optional[datetime.timedelta]) -> str:
 class EventSummary(BaseModel):
     """This is the representation of a Kubernetes Event"""
     last_seen: Optional[Duration]  # Time since event occurred
+    #: Time since the first occurrence combined into this record.
+    first_seen: Optional[Duration] = None
+    #: How many occurrences Kubernetes combined into this record.
+    count: Optional[int] = None
     type: str
     reason: str
     object: str
     message: str
+
+
+def _event_summary(event: Any, now: datetime.datetime, obj: str) -> EventSummary:
+    """Convert a core/v1 Event, including one recorded through events.k8s.io/v1.
+
+    The events.k8s.io API reaches the core/v1 view with the deprecated
+    ``count``/``firstTimestamp``/``lastTimestamp`` unset. Its time is
+    ``eventTime`` (the first observation) and any repetition is in ``series``, so
+    those fill in when the deprecated fields are empty. A record with
+    ``eventTime`` and no ``series`` was observed once.
+    """
+    series = getattr(event, "series", None)
+    event_time = getattr(event, "event_time", None)
+    last = (getattr(event, "last_timestamp", None)
+            or (series.last_observed_time if series else None)
+            or event_time)
+    first = getattr(event, "first_timestamp", None) or event_time
+    count = (getattr(event, "count", None)
+             or (series.count if series else None)
+             or (1 if event_time else None))
+    return EventSummary(
+        last_seen=(now - last) if last else None,
+        first_seen=(now - first) if first else None,
+        count=count,
+        type=event.type or "",
+        reason=event.reason or "",
+        object=obj,
+        message=event.message or "",
+    )
  
 
 def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSummary]:
@@ -690,8 +723,22 @@ def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSumma
     list of EventSummary
         List of events associated with the specified pod. Each EventSummary has the following fields:
 
-        last_seen : Optional[datetime.datetime]
-            Timestamp of the last occurrence of the event (if available).
+        last_seen : Optional[datetime.timedelta]
+            Time since the most recent occurrence of the event (if available).
+        first_seen : Optional[datetime.timedelta]
+            Time since the first occurrence combined into this record (if
+            available).
+        count : Optional[int]
+            How many occurrences Kubernetes combined into this record: repeats
+            of the same event on the same object are counted in one record
+            rather than listed separately. The count covers first_seen to
+            last_seen, not the object's lifetime - a record that stops repeating
+            expires (after 1h by default), and a later repeat starts a new one.
+            For a crash-looping container, count the "Created" or "Started"
+            events to get restarts. "BackOff" is emitted repeatedly while the
+            kubelet waits to restart, so its count is several times the number
+            of restarts. count divided by (first_seen - last_seen) is the
+            average rate over that window, not the current back-off.
         type : str
             Type of the event.
         reason : str
@@ -714,16 +761,8 @@ def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSumma
     field_selector = f"involvedObject.name={pod_name}"
     events = K8S.list_namespaced_event(namespace, field_selector=field_selector)
     now = datetime.datetime.now(datetime.timezone.utc)
-    return [
-        EventSummary(
-            last_seen=(now - event.last_timestamp) if event.last_timestamp else None,
-            type=event.type,
-            reason=event.reason,
-            object=getattr(event.involved_object, 'name', pod_name),
-            message=event.message,
-        )
-        for event in events.items
-    ]
+    return [_event_summary(event, now, getattr(event.involved_object, 'name', pod_name))
+            for event in events.items]
 
 
 def print_pod_events(pod_name: str, namespace: str = "default") -> None:
@@ -731,11 +770,12 @@ def print_pod_events(pod_name: str, namespace: str = "default") -> None:
     Print the events for the specified pod, in a similar format to `kubectl get events`.
     """
     events = get_pod_events(pod_name, namespace)
-    print(f"{'LAST SEEN':<12} {'TYPE':<10} {'REASON':<20} {'OBJECT':<32} {'MESSAGE':<40}")
+    print(f"{'LAST SEEN':<12} {'COUNT':<7} {'TYPE':<10} {'REASON':<20} {'OBJECT':<32} {'MESSAGE':<40}")
     for event in events:
         last_seen = _format_timedelta(event.last_seen) if event.last_seen else "-"
+        count = str(event.count) if event.count is not None else "-"
         message = (event.message[:37] + '...') if event.message and len(event.message) > 40 else event.message
-        print(f"{last_seen:<12} {event.type:<10} {event.reason:<20} {event.object:<32} {message:<40}")
+        print(f"{last_seen:<12} {count:<7} {event.type:<10} {event.reason:<20} {event.object:<32} {message:<40}")
 
 # see kubernetes.client.models.v1_container_state_running.V1ContainerStateRunning
 class ContainerStateRunning(BaseModel):
@@ -2427,8 +2467,9 @@ def get_events(namespace: Optional[str] = None,
     Unlike `get_pod_events` (which is scoped to a single named pod), this supports
     the sweep queries common in capacity/storage runbooks — e.g. all "Evicted"
     events, or all "FailedScheduling" events — where the affected pods often have no
-    stable name to look up. Note the Kubernetes API only retains roughly the last
-    hour of events.
+    stable name to look up. Note Kubernetes expires an event record about an hour
+    (by default) after its last occurrence, so events that stopped repeating
+    earlier than that are gone.
 
     Parameters
     ----------
@@ -2452,6 +2493,20 @@ def get_events(namespace: Optional[str] = None,
 
         last_seen : Optional[datetime.timedelta]
             Time since the event was last seen (if available).
+        first_seen : Optional[datetime.timedelta]
+            Time since the first occurrence combined into this record (if
+            available).
+        count : Optional[int]
+            How many occurrences Kubernetes combined into this record: repeats
+            of the same event on the same object are counted in one record
+            rather than listed separately. The count covers first_seen to
+            last_seen, not the object's lifetime - a record that stops repeating
+            expires (after 1h by default), and a later repeat starts a new one.
+            For a crash-looping container, count the "Created" or "Started"
+            events to get restarts. "BackOff" is emitted repeatedly while the
+            kubelet waits to restart, so its count is several times the number
+            of restarts. count divided by (first_seen - last_seen) is the
+            average rate over that window, not the current back-off.
         type : str
             Type of the event ("Normal" or "Warning").
         reason : str
@@ -2501,13 +2556,7 @@ def get_events(namespace: Optional[str] = None,
         obj_name = getattr(involved, "name", None) or ""
         obj_kind = getattr(involved, "kind", None)
         obj = f"{obj_kind}/{obj_name}" if obj_kind else obj_name
-        results.append(EventSummary(
-            last_seen=(now - event.last_timestamp) if getattr(event, "last_timestamp", None) else None,
-            type=event.type or "",
-            reason=event.reason or "",
-            object=obj,
-            message=event.message or "",
-        ))
+        results.append(_event_summary(event, now, obj))
     return results
 
 
@@ -2519,11 +2568,12 @@ def print_events(namespace: Optional[str] = None,
     """Calls get_events and prints the output to stdout, similar to
     `kubectl get events`."""
     events = get_events(namespace, reason, involved_kind, involved_name, event_type)
-    print(f"{'LAST SEEN':<12} {'TYPE':<10} {'REASON':<20} {'OBJECT':<40} {'MESSAGE':<40}")
+    print(f"{'LAST SEEN':<12} {'COUNT':<7} {'TYPE':<10} {'REASON':<20} {'OBJECT':<40} {'MESSAGE':<40}")
     for event in events:
         last_seen = _format_timedelta(event.last_seen) if event.last_seen else "-"
+        count = str(event.count) if event.count is not None else "-"
         message = (event.message[:37] + '...') if event.message and len(event.message) > 40 else event.message
-        print(f"{last_seen:<12} {event.type:<10} {event.reason:<20} {event.object:<40} {message:<40}")
+        print(f"{last_seen:<12} {count:<7} {event.type:<10} {event.reason:<20} {event.object:<40} {message:<40}")
 
 
 
