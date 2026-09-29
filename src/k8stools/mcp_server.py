@@ -42,6 +42,13 @@ def main():
                         help="Log level [default: INFO]")
     parser.add_argument('--debug', action='store_true',
                         help="Enable debug mode [default: False]")
+    parser.add_argument('--kubeconfig', metavar='PATH', default=None,
+                        help="Kubeconfig file to use [default: KUBECONFIG, then ~/.kube/config]")
+    parser.add_argument('--context', metavar='NAME', default=None,
+                        help="Kubeconfig context to use [default: K8STOOLS_CONTEXT, then the "
+                             "kubeconfig's current-context]. A kubeconfig or context that is "
+                             "given but cannot be loaded stops the server rather than falling "
+                             "back to another cluster.")
     parser.add_argument('--mock', action='store_true', default=False,
                         help="If specified, just run mock versions of the tools that don't need a cluster")
     parser.add_argument('--state-file', metavar='FILE', default=None,
@@ -63,6 +70,11 @@ def main():
     if args.state_time != 'advancing' and not args.state_file:
         parser.error("--state-time requires --state-file")
 
+    # Likewise a cluster selection: mock tools serve a capture, not a cluster, so
+    # a server started with one would look pinned to a cluster it never contacts.
+    if (args.kubeconfig or args.context) and (args.mock or args.state_file):
+        parser.error("--kubeconfig and --context cannot be combined with --mock or --state-file")
+
     if args.state_file or args.mock:
         from .mock_tools import TOOLS, load_mock_state
         from .mock_state import CaptureFormatError
@@ -81,7 +93,22 @@ def main():
             logging.info("This capture was written with redaction applied; secret values "
                          "in it are already [REDACTED] and cannot be recovered.")
     else:
+        from . import k8s_tools
         from .k8s_tools import TOOLS
+        # Bind now rather than on the first tool call, so the log says which
+        # cluster this server answers from before anything asks it.
+        try:
+            logging.warning(f"Bound to cluster: "
+                            f"{k8s_tools.configure(args.kubeconfig, args.context)}")
+        except k8s_tools.K8sClusterSelectionError as e:
+            print(f"Could not bind to the selected cluster: {e}", file=sys.stderr)
+            return 1
+        except k8s_tools.K8sConfigError as e:
+            # No selection was made, so keep the long-standing behavior: start
+            # anyway, and let each tool call report the problem (and retry, in
+            # case a cluster becomes available).
+            logging.warning(f"No cluster configuration could be loaded; tool calls will "
+                            f"fail until one can: {e}")
 
     # Apply secret redaction at the output boundary (default-on, opt-out). See redaction.py.
     redact = redaction_enabled(no_redact_flag=args.no_redact)

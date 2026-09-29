@@ -32,8 +32,9 @@ ARGS = ["-m", "k8stools.mcp_server"]
 ENV: dict[str, str] = {}
 if 'PYTHONPATH' in os.environ:
     ENV['PYTHONPATH'] = os.environ['PYTHONPATH']
-if 'KUBECONFIG' in os.environ:
-    ENV['KUBECONFIG'] = os.environ['KUBECONFIG']
+for _name in ('KUBECONFIG', 'K8STOOLS_CONTEXT'):
+    if _name in os.environ:
+        ENV[_name] = os.environ[_name]
 server_params = StdioServerParameters(
     command=COMMAND,
     args=ARGS,

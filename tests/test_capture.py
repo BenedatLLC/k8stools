@@ -306,6 +306,9 @@ class _FakeCluster:
 
     def install(self, monkeypatch):
         import k8stools.capture as capture
+        monkeypatch.setattr(k8s_tools, "get_cluster_info", lambda: k8s_tools.ClusterInfo(
+            source="kubeconfig", context="prod", server="https://prod.example:6443",
+            kubeconfig="/home/someone/.kube/prod.yaml", server_version="v1.31.2"))
         monkeypatch.setattr(k8s_tools, "get_namespaces", lambda: [
             k8s_tools.NamespaceSummary(name="default", status="Active",
                                        age=datetime.timedelta(days=1))])
@@ -478,3 +481,29 @@ def test_gz_output_round_trips(tmp_path, monkeypatch):
     plain = tmp_path / "cap.json"
     write_state(state, plain)
     assert plain.read_text().startswith("{\n  ")
+
+
+def test_capture_records_which_cluster_it_came_from(monkeypatch):
+    """Replay answers get_cluster_info from this record, so a capture can be told
+    apart from a live cluster and from captures of other clusters."""
+    _FakeCluster().install(monkeypatch)
+    state = capture_state(redact=True)
+    assert state["cluster"] == {"context": "prod", "server": "https://prod.example:6443",
+                                "server_version": "v1.31.2"}
+    # The kubeconfig path names a file on the capturing machine: meaningless on
+    # replay, and not something to hand to whoever the capture is shared with.
+    assert "/home/someone" not in json.dumps(state)
+
+    info = _reload(state).get_cluster_info()
+    assert (info.source, info.context, info.server_version) == ("capture", "prod", "v1.31.2")
+
+
+def test_capture_survives_an_unreadable_cluster_record(monkeypatch):
+    _FakeCluster().install(monkeypatch)
+
+    def fail():
+        raise k8s_tools.K8sApiError("version endpoint forbidden")
+    monkeypatch.setattr(k8s_tools, "get_cluster_info", fail)
+    state = capture_state(redact=False)
+    assert state["cluster"] is None
+    assert _reload(state).get_cluster_info().context is None

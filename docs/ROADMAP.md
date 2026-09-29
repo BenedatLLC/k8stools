@@ -1,49 +1,15 @@
 # k8stools roadmap
 
-This tracks planned and deferred work. It has three parts:
+This tracks planned and deferred work. It has two parts:
 
-1. What shipped in **1.1.0** (for context).
-2. **Deferred feature requests**, kept in the original requester's priority order.
-3. **Completed internal work** (mock state capture).
+1. **Deferred feature requests**, kept in the original requester's priority order.
+2. **Completed internal work** (mock state capture).
+
+What each release shipped is in [CHANGELOG.md](../CHANGELOG.md).
 
 The guiding principles from the feature-request intake still hold: **read-only
 tools only**, strongly typed with Pydantic return models and full docstrings,
 first-class `get_*` tools over generic passthroughs.
-
----
-
-## Shipped in 1.1.0
-
-Delivered the Priority-1 batch from a heavy RCA user's feature-request intake
-(tracked internally, not in this repo) plus the cross-cutting redaction ask, and
-upgraded core dependencies.
-
-**New tools**
-- `get_configmap_summaries` / `get_configmap` — ConfigMap listing and full-content read.
-- `get_cronjob_summaries` / `get_job_summaries` — CronJob & Job spec+status, including
-  the pod template's container images/env; `owner` links a Job back to its CronJob.
-- `get_logs_for_job` / `get_logs_for_cronjob` — convenience readers that locate the
-  most-recent pod of a Job / most-recent run of a CronJob (no manual pod hunting).
-- `get_pvc_summaries` — PVC listing with `mounted_by` pod resolution (surfaces orphaned PVCs).
-- `get_events` — cluster/namespace-wide events with server-side filtering
-  (`reason`, `involved_kind`, `involved_name`, `event_type`); reuses `EventSummary`.
-- `get_statefulset_summaries` — StatefulSet summaries mirroring `DeploymentSummary`.
-
-**Enhancements to existing tools**
-- `get_logs_for_pod_and_container` — added `tail`, `since_seconds`, and `previous`
-  (previous-instance logs for crashloop RCA).
-- `get_node_summaries` — added `capacity`, `allocatable`, `conditions`, `taints`, `labels`.
-- `get_service_summaries` — added `selector`, `labels`, `annotations`.
-
-**Secret redaction** (`redaction.py`) — a single redaction pass at the MCP server's
-output boundary, **on by default**, opt-out via `--no-redact` or `K8STOOLS_REDACT=0`.
-Matches by value shape (AWS keys, JWTs, PEM private keys) and by key/env-var name
-(`key|secret|token|password|credential`), replacing matches with a visible
-`[REDACTED]` marker and logging a count. Direct (non-MCP) callers get raw values and
-can call `redaction.redact_object` themselves.
-
-**Dependencies** — `mcp` `1.12` → `2.1.1` (FastMCP → MCPServer migration in
-`mcp_server.py`), `kubernetes` `33.1` → `36.0.3`.
 
 ---
 

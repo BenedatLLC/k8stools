@@ -24,10 +24,19 @@ tests/
   test_capture.py            - Capture serialization round-trip and capture-time redaction
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
+  test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
 ```
+
+## Changelog
+
+`CHANGELOG.md` records user-visible changes per release, newest first. Add to the
+top entry (`## X.Y.Z — unreleased` until tagged) in the same change that makes
+them, and call out behavior changes under **Changed**. It links from the README and
+from the package metadata (`[project] urls`), so it shows on PyPI. `docs/ROADMAP.md`
+holds only planned and deferred work.
 
 ## Environment setup
 
@@ -115,7 +124,7 @@ raise K8sConfigError("Could not load kube config")   # config/connection problem
 raise K8sApiError(f"Error fetching pods: {e}")        # API operation failures
 ```
 
-## Global API client
+## Cluster binding and the global API clients
 
 Lazy singleton initialization pattern used throughout:
 
@@ -125,7 +134,33 @@ if K8S is None:
     K8S = _get_api_client()
 ```
 
-`_get_api_client()` calls `config.load_kube_config()`, which respects the `KUBECONFIG` environment variable.
+`_get_api_client()`, `_get_apps_v1_api_client()` and `_get_batch_v1_api_client()`
+all build on **one** `ApiClient`, the process's cluster binding (`_BINDING`),
+resolved once by `configure(kubeconfig, context)` — called at startup by both CLIs —
+or lazily on first use. Invariants:
+
+- **One binding for every API group.** The helpers used to load the kubeconfig
+  separately on each group's first use, and each API object snapshots the global
+  default `Configuration` when constructed, so a `kubectl config use-context`
+  between a server's first pod query and its first deployment query split it
+  across two clusters. Don't reintroduce a per-helper `load_kube_config()`.
+- **An explicit selection never falls back to in-cluster config.** The client
+  raises the same `ConfigException` for a misspelled context as for a missing
+  kubeconfig; falling back would bind a server in a pod to the pod's own cluster.
+  An explicit selection that fails raises `K8sClusterSelectionError` (a
+  `K8sConfigError`), which stops the MCP server; with no selection, the server
+  starts anyway and each call reports the problem, as it always has.
+- **The binding never touches the process-wide default `Configuration`** (it passes
+  `client_configuration`), so library callers' own kubernetes clients are left alone.
+- Resolution: `--kubeconfig` / argument, then `KUBECONFIG`, then `~/.kube/config`;
+  `--context` / argument, then `K8STOOLS_CONTEXT`, then `current-context`. There is
+  deliberately no `K8STOOLS_KUBECONFIG`: `KUBECONFIG` already is that variable.
+  The kubernetes client reads `KUBECONFIG` once, at import
+  (`KUBE_CONFIG_DEFAULT_LOCATION`), so setting it at runtime has no effect.
+
+`get_cluster_info` reports the binding. Its replay counterpart answers from the
+capture's optional top-level `cluster` record (context, server, server version —
+never the kubeconfig path) with `source="capture"`.
 
 ## Using tools directly in an agent
 
@@ -150,6 +185,10 @@ k8s-mcp-server --mock
 # Replay a capture of your own; `frozen` pins ages for a repeatable test suite
 k8s-mcp-server --state-file incident-1234.json
 k8s-mcp-server --state-file incident-1234.json --state-time frozen
+
+# Pin a cluster (default: KUBECONFIG / ~/.kube/config and its current-context)
+k8s-mcp-server --kubeconfig ~/.kube/prod.yaml --context prod-eu
+K8STOOLS_CONTEXT=prod-eu k8s-mcp-server
 
 # Disable secret redaction (on by default)
 k8s-mcp-server --no-redact

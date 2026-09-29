@@ -54,10 +54,14 @@ This installs three commands: `k8s-mcp-server` (the MCP server), `k8s-mcp-client
 (a client for manual testing), and `k8s-capture-state` (snapshot a cluster to a
 replayable file).
 
+What changed in each release is in the
+[changelog](https://github.com/BenedatLLC/k8stools/blob/main/CHANGELOG.md).
+
 ## Current tools
 
 These are the tools we define:
 
+* `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
 * `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide` (includes capacity/allocatable/conditions/taints/labels)
 * `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`
@@ -114,13 +118,25 @@ result = agent.run_sync("What is the status of the pods in my cluster?")
 print(result.output)
 ```
 
+The tools use `KUBECONFIG` (or `~/.kube/config`) and its current context. To pin a
+cluster instead, call `configure` before the first tool call:
+
+```python
+from k8stools import k8s_tools
+
+k8s_tools.configure(kubeconfig="~/.kube/prod.yaml", context="prod-eu")
+```
+
+See [Selecting a cluster](#selecting-a-cluster) for how the selection is resolved.
+
 ### Using via MCP
 The script `k8s-mcp-server` provides an MCP server for the same set of tools.
 Here are the command line arguments for the server:
 ```
 usage: k8s-mcp-server [-h] [--transport {streamable-http,stdio}] [--host HOST] [--port PORT]
-                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug] [--mock]
-                      [--state-file FILE] [--state-time {advancing,frozen}] [--no-redact]
+                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug]
+                      [--kubeconfig PATH] [--context NAME] [--mock] [--state-file FILE]
+                      [--state-time {advancing,frozen}] [--no-redact]
 
 Run the MCP server.
 
@@ -133,11 +149,58 @@ options:
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Log level [default: INFO]
   --debug               Enable debug mode [default: False]
+  --kubeconfig PATH     Kubeconfig file to use [default: KUBECONFIG, then ~/.kube/config]
+  --context NAME        Kubeconfig context to use [default: K8STOOLS_CONTEXT, then the
+                        kubeconfig's current-context]. A kubeconfig or context that is given but
+                        cannot be loaded stops the server rather than falling back to another
+                        cluster.
   --mock                Run mock versions of the tools that don't need a cluster
   --state-file FILE     Serve a captured cluster snapshot from FILE (implies --mock)
   --state-time {advancing,frozen}
                         Replay clock for a captured snapshot [default: advancing]
   --no-redact           Disable secret redaction of tool output (on by default)
+```
+
+#### Selecting a cluster
+
+Each server answers from exactly one cluster, chosen at startup:
+
+| | Kubeconfig file | Context |
+|---|---|---|
+| 1st | `--kubeconfig PATH` | `--context NAME` |
+| 2nd | `KUBECONFIG` | `K8STOOLS_CONTEXT` |
+| 3rd | `~/.kube/config` | the file's `current-context` |
+
+With none of these given and no usable kubeconfig, the server falls back to the
+in-cluster service account, as when it runs in a pod.
+
+The server logs the binding when it starts:
+
+```
+WARNING:root:Bound to cluster: context 'prod-eu' at https://prod-eu.example:6443 (kubeconfig: /home/me/.kube/prod.yaml)
+```
+
+and the `get_cluster_info` tool reports it to an agent, so an agent can check which
+cluster it is talking to without leaving MCP.
+
+A few rules keep a server from quietly answering from the wrong cluster:
+
+* **An explicit selection never falls back.** If a `--kubeconfig`, `--context` or
+  `K8STOOLS_CONTEXT` is given but cannot be loaded (a missing file, a misspelled
+  context), the server exits with an error. It does not fall back to in-cluster
+  config, which in a pod would silently mean *that pod's* cluster.
+* **The binding is made once.** Every tool shares it, and it does not follow later
+  changes to the kubeconfig: running `kubectl config use-context` does not
+  repoint a server that is already running.
+* **`--kubeconfig` and `--context` are rejected with `--mock` or `--state-file`**,
+  which serve a capture rather than a cluster.
+
+To serve two clusters, run two servers:
+
+```sh
+k8s-mcp-server --transport=streamable-http --port=8001 --context prod-eu
+k8s-mcp-server --transport=streamable-http --port=8002 \
+    --kubeconfig ~/.kube/eks.yaml --context staging
 ```
 
 #### Use MCP with the stdio transport
@@ -162,7 +225,8 @@ This assumes the following:
 1. The Python virtual environment is expected to be in `.venv` under the root of your VSCode workspace
 2. You have installed the k8stools package into your workspace
 3. The environment file `.envrc` contains any variables you need defined. In particular, you may need to
-   set `KUBECONFIG` to point to your `kubectl` config file.
+   set `KUBECONFIG` to point to your `kubectl` config file, and `K8STOOLS_CONTEXT` to pin a context
+   (or pass `--kubeconfig` / `--context` in `args`).
 
 #### Use MCP with the streamable HTTP transport
 The *streamable http* transport is enabled with the command line option `--transport=streamable-http`. It will
@@ -247,7 +311,8 @@ k8s-mcp-server --state-file incident-1234.json
 ### `k8s-capture-state` options
 
 ```
-usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [-o FILE] [--no-logs]
+usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [-o FILE]
+                         [--kubeconfig PATH] [--context NAME] [--no-logs]
                          [--max-log-lines MAX_LOG_LINES] [--no-previous-logs]
                          [--no-redact]
                          [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
@@ -260,6 +325,11 @@ options:
                         captured in full.
   -o FILE, --output FILE
                         Output file [default: k8s-state-<timestamp>.json]
+  --kubeconfig PATH     Kubeconfig file to capture from [default: KUBECONFIG,
+                        then ~/.kube/config]
+  --context NAME        Kubeconfig context to capture from [default:
+                        K8STOOLS_CONTEXT, then the kubeconfig's current-
+                        context]
   --no-logs             Skip container logs
   --max-log-lines MAX_LOG_LINES
                         Log lines to capture per container [default: 1000]
@@ -288,10 +358,15 @@ Everything the tools can read, so that every tool answers on replay:
 
 | | |
 |---|---|
+| Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
 | Cluster-wide | namespaces, nodes |
 | Per namespace | deployments, replica sets, services, statefulsets, cronjobs, jobs, PVCs, events |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
+
+A cluster is selected exactly as for the MCP server (see [Selecting a
+cluster](#selecting-a-cluster)), and a selection that cannot be loaded fails the
+capture.
 
 `--namespace` restricts only the namespaced resources; namespaces and nodes are
 always captured in full so the cluster still makes sense.

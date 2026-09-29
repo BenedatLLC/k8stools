@@ -746,3 +746,15 @@ def test_replicaset_summaries_unknown_deployment_is_empty():
     _replicasets_or_skip()
     assert k8s_tools.get_replicaset_summaries(
         deployment="no-such-deployment-xyzzy") == []
+
+def test_get_cluster_info():
+    """The binding the other tests ran against, as the tool reports it."""
+    from kubernetes import config
+    info = k8s_tools.get_cluster_info()
+    assert info.source in ("kubeconfig", "in-cluster")
+    assert info.server and info.server.startswith("https://")
+    assert info.server_version and info.server_version.startswith("v")
+    assert info.captured_at is None
+    if info.source == "kubeconfig":
+        _, current = config.list_kube_config_contexts()
+        assert info.context == current["name"]

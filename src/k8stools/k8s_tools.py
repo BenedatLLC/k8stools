@@ -33,56 +33,161 @@ class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
     pass
 
+class K8sClusterSelectionError(K8sConfigError):
+    """An explicitly selected kubeconfig or context could not be loaded.
+
+    Separate from :class:`K8sConfigError` because the two call for different
+    handling: with no explicit selection, the MCP server starts anyway and every
+    call reports the problem (as it always has), but a selection that failed has
+    to stop the server - carrying on would serve some other cluster.
+    """
+    pass
+
 class K8sApiError(Exception):
     """This is thrown when one of the kubernetes calls (other than initial API load) fails."""
     pass
 
-def _get_api_client() -> client.CoreV1Api:
+
+#: Environment variable naming the kubeconfig context to use, for deployments that
+#: pin a server through its environment rather than its command line. There is no
+#: counterpart for the file: ``KUBECONFIG`` already is that variable.
+CONTEXT_ENV_VAR = "K8STOOLS_CONTEXT"
+
+
+class _Binding:
+    """The cluster this process is bound to: one ApiClient plus where it came from."""
+
+    def __init__(self, api_client: client.ApiClient, source: str,
+                 context: Optional[str], server: Optional[str],
+                 kubeconfig: Optional[str]):
+        self.api_client = api_client
+        self.source = source
+        self.context = context
+        self.server = server
+        self.kubeconfig = kubeconfig
+
+    def describe(self) -> str:
+        if self.source == "in-cluster":
+            return f"in-cluster service account at {self.server}"
+        return (f"context '{self.context}' at {self.server} "
+                f"(kubeconfig: {self.kubeconfig})")
+
+
+_BINDING: Optional[_Binding] = None
+
+
+def _resolve_binding(kubeconfig: Optional[str], context: Optional[str]) -> _Binding:
+    """Load the cluster configuration once, into a client of its own.
+
+    An explicit selection (a kubeconfig path, or a context from the argument or
+    ``K8STOOLS_CONTEXT``) either loads or raises :class:`K8sClusterSelectionError`.
+    It never falls back to in-cluster config: the client raises the same
+    ``ConfigException`` for a misspelled context as for a missing kubeconfig, so a
+    fallback would bind a server running in a pod to that pod's cluster whenever a
+    context name had a typo.
+
+    With no explicit selection the behavior is the one this module always had:
+    ``KUBECONFIG`` (or ``~/.kube/config``) and its current context, then in-cluster
+    config if there is no usable kubeconfig.
+    """
+    from_env = context is None and bool(os.environ.get(CONTEXT_ENV_VAR))
+    context = context or os.environ.get(CONTEXT_ENV_VAR) or None
+    explicit = kubeconfig is not None or context is not None
+    path = os.path.expanduser(kubeconfig) if kubeconfig else None
+    reported_path = path or os.path.expanduser(config.kube_config.KUBE_CONFIG_DEFAULT_LOCATION)
     try:
-        config.load_kube_config()
-        return client.CoreV1Api()
-    except config.ConfigException:
+        # Name the context before loading it, and load exactly that one, so the
+        # binding and its description cannot disagree even if someone runs
+        # `kubectl config use-context` between the two reads.
+        if context is None:
+            _, current = config.list_kube_config_contexts(config_file=path)
+            context = current["name"] if current else None
+        configuration = client.Configuration()
+        config.load_kube_config(config_file=path, context=context,
+                                client_configuration=configuration)
+        return _Binding(client.ApiClient(configuration), "kubeconfig", context,
+                        configuration.host, reported_path)
+    except config.ConfigException as e:
+        if explicit:
+            what = []
+            if kubeconfig is not None:
+                what.append(f"kubeconfig '{kubeconfig}'")
+            if context is not None:
+                what.append(f"context '{context}'"
+                            + (f" (from {CONTEXT_ENV_VAR})" if from_env else ""))
+            raise K8sClusterSelectionError(
+                f"Could not load the selected {' and '.join(what)}: {e}") from e
         logging.warning("Could not load kube config. Ensure you have a valid Kubernetes configuration.")
         logging.warning("Attempting to load in-cluster config...")
-        try:
-            config.load_incluster_config()
-            return client.CoreV1Api()
-        except config.ConfigException as e:
-            raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
-        except Exception as e:
-            raise K8sConfigError(f"Unexpected error: {e}") from e
+    try:
+        configuration = client.Configuration()
+        config.load_incluster_config(client_configuration=configuration)
+        return _Binding(client.ApiClient(configuration), "in-cluster", None,
+                        configuration.host, None)
+    except config.ConfigException as e:
+        raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
+    except Exception as e:
+        raise K8sConfigError(f"Unexpected error: {e}") from e
+
+
+def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -> str:
+    """Bind the tools to a cluster, replacing any earlier binding.
+
+    Optional: with no call, the tools bind on first use exactly as ``configure()``
+    with no arguments would. Every API group (core, apps, batch) shares the one
+    binding, so the tools cannot end up answering from two clusters.
+
+    Parameters
+    ----------
+    kubeconfig
+        Path of the kubeconfig file. If None, ``KUBECONFIG`` or ``~/.kube/config``.
+    context
+        Context to use from it. If None, ``K8STOOLS_CONTEXT``, then the file's
+        ``current-context``.
+
+    Returns
+    -------
+    str
+        A one-line description of the binding, for logging.
+
+    Raises
+    ------
+    K8sClusterSelectionError
+        If an explicitly selected kubeconfig or context cannot be loaded.
+    K8sConfigError
+        If there is no selection and neither a kubeconfig nor in-cluster config
+        can be loaded.
+    """
+    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API
+    binding = _resolve_binding(kubeconfig, context)
+    _BINDING = binding
+    K8S = APPS_V1_API = BATCH_V1_API = None
+    return binding.describe()
+
+
+def _binding() -> _Binding:
+    global _BINDING
+    if _BINDING is None:
+        _BINDING = _resolve_binding(None, None)
+    return _BINDING
+
+
+# All three API groups are built on the one bound ApiClient. They used to load the
+# kubeconfig separately, each on its first use, and each snapshots the global
+# default configuration when constructed - so a `kubectl config use-context`
+# between a server's first pod query and its first deployment query left it
+# reading pods from one cluster and deployments from another.
+
+def _get_api_client() -> client.CoreV1Api:
+    return client.CoreV1Api(_binding().api_client)
 
 
 def _get_apps_v1_api_client() -> client.AppsV1Api:
-    try:
-        config.load_kube_config()
-        return client.AppsV1Api()
-    except config.ConfigException:
-        logging.warning("Could not load kube config. Ensure you have a valid Kubernetes configuration.")
-        logging.warning("Attempting to load in-cluster config...")
-        try:
-            config.load_incluster_config()
-            return client.AppsV1Api()
-        except config.ConfigException as e:
-            raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
-        except Exception as e:
-            raise K8sConfigError(f"Unexpected error: {e}") from e
+    return client.AppsV1Api(_binding().api_client)
 
 
 def _get_batch_v1_api_client() -> client.BatchV1Api:
-    try:
-        config.load_kube_config()
-        return client.BatchV1Api()
-    except config.ConfigException:
-        logging.warning("Could not load kube config. Ensure you have a valid Kubernetes configuration.")
-        logging.warning("Attempting to load in-cluster config...")
-        try:
-            config.load_incluster_config()
-            return client.BatchV1Api()
-        except config.ConfigException as e:
-            raise K8sConfigError("Could not load in-cluster config. No Kubernetes config found.") from e
-        except Exception as e:
-            raise K8sConfigError(f"Unexpected error: {e}") from e
+    return client.BatchV1Api(_binding().api_client)
 
 
 def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
@@ -2421,7 +2526,83 @@ def print_events(namespace: Optional[str] = None,
         print(f"{last_seen:<12} {event.type:<10} {event.reason:<20} {event.object:<40} {message:<40}")
 
 
+
+class ClusterInfo(BaseModel):
+    """Which cluster these tools are answering from."""
+    source: Literal["kubeconfig", "in-cluster", "capture"]
+    context: Optional[str] = None
+    server: Optional[str] = None
+    kubeconfig: Optional[str] = None
+    server_version: Optional[str] = None
+    captured_at: Optional[datetime.datetime] = None
+
+
+def get_cluster_info() -> ClusterInfo:
+    """Report which Kubernetes cluster these tools are bound to. Call this first
+    when more than one cluster could be involved, and before drawing conclusions
+    that depend on which cluster the data came from.
+
+    The binding is made once (at server startup, or on the first tool call) and
+    shared by every tool, so all tools answer from this cluster.
+
+    Parameters
+    ----------
+    None
+        This function does not take any parameters.
+
+    Returns
+    -------
+    ClusterInfo
+        An object with the following fields:
+
+        source : str
+            "kubeconfig" (bound through a kubeconfig context), "in-cluster" (the
+            service account of the pod the server runs in), or "capture" (a
+            recorded snapshot of a cluster being replayed, not a live cluster).
+        context : Optional[str]
+            The kubeconfig context name. None for in-cluster config, and for a
+            capture that did not record one.
+        server : Optional[str]
+            URL of the cluster's API server.
+        kubeconfig : Optional[str]
+            Path of the kubeconfig file (or ``:``-separated list of files) the
+            binding was read from. None unless source is "kubeconfig".
+        server_version : Optional[str]
+            Kubernetes version reported by the API server, e.g. "v1.31.2". None if
+            the server could not be reached, or the capture did not record it.
+        captured_at : Optional[datetime.datetime]
+            For a capture, when it was taken; every age and timestamp the tools
+            return is relative to that moment. None for a live cluster.
+
+    Raises
+    ------
+    K8sConfigError
+        If no cluster configuration can be loaded.
+    """
+    binding = _binding()
+    logging.info("get_cluster_info()")
+    try:
+        server_version = client.VersionApi(binding.api_client).get_code().git_version
+    except Exception as e:
+        # Still worth answering: which cluster the tools are bound to is the
+        # question, and an unreachable server is part of the answer.
+        logging.warning(f"Could not read the API server version: {e}")
+        server_version = None
+    return ClusterInfo(source=binding.source, context=binding.context,
+                       server=binding.server, kubeconfig=binding.kubeconfig,
+                       server_version=server_version)
+
+
+def print_cluster_info() -> None:
+    """Calls get_cluster_info and prints the output to stdout."""
+    info = get_cluster_info()
+    print(f"{'SOURCE':<12} {'CONTEXT':<24} {'SERVER':<40} {'VERSION':<12}")
+    print(f"{info.source:<12} {info.context or '-':<24} {info.server or '-':<40} "
+          f"{info.server_version or '-':<12}")
+
+
 TOOLS = [
+    get_cluster_info,
     get_namespaces,
     get_node_summaries,
     get_pod_summaries,

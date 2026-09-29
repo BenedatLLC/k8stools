@@ -22,7 +22,7 @@ dependencies = [
     "rich>=14.0.0",
 ]
 
-urls = { "Homepage" = "https://github.com/BenedatLLC/k8stools" }
+urls = { "Homepage" = "https://github.com/BenedatLLC/k8stools", "Changelog" = "https://github.com/BenedatLLC/k8stools/blob/main/CHANGELOG.md" }
 
 [project.scripts]
 k8s-mcp-server = "k8stools.mcp_server:main"

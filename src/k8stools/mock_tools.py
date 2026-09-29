@@ -53,6 +53,12 @@ def _state() -> MockState:
     return _STATE
 
 
+def get_cluster_info() -> k8s_tools.ClusterInfo:
+    return _state().get_cluster_info()
+
+get_cluster_info.__doc__ = k8s_tools.get_cluster_info.__doc__
+
+
 def get_namespaces() -> list[k8s_tools.NamespaceSummary]:
     return _state().get_namespaces()
 
@@ -189,6 +195,7 @@ get_events.__doc__ = k8s_tools.get_events.__doc__
 
 
 TOOLS = [
+    get_cluster_info,
     get_namespaces,
     get_node_summaries,
     get_pod_summaries,

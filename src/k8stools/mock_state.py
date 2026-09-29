@@ -377,6 +377,22 @@ class MockState:
 
     # -- queries ------------------------------------------------------------
 
+    def get_cluster_info(self) -> k8s_tools.ClusterInfo:
+        """The cluster the capture was taken from, as the capture recorded it.
+
+        ``source`` is always "capture", so an agent can tell replayed evidence
+        from a live cluster. Captures taken before the cluster was recorded
+        (including the built-in one) report only when they were taken.
+        """
+        cluster = self._data.get("cluster") or {}
+        return k8s_tools.ClusterInfo(
+            source="capture",
+            context=cluster.get("context"),
+            server=cluster.get("server"),
+            server_version=cluster.get("server_version"),
+            captured_at=self.captured_at,
+        )
+
     @_pinned_query
     def get_namespaces(self) -> list[k8s_tools.NamespaceSummary]:
         return self._decode_all("namespaces", k8s_tools.NamespaceSummary, None)

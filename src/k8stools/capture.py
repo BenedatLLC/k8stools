@@ -162,6 +162,7 @@ def capture_state(namespaces: Optional[list[str]] = None,
     redactor = _Redactor(redact, stats)
     captured_at = datetime.datetime.now(datetime.timezone.utc)
 
+    cluster = _safe(k8s_tools.get_cluster_info, default=None)
     all_namespaces = redactor(k8s_tools.get_namespaces())
     target_namespaces = namespaces if namespaces else [ns.name for ns in all_namespaces]
 
@@ -169,6 +170,13 @@ def capture_state(namespaces: Optional[list[str]] = None,
         "version": CAPTURE_VERSION,
         "captured_at": captured_at.isoformat(),
         "redacted": redact,
+        # Which cluster this is, so replay can answer get_cluster_info. The
+        # kubeconfig path is left out: it names a file on the capturing machine.
+        "cluster": {
+            "context": cluster.context,
+            "server": cluster.server,
+            "server_version": cluster.server_version,
+        } if cluster else None,
         "namespaces": _encode_all(all_namespaces, captured_at),
         "nodes": _encode_all(redactor(k8s_tools.get_node_summaries()), captured_at),
         "pods": [],
@@ -345,6 +353,12 @@ def main() -> int:
                         help="Output file [default: k8s-state-<timestamp>.json]. "
                              "A name ending in .gz is written gzipped; captures are "
                              "read back compressed or not either way.")
+    parser.add_argument('--kubeconfig', metavar='PATH', default=None,
+                        help="Kubeconfig file to capture from [default: KUBECONFIG, "
+                             "then ~/.kube/config]")
+    parser.add_argument('--context', metavar='NAME', default=None,
+                        help="Kubeconfig context to capture from [default: "
+                             f"{k8s_tools.CONTEXT_ENV_VAR}, then the kubeconfig's current-context]")
     parser.add_argument('--no-logs', action='store_true', default=False,
                         help="Skip container logs entirely, including previous-instance "
                              "logs, for a structure-only snapshot")
@@ -370,6 +384,14 @@ def main() -> int:
                      "to capture raw values). Redaction cannot be undone in the capture file.")
     else:
         logging.warning("Secret redaction is DISABLED - this capture may contain credentials")
+
+    try:
+        # Bind before anything else, so the capture comes from the cluster named
+        # here and the log says which one that was.
+        logging.info(f"Capturing from {k8s_tools.configure(args.kubeconfig, args.context)}")
+    except k8s_tools.K8sConfigError as e:
+        print(f"Capture failed: {e}", file=sys.stderr)
+        return 1
 
     output = Path(args.output) if args.output else Path(
         f"k8s-state-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
