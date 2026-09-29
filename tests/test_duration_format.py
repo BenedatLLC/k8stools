@@ -131,6 +131,7 @@ def test_there_are_duration_fields_to_check():
 def test_fractional_input_serializes_within_the_declared_format(model):
     dumped = _build(model, FRACTIONAL).model_dump(mode="json")
     for name in _duration_fields(model):
+        assert dumped[name] is not None, f"{model.__name__}.{name} was never exercised"
         assert RFC3339_DURATION_RE.match(dumped[name]), \
             f"{model.__name__}.{name} = {dumped[name]!r} violates format: duration"
 

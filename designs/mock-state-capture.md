@@ -176,13 +176,15 @@ All time-related data is stored relative to `captured_at` so the mock can replay
 
 | Original field type | JSON representation | Notes |
 |---|---|---|
-| `timedelta` (age, last_restart, last_seen) | `float` seconds | `age_seconds`, `last_restart_seconds`, `last_seen_seconds` |
+| `timedelta` age — `Duration` (age, last_restart, last_seen) | `float` seconds | `age_seconds`, `last_restart_seconds`, `last_seen_seconds` |
+| `timedelta` span — `Interval` (ran_for) | `float` seconds | `ran_for_seconds`; not advanced on replay |
 | `datetime` (started_at, finished_at) | `float` seconds before captured_at | `started_at_offset_seconds`, `finished_at_offset_seconds` |
 | `None` for optional fields | `null` | unchanged |
 
 At server start, `MockState` records `server_start_time`. When serving a query at time `now`:
 
-- **timedelta reconstruction**: `timedelta(seconds=stored_seconds + (now - server_start_time).total_seconds())`
+- **age reconstruction**: `timedelta(seconds=stored_seconds + (now - server_start_time).total_seconds())`
+- **interval reconstruction**: `timedelta(seconds=stored_seconds)` — a span between two moments does not grow with time since capture
 - **datetime reconstruction**: `server_start_time - timedelta(seconds=stored_offset_seconds)`
 
 This keeps all ages consistent and advancing in real time, anchored to the moment the server started rather than when the snapshot was taken.

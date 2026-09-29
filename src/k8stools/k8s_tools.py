@@ -118,7 +118,32 @@ def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
 #:
 #: Normalizing the value rather than the schema keeps ``format: "duration"``
 #: accurate and keeps direct Python callers' fields real ``timedelta`` objects.
+#:
+#: A ``Duration`` is an *age*: time from some moment until now. Replay of a
+#: capture relies on that - it advances every age by the time since the server
+#: started. A fixed span between two moments must be an :data:`Interval` instead.
 Duration = Annotated[datetime.timedelta, AfterValidator(_to_whole_seconds)]
+
+
+class _IntervalMarker:
+    """``Annotated`` metadata that tells the capture codec a duration is an interval."""
+
+    def __repr__(self) -> str:
+        return "INTERVAL"
+
+
+INTERVAL = _IntervalMarker()
+
+#: A ``timedelta`` field that is a fixed span between two moments (how long a
+#: container ran), as opposed to an age (:data:`Duration`).
+#:
+#: Same value normalization and schema as ``Duration``; the difference matters only
+#: to capture replay. ``MockState`` advances an age by the time since the server
+#: started, so an 8-day-old deployment is 8 days and 3 hours old three hours into
+#: a replay. An interval must not move: a container that ran 60s ran 60s however
+#: long the replay has been up. Declaring a span as a plain ``Duration`` made it
+#: grow on every replay, beside timestamps that still said otherwise.
+Interval = Annotated[datetime.timedelta, AfterValidator(_to_whole_seconds), INTERVAL]
 
 
 class NamespaceSummary(BaseModel):
@@ -636,15 +661,19 @@ class ContainerStateTerminated(BaseModel):
     #: restarts (this plus the kubelet's back-off, named in the Waiting state's
     #: message). Only the first is in the API; stating it removes one subtraction
     #: that answers kept getting wrong.
-    ran_for: Optional[Duration] = None
+    #:
+    #: An :data:`Interval`, not a ``Duration``: it is a span, so capture replay
+    #: must not advance it the way it advances ages.
+    ran_for: Optional[Interval] = None
 
     @model_validator(mode="after")
     def _derive_ran_for(self) -> "ContainerStateTerminated":
         # Computed here rather than at the API boundary so a replayed capture
-        # recorded before this field existed gets it too.
+        # recorded before this field existed gets it too. Assigned inside a model
+        # validator, so Interval's own validator does not run; apply its
+        # normalization explicitly.
         if self.ran_for is None and self.started_at and self.finished_at:
-            self.ran_for = datetime.timedelta(seconds=max(
-                int((self.finished_at - self.started_at).total_seconds()), 0))
+            self.ran_for = _to_whole_seconds(self.finished_at - self.started_at)
         return self
 
 # see kubernetes.client.models.v1_container_state.V1ContainerState

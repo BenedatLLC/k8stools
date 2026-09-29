@@ -7,7 +7,8 @@ import time
 import pytest
 
 from k8stools import k8s_tools
-from k8stools.mock_state import CAPTURE_VERSION, CaptureFormatError, MockState
+from k8stools.mock_state import (BUILTIN_STATE_FILE, CAPTURE_VERSION, CaptureFormatError,
+                                 MockState)
 
 
 UTC = datetime.timezone.utc
@@ -50,6 +51,27 @@ def test_builtin_loads_and_is_a_coherent_cluster():
     for pod in pods:
         assert state.get_pod_container_statuses(pod.name, pod.namespace)
         assert state.get_pod_spec(pod.name, pod.namespace)
+
+
+def test_builtin_terminated_containers_state_how_long_they_ran():
+    """Through the replay tool surface, on an advancing clock a day in: ran_for
+    is the interval between the replayed timestamps, not an age that grows."""
+    start = datetime.datetime.now(UTC) - datetime.timedelta(days=1)
+    state = MockState(json.loads(BUILTIN_STATE_FILE.read_text()), frozen=False,
+                      server_start_time=start)
+    terminated = [
+        s
+        for pod in state.get_pod_summaries()
+        for cs in state.get_pod_container_statuses(pod.name, pod.namespace)
+        for s in (cs.state, cs.last_state)
+        if isinstance(s, k8s_tools.ContainerStateTerminated)
+    ]
+    # The fixture's OOMKilled `ad` container and its completed cleanup job.
+    assert len(terminated) >= 2
+    for s in terminated:
+        assert s.ran_for is not None
+        assert s.ran_for == s.finished_at - s.started_at
+        assert s.ran_for < datetime.timedelta(hours=1)
 
 
 # --- filtering --------------------------------------------------------------

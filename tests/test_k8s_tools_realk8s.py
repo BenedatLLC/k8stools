@@ -114,6 +114,40 @@ def test_get_pod_container_statuses():
     statuses = k8s_tools.get_pod_container_statuses(pod_name, "default")
     assert isinstance(statuses, list)
 
+def test_terminated_containers_state_how_long_they_ran():
+    """Every terminated container state on a real cluster gets a ran_for equal to
+    its own timestamps, and it survives capture and replay a day later unchanged:
+    it is a span, so the advancing replay clock must not move it."""
+    import json
+    from k8stools.mock_state import CAPTURE_VERSION, MockState, encode_model
+    now = datetime.datetime.now(datetime.timezone.utc)
+    found = []
+    for pod in k8s_tools.get_pod_summaries():
+        for cs in k8s_tools.get_pod_container_statuses(pod.name, pod.namespace):
+            for which in ("state", "last_state"):
+                s = getattr(cs, which)
+                if isinstance(s, k8s_tools.ContainerStateTerminated) \
+                        and s.started_at and s.finished_at:
+                    found.append((pod, cs, which, s))
+    if not found:
+        pytest.skip("No terminated container states found in the cluster.")
+
+    records = {}
+    for pod, cs, which, s in found:
+        assert s.ran_for == k8s_tools._to_whole_seconds(s.finished_at - s.started_at)
+        record = records.setdefault((pod.namespace, pod.name), {
+            "summary": encode_model(pod, now), "container_statuses": []})
+        record["container_statuses"].append(encode_model(cs, now))
+
+    capture = {"version": CAPTURE_VERSION, "captured_at": now.isoformat(),
+               "redacted": False, "pods": list(records.values())}
+    replay = MockState(json.loads(json.dumps(capture)), frozen=False,
+                       server_start_time=now - datetime.timedelta(days=1))
+    for pod, cs, which, s in found:
+        back = next(c for c in replay.get_pod_container_statuses(pod.name, pod.namespace)
+                    if c.container_name == cs.container_name)
+        assert getattr(back, which).ran_for == s.ran_for
+
 def test_get_pod_events():
     if k8s_tools.K8S is None:
         k8s_tools.K8S = k8s_tools._get_api_client()

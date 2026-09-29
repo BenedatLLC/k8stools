@@ -29,6 +29,11 @@ advanced by the same offset, the *intervals between* resources survive replay
 exactly - which is what lets an agent conclude "this deployment is 8 days old but
 its current replica set is 7h34m old, so it was upgraded 7h34m ago".
 
+That advance applies to ages only. A field declared :data:`k8s_tools.Interval` - a
+fixed span such as how long a container ran - is stored under the same
+``<field>_seconds`` key but read back unchanged, since a span does not grow with
+the time since capture.
+
 **The replay clock has two modes** (see :class:`MockState`'s ``frozen``
 argument). Advancing (the default) is right for interactive use: ages move the way
 someone poking at a cluster expects. Frozen is right for an automated suite, where
@@ -91,6 +96,25 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     origin = typing.get_origin(annotation)
     if origin is Union or origin is types.UnionType:
         return any(_annotation_contains(arg, target) for arg in typing.get_args(annotation))
+    return False
+
+
+def _is_interval(annotation: Any, metadata: Any = ()) -> bool:
+    """True if ``annotation`` is a :data:`k8s_tools.Interval` (a span, not an age).
+
+    ``metadata`` is the field's own: pydantic moves a bare field's ``Annotated``
+    metadata onto ``FieldInfo.metadata``, but leaves it in place inside an
+    ``Optional[...]``, so both places have to be checked.
+    """
+    if any(m is k8s_tools.INTERVAL for m in metadata):
+        return True
+    if hasattr(annotation, "__metadata__"):
+        if any(m is k8s_tools.INTERVAL for m in annotation.__metadata__):
+            return True
+        return _is_interval(typing.get_args(annotation)[0])
+    origin = typing.get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        return any(_is_interval(arg) for arg in typing.get_args(annotation))
     return False
 
 
@@ -223,15 +247,18 @@ def decode_model(cls: type[BaseModel], record: dict[str, Any], clock: _Clock) ->
         key = _encoded_name(name, field.annotation)
         if key not in record:
             continue  # let the model's own default apply
-        kwargs[name] = _decode_value(record[key], field.annotation, clock)
+        kwargs[name] = _decode_value(record[key], field.annotation, clock,
+                                     interval=_is_interval(field.annotation, field.metadata))
     return cls(**kwargs)
 
 
-def _decode_value(value: Any, annotation: Any, clock: _Clock) -> Any:
+def _decode_value(value: Any, annotation: Any, clock: _Clock,
+                  interval: bool = False) -> Any:
     if value is None:
         return None
     if _annotation_contains(annotation, datetime.timedelta):
-        return clock.age(value)
+        # An age advances with the replay clock; an interval is a fixed span.
+        return datetime.timedelta(seconds=value) if interval else clock.age(value)
     if _annotation_contains(annotation, datetime.datetime):
         return clock.dt(value)
 
@@ -241,7 +268,9 @@ def _decode_value(value: Any, annotation: Any, clock: _Clock) -> Any:
     if isinstance(value, list):
         args = typing.get_args(annotation)
         item_annotation = args[0] if args else Any
-        return [_decode_value(v, item_annotation, clock) for v in value]
+        return [_decode_value(v, item_annotation, clock,
+                              interval=_is_interval(item_annotation))
+                for v in value]
     return value
 
 

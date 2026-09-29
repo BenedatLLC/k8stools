@@ -76,6 +76,12 @@ This is the same rule `MockState`'s replay clock already applies, for the same
 reason. `tests/test_duration_format.py` checks each model's serialized output
 against the format its own schema declares.
 
+`Duration` means an *age* (time from some moment until now). For a fixed span
+between two moments — `ContainerStateTerminated.ran_for` — use `k8s_tools.Interval`,
+which has the same normalization and schema. The difference is capture replay:
+`MockState` advances every age by the time since the server started, so a span
+declared as `Duration` grows on replay (a 60s run read back as 1d+60s a day in).
+
 Use snake_case field names. Include `pod_name`/`namespace` in container-level models for context.
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
@@ -168,6 +174,10 @@ Invariants worth preserving when touching this code:
   replay — "deployment 8d old, current replica set 7h34m old, so it was upgraded
   7h34m ago". The replay clock quantizes to whole seconds and samples once per
   query to keep that exact; don't reintroduce per-field `datetime.now()`.
+  Only ages advance: an `Interval` field is stored under the same `_seconds` key
+  but read back unchanged. Replay tests that freeze the clock can't tell the two
+  apart (frozen elapsed time is zero), so test a new duration field on an
+  advancing clock with a `server_start_time` in the past.
 - **`MockState` must match the real tool's documented behavior**, not just its
   types — filter semantics, result ordering (`get_replicaset_summaries` re-sorts
   at query time), and which failures raise vs. return empty.

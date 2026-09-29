@@ -6,14 +6,16 @@ way ``k8s-capture-state`` would, and read them back through ``MockState``.
 
 import datetime
 import json
+from typing import Optional
 
 import pytest
+from pydantic import BaseModel
 
 from k8stools import k8s_tools
 from k8stools.capture import (_capture_events, _Redactor, capture_state,
                               CaptureStats)
 from k8stools.mock_state import (CAPTURE_VERSION, CaptureFormatError, MockState,
-                                 encode_model)
+                                 _Clock, decode_model, encode_model)
 
 
 UTC = datetime.timezone.utc
@@ -140,6 +142,88 @@ def test_a_capture_recorded_before_ran_for_existed_still_gets_it():
         "container_statuses": [record]}]))
     back = state.get_pod_container_statuses("p", "default")[0]
     assert back.last_state.ran_for == datetime.timedelta(seconds=63)
+
+
+def test_ran_for_does_not_grow_on_an_advancing_replay_clock():
+    """Regression: a capture stores ran_for as ``ran_for_seconds``, and the replay
+    codec decodes every timedelta as an *age* - captured value plus time since the
+    server started. Taken at its word, a container that ran 60s reported 1d+60s a
+    day into a replay, beside timestamps still 60s apart. The frozen-clock tests
+    above cannot see this: frozen elapsed time is zero."""
+    captured_at = datetime.datetime.now(UTC)
+    status = k8s_tools.ContainerStatus(
+        pod_name="p", namespace="default", container_name="c", image="img",
+        ready=False, restart_count=3, started=False, stop_signal=None,
+        state=None,
+        last_state=k8s_tools.ContainerStateTerminated(
+            exit_code=137, reason="OOMKilled",
+            started_at=captured_at - datetime.timedelta(seconds=360),
+            finished_at=captured_at - datetime.timedelta(seconds=300)),
+        volume_mounts=[], resource_requests={}, resource_limits={},
+        allocated_resources={})
+    state = _state(pods=[{
+        "summary": {"name": "p", "namespace": "default", "total_containers": 1,
+                    "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
+                    "age_seconds": 100.0},
+        "container_statuses": [encode_model(status, captured_at)]}])
+
+    later = datetime.datetime.now(UTC) - datetime.timedelta(days=1)
+    reloaded = MockState(json.loads(json.dumps(state)), frozen=False,
+                         server_start_time=later)
+    back = reloaded.get_pod_container_statuses("p", "default")[0].last_state
+    assert back.ran_for == datetime.timedelta(seconds=60)
+    assert back.ran_for == back.finished_at - back.started_at
+
+
+class _Spans(BaseModel):
+    """One of each kind of duration, bare and optional, for the codec tests.
+
+    A bare field's Annotated metadata is moved onto FieldInfo.metadata by
+    pydantic while an Optional one keeps it inline, so both shapes are covered.
+    """
+    name: str = "s"
+    namespace: str = "default"
+    age: k8s_tools.Duration
+    span: k8s_tools.Interval
+    maybe_span: Optional[k8s_tools.Interval] = None
+
+
+def test_intervals_are_not_advanced_by_the_replay_clock():
+    captured_at = datetime.datetime.now(UTC)
+    record = encode_model(_Spans(age=datetime.timedelta(hours=1),
+                                 span=datetime.timedelta(seconds=60),
+                                 maybe_span=datetime.timedelta(seconds=90)), captured_at)
+    # Same key convention as an age: the file format does not change.
+    assert record["span_seconds"] == 60 and record["maybe_span_seconds"] == 90
+
+    later = datetime.datetime.now(UTC) - datetime.timedelta(days=1)
+    clock = _Clock(later, frozen=False)
+    back = decode_model(_Spans, json.loads(json.dumps(record)), clock)
+    assert back.age == datetime.timedelta(days=1, hours=1)   # ages advance
+    assert back.span == datetime.timedelta(seconds=60)        # spans do not
+    assert back.maybe_span == datetime.timedelta(seconds=90)
+
+
+def test_a_hand_edited_ran_for_takes_effect_on_replay():
+    """The stored value is live data, not a dead copy of the timestamps."""
+    captured_at = datetime.datetime.now(UTC)
+    status = k8s_tools.ContainerStatus(
+        pod_name="p", namespace="default", container_name="c", image="img",
+        ready=False, restart_count=3, started=False, stop_signal=None, state=None,
+        last_state=k8s_tools.ContainerStateTerminated(
+            started_at=captured_at - datetime.timedelta(seconds=360),
+            finished_at=captured_at - datetime.timedelta(seconds=300)),
+        volume_mounts=[], resource_requests={}, resource_limits={},
+        allocated_resources={})
+    record = encode_model(status, captured_at)
+    record["last_state"]["ran_for_seconds"] = 3600.0
+    state = _reload(_state(pods=[{
+        "summary": {"name": "p", "namespace": "default", "total_containers": 1,
+                    "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
+                    "age_seconds": 100.0},
+        "container_statuses": [record]}]), frozen=False)
+    back = state.get_pod_container_statuses("p", "default")[0]
+    assert back.last_state.ran_for == datetime.timedelta(hours=1)
 
 
 def test_relative_intervals_survive_a_later_reload():

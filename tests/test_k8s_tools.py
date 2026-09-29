@@ -399,7 +399,10 @@ def test_get_pod_container_statuses():
         assert cs.container_name == "container-1"
         assert cs.ready is True
         assert cs.restart_count == 1
-        assert hasattr(cs, "last_state")
+        # Derived on the live path from the API's V1ContainerStateTerminated.
+        assert isinstance(cs.last_state, k8s_tools.ContainerStateTerminated)
+        assert cs.last_state.reason == "OOMKilled"
+        assert cs.last_state.ran_for == datetime.timedelta(hours=1)
 
 def test_get_pod_events():
     events = k8s_tools.get_pod_events("pod-1", "default")
@@ -543,7 +546,14 @@ class TestRanFor:
         assert s.ran_for == datetime.timedelta(0)
 
     def test_an_explicit_value_is_kept(self):
+        # Replay passes the captured value back in; it is only derived when absent.
         s = k8s_tools.ContainerStateTerminated(
             started_at=self.T0, finished_at=self.T0 + datetime.timedelta(seconds=63),
             ran_for=datetime.timedelta(seconds=5))
         assert s.ran_for == datetime.timedelta(seconds=5)
+
+    def test_declared_as_an_interval_not_an_age(self):
+        """Capture replay advances ages; a span declared as one grew on replay."""
+        from k8stools.mock_state import _is_interval
+        field = k8s_tools.ContainerStateTerminated.model_fields["ran_for"]
+        assert _is_interval(field.annotation, field.metadata)
