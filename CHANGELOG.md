@@ -3,6 +3,23 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 2.2.1 — 2026-09-29
+
+### Documentation
+- **Event records can lag behind what they count** (follow-up to issue #8). The
+  kubelet counts every occurrence but, by default, writes at most one update per
+  object and event type every 5 minutes once a burst of 25 is used up (client-go's
+  event spam filter). A crash-looping pod's `Created` record read `last_seen`
+  29 minutes while the container had restarted 46 seconds earlier, then its count
+  jumped by six in one update. The `get_pod_events` and `get_events` descriptions
+  now say so: `count / (first_seen - last_seen)` still gives the rate, since both
+  lag together, but `last_seen` is not the time of the last restart (use the
+  container status or `PodSummary.last_restart`), and counts for different reasons
+  can differ by a few for the same restarts.
+- `PodSummary.last_restart` is described as what it is: time since a container
+  last *terminated*. For a container waiting in CrashLoopBackOff, that is its last
+  crash, not a restart.
+
 ## 2.2.0 — 2026-09-28
 
 ### Added

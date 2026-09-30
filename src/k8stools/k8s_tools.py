@@ -544,7 +544,11 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
         restarts : int
             Total number of restarts for all containers in the pod.
         last_restart : Optional[datetime.timedelta]
-            Time since the container last restart (None if never restarted).
+            Time since a container of this pod last terminated - the most
+            recent last_state.finished_at across its containers - or None if
+            none has. For a container waiting in CrashLoopBackOff this is its
+            last crash, not a restart: it has not been started again yet. Taken
+            from the kubelet's status, so it is current, unlike event records.
         age : datetime.timedelta
             Age of the pod (current time minus creation timestamp).
         ip : Optional[str]
@@ -739,6 +743,22 @@ def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSumma
             kubelet waits to restart, so its count is several times the number
             of restarts. count divided by (first_seen - last_seen) is the
             average rate over that window, not the current back-off.
+
+            A record can lag behind what it counts. By default the kubelet
+            writes at most one event update per object and event type
+            ("Normal" or "Warning") every 5 minutes, once a burst of 25 is
+            used up; occurrences in between are counted but only written with
+            the next update, which then jumps by several at once. So count and
+            last_seen describe the most recent *written* occurrence and can
+            trail reality by several occurrences and tens of minutes. They lag
+            together, so the rate above still holds, but last_seen is not the
+            time of the last restart: for that, use the container status
+            (last_state.finished_at, state.started_at from
+            get_pod_container_statuses) or PodSummary.last_restart, which come
+            from the kubelet's status rather than from events. "Pulled",
+            "Created" and "Started" share one write budget, so their counts for
+            the same restarts can differ by a few; don't compare counts across
+            reasons.
         type : str
             Type of the event.
         reason : str
@@ -2507,6 +2527,22 @@ def get_events(namespace: Optional[str] = None,
             kubelet waits to restart, so its count is several times the number
             of restarts. count divided by (first_seen - last_seen) is the
             average rate over that window, not the current back-off.
+
+            A record can lag behind what it counts. By default the kubelet
+            writes at most one event update per object and event type
+            ("Normal" or "Warning") every 5 minutes, once a burst of 25 is
+            used up; occurrences in between are counted but only written with
+            the next update, which then jumps by several at once. So count and
+            last_seen describe the most recent *written* occurrence and can
+            trail reality by several occurrences and tens of minutes. They lag
+            together, so the rate above still holds, but last_seen is not the
+            time of the last restart: for that, use the container status
+            (last_state.finished_at, state.started_at from
+            get_pod_container_statuses) or PodSummary.last_restart, which come
+            from the kubelet's status rather than from events. "Pulled",
+            "Created" and "Started" share one write budget, so their counts for
+            the same restarts can differ by a few; don't compare counts across
+            reasons.
         type : str
             Type of the event ("Normal" or "Warning").
         reason : str

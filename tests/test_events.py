@@ -126,6 +126,20 @@ def test_docstrings_warn_that_backoff_counts_are_not_restarts():
         assert "first_seen" in tool.__doc__ and "count" in tool.__doc__
 
 
+def test_docstrings_warn_that_records_lag_behind_what_they_count():
+    """client-go counts an occurrence before its spam filter decides whether to
+    write it, and the filter budgets writes per object and event type (burst 25,
+    then one per 5 minutes). On a real crash loop a Created record's last_seen
+    read 29 minutes while the container had restarted 46s earlier, then its
+    count jumped 595 -> 601. The docstring has to send agents to the container
+    status for the time of the last restart."""
+    for tool in (k8s_tools.get_pod_events, k8s_tools.get_events):
+        doc = tool.__doc__
+        assert "lag" in doc and "every 5 minutes" in doc
+        assert "last_state.finished_at" in doc and "PodSummary.last_restart" in doc
+        assert "don't compare counts across" in doc
+
+
 # --- capture and replay --------------------------------------------------------
 
 def _capture(events):
