@@ -33,7 +33,6 @@ dates are release-tag dates.
   owner: a Deployment's pods name a replica set, whose `owner_deployment` names
   the Deployment. `None` for a pod nobody manages; captures from before 2.3.0
   replay `None`. `print_pod_summaries` gains an OWNER column.
-
 - **The built-in `--mock` fixture shows the 2.3.0 fields** and now describes a
   cluster that could exist. It gains an `otel-collector-agent` DaemonSet and its
   pod, pod owners, node condition times, and event counts. Every workload now has
@@ -47,7 +46,7 @@ dates are release-tag dates.
   - its 93 restarts were more than its age allows at the 5-minute backoff cap
     (now 67);
   - several logs were dated 14 months before the capture;
-  - the namespaces were older than anything else in the cluster.
+  - the namespaces were older than anything else in the cluster;
   - `test-pod-123`'s spec declared one container while its status had two.
 
   The `ad` container now shows the case `previous=True` is for: it restarted 58
