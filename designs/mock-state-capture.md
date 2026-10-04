@@ -151,6 +151,7 @@ A single JSON file per capture. Top-level keys:
   "services": [ ... ],
   "configmaps": [ ... ],
   "statefulsets": [ ... ],
+  "daemonsets": [ ... ],
   "cronjobs": [ ... ],
   "jobs": [ ... ],
   "pvcs": [ ... ],
@@ -162,7 +163,9 @@ The `configmaps`..`events` keys were added alongside the 1.1.0 tool batch
 (ConfigMaps, StatefulSets, CronJobs/Jobs, PVCs, and cluster-wide events). See
 [Resource records added in 1.1.0](#resource-records-added-in-110) below for their
 shapes. `replicasets` was added alongside the 1.2.0 tool batch — see
-[Resource records added in 1.2.0](#resource-records-added-in-120).
+[Resource records added in 1.2.0](#resource-records-added-in-120). `daemonsets` was added
+in 2.3.0: `DaemonSetSummary` fields with `age` → `age_seconds`; captures without it
+replay no DaemonSets.
 
 `redacted` records which mode the capture was taken in — see
 [Redaction](#redaction). It exists so a consumer can tell without guessing;
@@ -448,6 +451,7 @@ class MockState:
     def get_configmap_summaries(self, namespace: str | None = None) -> list[ConfigMapSummary]: ...
     def get_configmap(self, name: str, namespace: str) -> dict[str, Any]: ...
     def get_statefulset_summaries(self, namespace: str | None = None) -> list[StatefulSetSummary]: ...
+    def get_daemonset_summaries(self, namespace: str | None = None) -> list[DaemonSetSummary]: ...  # 2.3.0
     def get_cronjob_summaries(self, namespace: str | None = None) -> list[CronJobSummary]: ...
     def get_job_summaries(self, namespace: str | None = None) -> list[JobSummary]: ...
     def get_logs_for_job(self, job_name: str, namespace: str, container_name: str | None = None,
@@ -538,7 +542,7 @@ Behavior:
    (`configmaps`, `statefulsets`, `cronjobs`, `jobs`, `pvcs`), the 1.2.0 addition
    (`replicasets`), and a namespace/cluster-wide `get_events` sweep. If
    `--namespace` is given, only captures namespaced resources (pods/deployments/
-   replicasets/services/configmaps/statefulsets/cronjobs/jobs/pvcs/events) in those
+   replicasets/services/configmaps/statefulsets/daemonsets/cronjobs/jobs/pvcs/events) in those
    namespaces; namespaces and nodes are always captured in full.
 3. For each pod and each container, calls `get_logs_for_pod_and_container` unless `--no-logs`. Default log cap: 1000 lines (override with `--max-log-lines`).
 4. For each container whose `restart_count > 0`, calls the same tool with

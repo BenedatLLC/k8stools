@@ -57,6 +57,32 @@ replayable file).
 What changed in each release is in the
 [changelog](https://github.com/BenedatLLC/k8stools/blob/main/CHANGELOG.md).
 
+### Permissions
+
+The tools only read, with the `get` and `list` verbs. A read-only ClusterRole
+that covers every tool:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8stools-reader
+rules:
+- apiGroups: [""]
+  resources: [namespaces, nodes, pods, pods/log, events, services, configmaps,
+              persistentvolumeclaims]
+  verbs: [get, list]
+- apiGroups: [apps]
+  resources: [deployments, replicasets, statefulsets, daemonsets]
+  verbs: [get, list]
+- apiGroups: [batch]
+  resources: [jobs, cronjobs]
+  verbs: [get, list]
+```
+
+`get_cluster_info` also reads the server version (`/version`), which every
+authenticated user can read by default. No tool reads Secrets.
+
 ## Current tools
 
 These are the tools we define:
@@ -64,7 +90,7 @@ These are the tools we define:
 * `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
 * `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide` (includes capacity/allocatable/conditions/taints/labels)
-* `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`
+* `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`, with each pod's controlling owner (e.g. `DaemonSet/otel-collector-agent`)
 * `get_pod_container_statuses` - return the status for each of the container in a pod
 * `get_pod_events` - return the events for a pod
 * `get_pod_spec` - retrieves the spec for a given pod
@@ -75,6 +101,7 @@ These are the tools we define:
 * `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
 * `get_configmap` - retrieve the full contents of a single ConfigMap
 * `get_statefulset_summaries` - get a list of StatefulSets, like `kubectl get statefulsets`
+* `get_daemonset_summaries` - get a list of DaemonSets, like `kubectl get daemonsets -o wide` (includes node selector and images)
 * `get_cronjob_summaries` - get a list of CronJobs, like `kubectl get cronjobs`
 * `get_job_summaries` - get a list of Jobs, like `kubectl get jobs`
 * `get_logs_for_job` - retrieve logs from a Job's most-recent pod
@@ -95,6 +122,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_configmap_summaries`
 * `print_configmap`
 * `print_statefulset_summaries`
+* `print_daemonset_summaries`
 * `print_cronjob_summaries`
 * `print_job_summaries`
 * `print_pvc_summaries`
@@ -360,7 +388,7 @@ Everything the tools can read, so that every tool answers on replay:
 |---|---|
 | Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
 | Cluster-wide | namespaces, nodes |
-| Per namespace | deployments, replica sets, services, statefulsets, cronjobs, jobs, PVCs, events |
+| Per namespace | deployments, replica sets, services, statefulsets, daemonsets, cronjobs, jobs, PVCs, events |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
 

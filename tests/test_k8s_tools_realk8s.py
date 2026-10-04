@@ -787,3 +787,40 @@ def test_events_carry_count_and_first_seen():
         if event.first_seen is not None and event.last_seen is not None:
             assert event.first_seen >= event.last_seen
     assert any(e.count is not None for e in events)
+
+
+def test_daemonset_summaries():
+    """Issue #10: DaemonSets are listed, and their pods name them as owner."""
+    daemonsets = k8s_tools.get_daemonset_summaries()
+    if not daemonsets:
+        pytest.skip("No DaemonSets found in the cluster.")
+    owners = {(p.namespace, p.owner) for p in k8s_tools.get_pod_summaries()}
+    for ds in daemonsets:
+        assert isinstance(ds, k8s_tools.DaemonSetSummary)
+        for n in (ds.desired_number_scheduled, ds.current_number_scheduled,
+                  ds.number_ready, ds.updated_number_scheduled,
+                  ds.number_available, ds.number_misscheduled):
+            assert isinstance(n, int) and n >= 0
+        assert ds.images and all(isinstance(i, str) for i in ds.images)
+        assert ds.update_strategy in ("RollingUpdate", "OnDelete")
+        if ds.current_number_scheduled:
+            assert (ds.namespace, f"DaemonSet/{ds.name}") in owners
+    namespace = daemonsets[0].namespace
+    assert all(d.namespace == namespace
+               for d in k8s_tools.get_daemonset_summaries(namespace))
+
+
+def test_pod_owner_names_an_object_the_tools_can_find():
+    """A ReplicaSet owner resolves through get_replicaset_summaries to its
+    Deployment, which is how a caller groups a Deployment's pods."""
+    pods = k8s_tools.get_pod_summaries()
+    if not pods:
+        pytest.skip("No pods found in the cluster.")
+    replicasets = {(r.namespace, r.name) for r in k8s_tools.get_replicaset_summaries()}
+    for pod in pods:
+        if pod.owner is None:
+            continue
+        kind, _, name = pod.owner.partition("/")
+        assert kind and name
+        if kind == "ReplicaSet":
+            assert (pod.namespace, name) in replicasets

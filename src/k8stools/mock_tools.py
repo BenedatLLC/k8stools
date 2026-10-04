@@ -144,6 +144,12 @@ def get_statefulset_summaries(namespace: Optional[str] = None) -> list[k8s_tools
 get_statefulset_summaries.__doc__ = k8s_tools.get_statefulset_summaries.__doc__
 
 
+def get_daemonset_summaries(namespace: Optional[str] = None) -> list[k8s_tools.DaemonSetSummary]:
+    return _state().get_daemonset_summaries(namespace)
+
+get_daemonset_summaries.__doc__ = k8s_tools.get_daemonset_summaries.__doc__
+
+
 def get_cronjob_summaries(namespace: Optional[str] = None) -> list[k8s_tools.CronJobSummary]:
     return _state().get_cronjob_summaries(namespace)
 
@@ -209,6 +215,7 @@ TOOLS = [
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,
+    get_daemonset_summaries,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

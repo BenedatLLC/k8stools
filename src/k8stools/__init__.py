@@ -38,6 +38,7 @@ These are the tools we define:
 * get_configmap_summaries - get a list of ConfigMaps, like `kubectl get configmaps`
 * get_configmap - retrieve the full contents of a single ConfigMap
 * get_statefulset_summaries - get a list of StatefulSets, like `kubectl get statefulsets`
+* get_daemonset_summaries - get a list of DaemonSets, like `kubectl get daemonsets`
 * get_cronjob_summaries - get a list of CronJobs, like `kubectl get cronjobs`
 * get_job_summaries - get a list of Jobs, like `kubectl get jobs`
 * get_logs_for_job - retrieve logs from a Job's most-recent pod
@@ -59,6 +60,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_configmap_summaries
 * print_configmap
 * print_statefulset_summaries
+* print_daemonset_summaries
 * print_cronjob_summaries
 * print_job_summaries
 * print_pvc_summaries

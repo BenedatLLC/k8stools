@@ -543,8 +543,16 @@ class PodSummary(BaseModel):
     age: Duration
     ip: Optional[str] = None
     node: Optional[str] = None
+    owner: Optional[str] = None  # controlling owner as "Kind/name"
 
-   
+
+def _controller_owner(metadata) -> Optional[str]:
+    """The object's controlling owner as "Kind/name", or None if it has none."""
+    for ref in (getattr(metadata, "owner_references", None) or []):
+        if getattr(ref, "controller", False):
+            return f"{ref.kind}/{ref.name}"
+    return None
+
 
 def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
     """
@@ -582,6 +590,17 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             Pod IP address (None if not assigned).
         node : Optional[str]
             Name of the node where the pod is running (None if not scheduled).
+        owner : Optional[str]
+            The pod's controlling owner, as "Kind/name" - the object that
+            created and manages it, e.g. "DaemonSet/otel-collector-agent",
+            "StatefulSet/valkey-cart", "Job/backup-29318400". None for a bare
+            pod nobody manages. This is the direct owner only: a Deployment's
+            pods are owned by one of its replica sets ("ReplicaSet/ad-7d9f8c6b5"),
+            whose `owner_deployment` (`get_replicaset_summaries`) names the
+            Deployment; likewise a Job's `owner` names its CronJob. Static
+            (mirror) pods such as the control plane's report "Node/<node name>".
+            Group pods into workloads by this field rather than by stripping
+            name suffixes.
     Raises
     ------
     K8sConfigError
@@ -656,7 +675,8 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             last_restart=last_restart_timedelta,
             age=age,
             ip=pod_ip,
-            node=node_name
+            node=node_name,
+            owner=_controller_owner(pod.metadata),
         )
         pod_summaries.append(pod_summary)
     
@@ -669,14 +689,15 @@ def print_pod_summaries(namespace: Optional[str] = None) -> None:
     """
     pod_summaries = get_pod_summaries(namespace)
     # Print header
-    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'RESTARTS':<10} {'AGE':<12} {'IP':<16} {'NODE':<24}")
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'READY':<10} {'RESTARTS':<10} {'AGE':<12} {'IP':<16} {'NODE':<24} {'OWNER':<40}")
     for pod in pod_summaries:
         ready = f"{pod.ready_containers}/{pod.total_containers}"
         restarts = str(pod.restarts)
         age = _format_timedelta(pod.age)
         ip = pod.ip if pod.ip else "<none>"
         node = pod.node if pod.node else "<none>"
-        print(f"{pod.name:<32} {pod.namespace:<20} {ready:<10} {restarts:<10} {age:<12} {ip:<16} {node:<24}")
+        owner = pod.owner if pod.owner else "<none>"
+        print(f"{pod.name:<32} {pod.namespace:<20} {ready:<10} {restarts:<10} {age:<12} {ip:<16} {node:<24} {owner:<40}")
 
 def _format_timedelta(td: Optional[datetime.timedelta]) -> str:
     if td is None:
@@ -1976,6 +1997,147 @@ def print_statefulset_summaries(namespace: Optional[str] = None) -> None:
         print(f"{sts.name:<32} {sts.namespace:<20} {ready:<10} {service_name:<24} {age:<12}")
 
 
+class DaemonSetSummary(BaseModel):
+    """A summary of a DaemonSet like returned by `kubectl get daemonsets -o wide`:
+    the node agents (log shippers, CNI, kube-proxy, collectors) that run one pod
+    per eligible node."""
+    name: str
+    namespace: str
+    desired_number_scheduled: int
+    current_number_scheduled: int
+    number_ready: int
+    updated_number_scheduled: int
+    number_available: int
+    number_misscheduled: int
+    node_selector: dict[str, str] = Field(default_factory=dict)
+    update_strategy: str
+    images: list[str] = Field(default_factory=list)
+    age: Duration
+
+
+def get_daemonset_summaries(namespace: Optional[str] = None) -> list[DaemonSetSummary]:
+    """Retrieves a list of DaemonSetSummary objects for DaemonSets in a given
+    namespace or all namespaces, similar to `kubectl get daemonsets -o wide`.
+
+    A DaemonSet runs one pod on each node it targets; its pods are named
+    "<daemonset>-<5 characters>" and have `owner` "DaemonSet/<daemonset>" in
+    `get_pod_summaries`. A shortfall between the counts below ("desired 5,
+    ready 4") is often the first sign of a problem with a particular node.
+
+    Parameters
+    ----------
+    namespace : Optional[str], default=None
+        The specific namespace to list DaemonSets from. If None, lists from all
+        namespaces.
+
+    Returns
+    -------
+    list of DaemonSetSummary
+        A list of DaemonSetSummary objects, each with the following fields:
+
+        name : str
+            Name of the DaemonSet.
+        namespace : str
+            Namespace in which the DaemonSet runs.
+        desired_number_scheduled : int
+            Number of nodes that should be running the DaemonSet's pod - the
+            actual number of nodes it targets.
+        current_number_scheduled : int
+            Number of nodes running at least one of its pods that should.
+        number_ready : int
+            Number of nodes whose pod is ready.
+        updated_number_scheduled : int
+            Number of nodes running a pod from the current pod template. Less
+            than desired means a rollout is in progress or stuck.
+        number_available : int
+            Number of nodes whose pod has been ready for at least minReadySeconds.
+        number_misscheduled : int
+            Number of nodes running its pod that should not be.
+        node_selector : dict[str, str]
+            The pod template's nodeSelector (kubectl's NODE SELECTOR column).
+            Many DaemonSets choose their nodes with node affinity and
+            tolerations instead, which this does not show, so an empty selector
+            does not mean "every node"; desired_number_scheduled is the count.
+        update_strategy : str
+            Update strategy type ("RollingUpdate" or "OnDelete").
+        images : list[str]
+            Container images of the current pod template, in container order. A
+            pod running a different image is from an earlier revision.
+        age : datetime.timedelta
+            Age of the DaemonSet (current time minus creation timestamp).
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the API call to list DaemonSets fails.
+    """
+    global APPS_V1_API
+    if APPS_V1_API is None:
+        APPS_V1_API = _get_apps_v1_api_client()
+    logging.info(f"get_daemonset_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            daemon_sets = APPS_V1_API.list_namespaced_daemon_set(namespace=namespace).items
+        else:
+            daemon_sets = APPS_V1_API.list_daemon_set_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching daemon sets: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[DaemonSetSummary] = []
+    for ds in daemon_sets:
+        spec = ds.spec
+        status = ds.status
+
+        def count(field: str) -> int:
+            # The API omits a count that is zero.
+            value = getattr(status, field, None) if status else None
+            return value if value is not None else 0
+
+        update_strategy = "Unknown"
+        if spec and getattr(spec, "update_strategy", None) and spec.update_strategy.type:
+            update_strategy = spec.update_strategy.type
+        pod_spec = spec.template.spec if spec and spec.template else None
+        node_selector = dict(pod_spec.node_selector) \
+            if pod_spec and getattr(pod_spec, "node_selector", None) else {}
+        images = [c.image for c in (pod_spec.containers or [])] if pod_spec else []
+        age = datetime.timedelta(0)
+        if ds.metadata.creation_timestamp:
+            age = now - ds.metadata.creation_timestamp
+        summaries.append(DaemonSetSummary(
+            name=ds.metadata.name,
+            namespace=ds.metadata.namespace,
+            desired_number_scheduled=count("desired_number_scheduled"),
+            current_number_scheduled=count("current_number_scheduled"),
+            number_ready=count("number_ready"),
+            updated_number_scheduled=count("updated_number_scheduled"),
+            number_available=count("number_available"),
+            number_misscheduled=count("number_misscheduled"),
+            node_selector=node_selector,
+            update_strategy=update_strategy,
+            images=images,
+            age=age,
+        ))
+    return summaries
+
+
+def print_daemonset_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_daemonset_summaries and prints the output to stdout, like
+    `kubectl get daemonsets`."""
+    summaries = get_daemonset_summaries(namespace)
+    print(f"{'NAME':<32} {'NAMESPACE':<20} {'DESIRED':<8} {'CURRENT':<8} {'READY':<8} "
+          f"{'UP-TO-DATE':<11} {'AVAILABLE':<10} {'NODE SELECTOR':<28} {'AGE':<12}")
+    for ds in summaries:
+        selector = ",".join(f"{k}={v}" for k, v in ds.node_selector.items()) or "<none>"
+        age = _format_timedelta(ds.age)
+        print(f"{ds.name:<32} {ds.namespace:<20} {ds.desired_number_scheduled:<8} "
+              f"{ds.current_number_scheduled:<8} {ds.number_ready:<8} "
+              f"{ds.updated_number_scheduled:<11} {ds.number_available:<10} "
+              f"{selector:<28} {age:<12}")
+
+
 class ContainerTemplateSummary(BaseModel):
     """A container as declared in a pod template (e.g. inside a CronJob or Job),
     with just the image and literal environment values that matter for RCA."""
@@ -2729,6 +2891,7 @@ TOOLS = [
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,
+    get_daemonset_summaries,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

@@ -621,6 +621,11 @@ class MockState:
         return self._decode_all("statefulsets", k8s_tools.StatefulSetSummary, namespace)
 
     @_pinned_query
+    def get_daemonset_summaries(self,
+                                namespace: Optional[str] = None) -> list[k8s_tools.DaemonSetSummary]:
+        return self._decode_all("daemonsets", k8s_tools.DaemonSetSummary, namespace)
+
+    @_pinned_query
     def get_cronjob_summaries(self,
                               namespace: Optional[str] = None) -> list[k8s_tools.CronJobSummary]:
         return self._decode_all("cronjobs", k8s_tools.CronJobSummary, namespace)

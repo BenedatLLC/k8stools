@@ -21,6 +21,27 @@ dates are release-tag dates.
   every other age; captures from before 2.3.0 replay it as an empty map. (The
   capture format had no handling for a map of durations: without it the values
   would have been replayed as fixed spans that never advanced.)
+- **`get_daemonset_summaries` tool** (issue #10), like `kubectl get daemonsets -o wide`:
+  desired, current, ready, up-to-date, available and misscheduled counts, the pod
+  template's node selector and images, update strategy, and age. Until now a
+  DaemonSet was visible only through its pods, whose `<name>-<5 chars>` names
+  can't be told apart from other names. Captures store DaemonSets; captures from
+  before 2.3.0 replay none. `print_daemonset_summaries` is its companion.
+- **`owner` on pods.** `get_pod_summaries` reports each pod's controlling owner
+  as `"Kind/name"` (e.g. `"DaemonSet/otel-collector-agent"`), so pods can be
+  grouped into workloads without guessing from name suffixes. It is the direct
+  owner: a Deployment's pods name a replica set, whose `owner_deployment` names
+  the Deployment. `None` for a pod nobody manages; captures from before 2.3.0
+  replay `None`. `print_pod_summaries` gains an OWNER column.
+
+### Changed
+- **A capture needs `list` on `daemonsets`** (apps). `k8s-capture-state` now
+  captures DaemonSets, so it fails where the cluster role does not grant them,
+  rather than writing a capture that replays as if there were none. Add
+  `daemonsets` to the role's apps resources (see README, "Permissions").
+
+### Documentation
+- README lists the read-only RBAC rules that cover every tool.
 
 ## 2.2.1 — 2026-09-29
 
