@@ -544,7 +544,7 @@ wheels = [
 
 [[package]]
 name = "k8stools"
-version = "2.2.1"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "kubernetes" },

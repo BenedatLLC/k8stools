@@ -3,6 +3,25 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 2.3.0 — 2026-10-03
+
+### Added
+- **`conditions_since` on nodes** (issue #9). `get_node_summaries` now reports,
+  for each node condition, the time since its status last changed (the API's
+  `lastTransitionTime`, which was dropped), next to the unchanged `conditions`
+  map. A condition with no transition time is left out. `print_node_summaries`
+  gains a READY-SINCE column.
+- The tool description says what it does not show: a restart in which the node
+  comes back Ready without being marked NotReady or Unknown in between does not
+  reset it. On a minikube cluster stopped and started with its control plane,
+  `Ready` stayed "True since the node was created", 167 days, across a reboot.
+  It points to the node's `Starting`/`Rebooted` events and the start times of
+  kube-proxy and the control-plane containers for dating a node's last start.
+- Captures store it as `conditions_since_seconds` and replay advances it like
+  every other age; captures from before 2.3.0 replay it as an empty map. (The
+  capture format had no handling for a map of durations: without it the values
+  would have been replayed as fixed spans that never advanced.)
+
 ## 2.2.1 — 2026-09-29
 
 ### Documentation

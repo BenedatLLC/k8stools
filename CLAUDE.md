@@ -26,6 +26,7 @@ tests/
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
   test_events.py             - Event aggregation (count/first_seen), incl. the events.k8s.io fallback
   test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
+  test_node_conditions.py    - NodeSummary.conditions_since (condition transition times), incl. capture replay
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -224,6 +225,9 @@ Invariants worth preserving when touching this code:
   but read back unchanged. Replay tests that freeze the clock can't tell the two
   apart (frozen elapsed time is zero), so test a new duration field on an
   advancing clock with a `server_start_time` in the past.
+  A `dict[str, Duration]` (`NodeSummary.conditions_since`) is stored as a map
+  under `<field>_seconds` and each value advances (the codec looks through a
+  dict to its value type).
 - **`MockState` must match the real tool's documented behavior**, not just its
   types — filter semantics, result ordering (`get_replicaset_summaries` re-sorts
   at query time), and which failures raise vs. return empty.

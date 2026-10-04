@@ -592,6 +592,23 @@ def test_node_summaries_capacity_and_conditions():
     assert "kubernetes.io/hostname" in node.labels
 
 
+def test_node_conditions_since():
+    """Issue #9: every condition the kubelet reports carries a transition time,
+    as a whole-second age no older than the node itself."""
+    nodes = k8s_tools.get_node_summaries()
+    if not nodes:
+        pytest.skip("No nodes found in the cluster.")
+    for node in nodes:
+        assert set(node.conditions_since) <= set(node.conditions)
+        assert "Ready" in node.conditions_since
+        for since in node.conditions_since.values():
+            assert isinstance(since, datetime.timedelta)
+            assert since.microseconds == 0
+            # Same `now` for both; a transition can't predate the node by more
+            # than clock skew between the node and the API server.
+            assert since <= node.age + datetime.timedelta(minutes=1)
+
+
 def test_service_summaries_selector_and_labels():
     """Covers the 1.1.0 ServiceSummary additions (selector/labels/annotations)."""
     services = k8s_tools.get_service_summaries()

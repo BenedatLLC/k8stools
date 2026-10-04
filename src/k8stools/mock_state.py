@@ -89,6 +89,9 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     metadata from a bare field's ``annotation`` but keeps it inside an
     ``Optional[...]``, so without this an optional duration would silently encode
     under its plain name instead of ``<field>_seconds`` and fail to round-trip.
+
+    A ``dict`` counts by its value type, so ``dict[str, Duration]`` is stored as
+    ``<field>_seconds`` (a map of seconds) and its values advance on replay.
     """
     if annotation is target:
         return True
@@ -97,6 +100,9 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     origin = typing.get_origin(annotation)
     if origin is Union or origin is types.UnionType:
         return any(_annotation_contains(arg, target) for arg in typing.get_args(annotation))
+    if origin is dict:
+        args = typing.get_args(annotation)
+        return len(args) == 2 and _annotation_contains(args[1], target)
     return False
 
 
@@ -257,6 +263,12 @@ def _decode_value(value: Any, annotation: Any, clock: _Clock,
                   interval: bool = False) -> Any:
     if value is None:
         return None
+    if typing.get_origin(annotation) is dict and isinstance(value, dict):
+        args = typing.get_args(annotation)
+        value_annotation = args[1] if len(args) == 2 else Any
+        return {k: _decode_value(v, value_annotation, clock,
+                                 interval=_is_interval(value_annotation))
+                for k, v in value.items()}
     if _annotation_contains(annotation, datetime.timedelta):
         # An age advances with the replay clock; an interval is a fixed span.
         return datetime.timedelta(seconds=value) if interval else clock.age(value)

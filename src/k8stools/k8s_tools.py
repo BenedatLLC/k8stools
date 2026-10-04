@@ -317,6 +317,7 @@ class NodeSummary(BaseModel):
     capacity: dict[str, str] = Field(default_factory=dict)
     allocatable: dict[str, str] = Field(default_factory=dict)
     conditions: dict[str, str] = Field(default_factory=dict)
+    conditions_since: dict[str, Duration] = Field(default_factory=dict)
     taints: list[str] = Field(default_factory=list)
     labels: dict[str, str] = Field(default_factory=dict)
 
@@ -363,6 +364,24 @@ def get_node_summaries() -> list[NodeSummary]:
         conditions : dict[str, str]
             Node conditions keyed by type with their status, e.g.
             {"Ready": "True", "MemoryPressure": "False", "DiskPressure": "False"}.
+        conditions_since : dict[str, datetime.timedelta]
+            For each condition in `conditions`, the time since its status last
+            changed (the API's lastTransitionTime), e.g. how long the node has
+            been Ready, or how long ago a MemoryPressure episode ended. A
+            condition with no transition time is left out.
+
+            It changes only when the status does. A node or kubelet restart in
+            which the node comes back Ready without having been marked NotReady
+            or Unknown in between does not reset it: on a minikube cluster
+            stopped and started together with its control plane, Ready stayed
+            "True since the node was created" across a reboot. So a long Ready
+            age does not mean the node or its pods have been running that long,
+            and a short one can come from a brief NotReady flap rather than a
+            reboot. To date a node's last start, use its "Starting" or
+            "Rebooted" events (`get_events(involved_kind="Node")`, while they
+            last - events usually expire after an hour), or the `started_at` of
+            containers that start with the node, such as kube-proxy and the
+            kube-system control-plane containers (`get_pod_container_statuses`).
         taints : list[str]
             Taints on the node formatted as "key=value:effect" (value omitted
             when empty).
@@ -444,6 +463,11 @@ def get_node_summaries() -> list[NodeSummary]:
             if node.status and getattr(node.status, "allocatable", None) else {}
         conditions = {c.type: c.status for c in node.status.conditions} \
             if node.status and node.status.conditions else {}
+        conditions_since = {
+            c.type: current_time_utc - c.last_transition_time
+            for c in (node.status.conditions or [])
+            if getattr(c, "last_transition_time", None)
+        } if node.status else {}
 
         # Extract taints (on node.spec) and labels (on node.metadata)
         taints: list[str] = []
@@ -467,6 +491,7 @@ def get_node_summaries() -> list[NodeSummary]:
             capacity=capacity,
             allocatable=allocatable,
             conditions=conditions,
+            conditions_since=conditions_since,
             taints=taints,
             labels=labels,
         )
@@ -480,9 +505,11 @@ def print_node_summaries() -> None:
     the same format as `kubectl get nodes -o wide`.
     """
     nodes = get_node_summaries()
-    print(f"{'NAME':<32} {'STATUS':<12} {'ROLES':<20} {'AGE':<12} {'VERSION':<16} {'INTERNAL-IP':<16} {'EXTERNAL-IP':<16} {'OS-IMAGE':<32} {'KERNEL-VERSION':<16} {'CONTAINER-RUNTIME':<20}")
+    print(f"{'NAME':<32} {'STATUS':<12} {'ROLES':<20} {'AGE':<12} {'READY-SINCE':<12} {'VERSION':<16} {'INTERNAL-IP':<16} {'EXTERNAL-IP':<16} {'OS-IMAGE':<32} {'KERNEL-VERSION':<16} {'CONTAINER-RUNTIME':<20}")
     for node in nodes:
         age = _format_timedelta(node.age)
+        ready_since = node.conditions_since.get("Ready")
+        ready_since = _format_timedelta(ready_since) if ready_since is not None else "<unknown>"
         roles_str = ",".join(node.roles) if node.roles and node.roles != ["<none>"] else "<none>"
         internal_ip = node.internal_ip if node.internal_ip else "<none>"
         external_ip = node.external_ip if node.external_ip else "<none>"
@@ -490,7 +517,7 @@ def print_node_summaries() -> None:
         kernel_version = node.kernel_version if node.kernel_version else "<unknown>"
         container_runtime = node.container_runtime if node.container_runtime else "<unknown>"
         
-        print(f"{node.name:<32} {node.status:<12} {roles_str:<20} {age:<12} {node.version:<16} {internal_ip:<16} {external_ip:<16} {os_image:<32} {kernel_version:<16} {container_runtime:<20}")
+        print(f"{node.name:<32} {node.status:<12} {roles_str:<20} {age:<12} {ready_since:<12} {node.version:<16} {internal_ip:<16} {external_ip:<16} {os_image:<32} {kernel_version:<16} {container_runtime:<20}")
     
 
 def print_namespaces() -> None:

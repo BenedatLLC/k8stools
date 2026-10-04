@@ -30,7 +30,8 @@ def _event(reason="Created", *, count=None, first=None, last=None, event_time=No
 
 
 def _ago(**kw):
-    return NOW - datetime.timedelta(**kw)
+    """Sampled per call: NOW is fixed at import, long before a test in a full run."""
+    return datetime.datetime.now(UTC) - datetime.timedelta(**kw)
 
 
 class _FakeCore:
@@ -64,7 +65,7 @@ def _only(results):
 
 
 def _close(td, **kw):
-    """Within a few seconds: NOW is sampled here, the tool samples its own."""
+    """Within a few seconds: the test and the tool each sample their own now()."""
     return abs(td - datetime.timedelta(**kw)) < datetime.timedelta(seconds=5)
 
 
