@@ -14,7 +14,7 @@ src/k8stools/
   mcp_server.py  - MCP server (stdio or streamable-http transport)
   mcp_client.py  - MCP client used for manual testing
   fixtures/
-    otel-demo.json - Built-in capture served by `--mock` (real Minikube + OTel Demo)
+    otel-demo.json - Built-in capture served by `--mock` (hand-maintained, modeled on Minikube + OTel Demo)
 tests/
   test_k8s_tools.py          - Unit tests for the original tools (mocked K8s API)
   test_new_tools.py          - Unit tests for the 1.1.0 tools (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, events, log enhancements)
@@ -28,6 +28,7 @@ tests/
   test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
   test_node_conditions.py    - NodeSummary.conditions_since (condition transition times), incl. capture replay
   test_workloads.py          - get_daemonset_summaries and PodSummary.owner, incl. capture replay
+  test_builtin_fixture.py    - The built-in fixture describes a cluster that could exist (owners, images, ages, log windows)
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -240,7 +241,13 @@ Invariants worth preserving when touching this code:
   synthesizes answers for unknown pod names.
 
 The built-in fixture lives under `src/k8stools/` (not `tests/`) because
-`--mock` serves it, so it has to ship in the wheel.
+`--mock` serves it, so it has to ship in the wheel. It is **hand-maintained**, not
+a raw capture (it began as the pre-2.0 mock data, re-encoded): a real capture is
+megabytes, and a test cluster has no CronJobs, Jobs or PVCs to show. When a tool
+gains a field, add it to the fixture by hand, with values that agree with the
+rest of it. `tests/test_builtin_fixture.py` checks that it does (owners exist and
+run the pod's images, nothing predates its namespace, logs fall inside the
+instance that wrote them, restarts fit the pod's age at the backoff cap).
 
 Captures are written **indented, and uncompressed by default**, on purpose: these
 files get re-captured and re-committed, and git deltas successive versions of
@@ -315,4 +322,4 @@ Example `mcp.json`:
 
 - Read-only tools first; state-modifying tools will be kept in a separate module when added
 - Quality over quantity: well-documented, strongly typed, useful for real monitoring/RCA agents
-- Mock data captured from a real Minikube instance running the OpenTelemetry Demo app
+- Mock data modeled on a Minikube instance running the OpenTelemetry Demo app, kept internally consistent by tests

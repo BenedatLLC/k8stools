@@ -6,12 +6,12 @@
     {
       "name": "default",
       "status": "Active",
-      "age_seconds": 36293852.49238
+      "age_seconds": 777610.0
     },
     {
       "name": "kube-system",
       "status": "Active",
-      "age_seconds": 36293852.49238
+      "age_seconds": 777610.0
     }
   ],
   "nodes": [
@@ -21,7 +21,7 @@
       "roles": [
         "control-plane"
       ],
-      "age_seconds": 604800.0,
+      "age_seconds": 777600.0,
       "version": "v1.30.0",
       "internal_ip": "192.168.49.2",
       "external_ip": null,
@@ -30,7 +30,18 @@
       "container_runtime": "docker://26.1.1",
       "capacity": {},
       "allocatable": {},
-      "conditions": {},
+      "conditions": {
+        "MemoryPressure": "False",
+        "DiskPressure": "False",
+        "PIDPressure": "False",
+        "Ready": "True"
+      },
+      "conditions_since_seconds": {
+        "MemoryPressure": 777600.0,
+        "DiskPressure": 777600.0,
+        "PIDPressure": 777600.0,
+        "Ready": 777593.0
+      },
       "taints": [],
       "labels": {}
     }
@@ -42,11 +53,12 @@
         "namespace": "default",
         "total_containers": 1,
         "ready_containers": 0,
-        "restarts": 93,
-        "last_restart_seconds": 60.0,
+        "restarts": 67,
+        "last_restart_seconds": 358.0,
         "age_seconds": 27240.0,
         "ip": "10.244.0.6",
-        "node": "minikube"
+        "node": "minikube",
+        "owner": "ReplicaSet/ad-647b4947cc"
       },
       "labels": {
         "app": "ad",
@@ -57,23 +69,23 @@
           "pod_name": "ad-647b4947cc-s5mpm",
           "namespace": "default",
           "container_name": "ad",
-          "image": "ghcr.io/open-telemetry/demo:2.0.2-ad",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-ad",
           "ready": false,
-          "restart_count": 93,
-          "started": false,
+          "restart_count": 67,
+          "started": true,
           "stop_signal": null,
           "state": {
-            "state_name": "Waiting",
-            "reason": "CrashLoopBackOff",
-            "message": "back-off 5m0s restarting failed container"
+            "state_name": "Running",
+            "started_at_offset_seconds": 58.0
           },
           "last_state": {
             "state_name": "Terminated",
             "exit_code": 137,
-            "finished_at_offset_seconds": 120.001061,
+            "finished_at_offset_seconds": 358.0,
             "reason": "OOMKilled",
             "message": null,
-            "started_at_offset_seconds": 122.001061
+            "started_at_offset_seconds": 481.0,
+            "ran_for_seconds": 123.0
           },
           "volume_mounts": [
             {
@@ -98,7 +110,7 @@
         "containers": [
           {
             "name": "ad",
-            "image": "ghcr.io/open-telemetry/demo:2.0.2-ad",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-ad",
             "ports": [
               {
                 "containerPort": 8080,
@@ -119,10 +131,10 @@
         "node_name": "minikube"
       },
       "logs": {
-        "ad": "2025-07-28T01:50:52.678740495Z Picked up JAVA_TOOL_OPTIONS: -javaagent:/usr/src/app/opentelemetry-javaagent.jar\n2025-07-28T01:50:52.758344990Z OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes"
+        "ad": "2026-09-13T01:36:35.114203817Z Picked up JAVA_TOOL_OPTIONS: -javaagent:/usr/src/app/opentelemetry-javaagent.jar\n2026-09-13T01:36:35.982110043Z OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes\n2026-09-13T01:36:36.551204338Z [otel.javaagent 2026-09-13 01:36:36:551 +0000] [main] INFO io.opentelemetry.javaagent.tooling.VersionLogger - opentelemetry-javaagent - version: 2.4.0\n2026-09-13T01:36:38.004417290Z [main] INFO oteldemo.AdService - AdService starting.\n2026-09-13T01:36:39.772341005Z [main] INFO oteldemo.AdService - Initializing in-memory ad catalog\n2026-09-13T01:36:41.336655012Z [main] INFO oteldemo.AdService - Ad service started, listening on 9555\n"
       },
       "previous_logs": {
-        "ad": "2026-09-13T01:29:15.114203817Z Picked up JAVA_TOOL_OPTIONS: -javaagent:/usr/src/app/opentelemetry-javaagent.jar\n2026-09-13T01:29:15.982110043Z OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes\n2026-09-13T01:29:16.551204338Z [otel.javaagent 2026-09-13 01:29:16:551 +0000] [main] INFO io.opentelemetry.javaagent.tooling.VersionLogger - opentelemetry-javaagent - version: 2.4.0\n2026-09-13T01:29:18.004417290Z [main] INFO oteldemo.AdService - AdService starting.\n2026-09-13T01:29:19.772341005Z [main] INFO oteldemo.AdService - Initializing in-memory ad catalog\n2026-09-13T01:29:21.336655012Z [main] INFO oteldemo.AdService - Ad service started, listening on 9555\n2026-09-13T01:30:44.219887411Z [grpc-default-executor-0] INFO oteldemo.AdService - Targeted ad request received\n2026-09-13T01:31:02.884312907Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 271M of 300M\n2026-09-13T01:31:14.775510223Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 289M of 300M\n2026-09-13T01:31:17.140155000Z Terminating due to java.lang.OutOfMemoryError: Java heap space\n"
+        "ad": "2026-09-13T01:29:32.114203817Z Picked up JAVA_TOOL_OPTIONS: -javaagent:/usr/src/app/opentelemetry-javaagent.jar\n2026-09-13T01:29:32.982110043Z OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes\n2026-09-13T01:29:33.551204338Z [otel.javaagent 2026-09-13 01:29:33:551 +0000] [main] INFO io.opentelemetry.javaagent.tooling.VersionLogger - opentelemetry-javaagent - version: 2.4.0\n2026-09-13T01:29:35.004417290Z [main] INFO oteldemo.AdService - AdService starting.\n2026-09-13T01:29:36.772341005Z [main] INFO oteldemo.AdService - Initializing in-memory ad catalog\n2026-09-13T01:29:38.336655012Z [main] INFO oteldemo.AdService - Ad service started, listening on 9555\n2026-09-13T01:31:01.219887411Z [grpc-default-executor-0] INFO oteldemo.AdService - Targeted ad request received\n2026-09-13T01:31:19.884312907Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 271M of 300M\n2026-09-13T01:31:31.775510223Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 289M of 300M\n2026-09-13T01:31:34.140155000Z Terminating due to java.lang.OutOfMemoryError: Java heap space\n"
       }
     },
     {
@@ -135,7 +147,8 @@
         "last_restart_seconds": null,
         "age_seconds": 7200.0,
         "ip": "10.244.0.10",
-        "node": "minikube"
+        "node": "minikube",
+        "owner": null
       },
       "labels": {
         "app": "test-pod"
@@ -183,11 +196,22 @@
       "spec": {
         "containers": [
           {
-            "name": "test",
+            "name": "container-1",
             "image": "nginx:latest",
             "ports": [
               {
-                "containerPort": 80,
+                "container_port": 80,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {}
+          },
+          {
+            "name": "container-2",
+            "image": "nginx:latest",
+            "ports": [
+              {
+                "container_port": 81,
                 "protocol": "TCP"
               }
             ],
@@ -198,8 +222,8 @@
         "node_name": "minikube"
       },
       "logs": {
-        "container-1": "2025-07-28T01:30:00.000000000Z Starting container-1 container\n2025-07-28T01:30:01.000000000Z container-1 container started successfully\n2025-07-28T01:30:02.000000000Z Processing requests...\n2025-07-28T01:30:03.000000000Z Ready to serve traffic",
-        "container-2": "2025-07-28T01:30:00.000000000Z Starting container-2 container\n2025-07-28T01:30:01.000000000Z container-2 container started successfully\n2025-07-28T01:30:02.000000000Z Processing requests...\n2025-07-28T01:30:03.000000000Z Ready to serve traffic"
+        "container-1": "2026-09-12T23:37:33.000000000Z Starting container-1 container\n2026-09-12T23:37:34.000000000Z container-1 container started successfully\n2026-09-12T23:37:35.000000000Z Processing requests...\n2026-09-12T23:37:36.000000000Z Ready to serve traffic",
+        "container-2": "2026-09-12T23:37:33.000000000Z Starting container-2 container\n2026-09-12T23:37:34.000000000Z container-2 container started successfully\n2026-09-12T23:37:35.000000000Z Processing requests...\n2026-09-12T23:37:36.000000000Z Ready to serve traffic"
       }
     },
     {
@@ -212,7 +236,8 @@
         "last_restart_seconds": null,
         "age_seconds": 86400.0,
         "ip": "10.244.0.5",
-        "node": "minikube"
+        "node": "minikube",
+        "owner": null
       },
       "labels": {
         "app": "kube-system"
@@ -256,7 +281,7 @@
         "node_name": "minikube"
       },
       "logs": {
-        "kube": "2025-07-28T01:30:00.000000000Z Starting kube container\n2025-07-28T01:30:01.000000000Z kube container started successfully\n2025-07-28T01:30:02.000000000Z Processing requests...\n2025-07-28T01:30:03.000000000Z Ready to serve traffic"
+        "kube": "2026-09-12T01:37:33.000000000Z Starting kube container\n2026-09-12T01:37:34.000000000Z kube container started successfully\n2026-09-12T01:37:35.000000000Z Processing requests...\n2026-09-12T01:37:36.000000000Z Ready to serve traffic"
       }
     },
     {
@@ -269,7 +294,8 @@
         "last_restart_seconds": null,
         "age_seconds": 120.0,
         "ip": "10.244.0.22",
-        "node": "minikube"
+        "node": "minikube",
+        "owner": "Job/cleanup-28999999"
       },
       "labels": {
         "job-name": "cleanup-28999999",
@@ -318,8 +344,453 @@
         "node_name": "minikube"
       },
       "logs": {
-        "cleanup": "2026-09-13T01:31:19.004417290Z cleanup starting, TIMEOUT=30\n2026-09-13T01:31:19.772341005Z scanning /var/data for expired sessions\n2026-09-13T01:31:31.336655012Z removed 418 expired session files\n2026-09-13T01:32:18.219887411Z cleanup complete\n"
+        "cleanup": "2026-09-13T01:35:33.004417290Z cleanup starting, TIMEOUT=30\n2026-09-13T01:35:33.772341005Z scanning /var/data for expired sessions\n2026-09-13T01:35:45.336655012Z removed 418 expired session files\n2026-09-13T01:36:32.219887411Z cleanup complete\n"
       }
+    },
+    {
+      "summary": {
+        "name": "otel-collector-agent-fxhxp",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 691195.0,
+        "ip": "10.244.0.8",
+        "node": "minikube",
+        "owner": "DaemonSet/otel-collector-agent"
+      },
+      "labels": {
+        "app.kubernetes.io/instance": "my-otel-demo",
+        "app.kubernetes.io/name": "opentelemetry-collector",
+        "component": "agent-collector",
+        "controller-revision-hash": "7bfc667c67",
+        "pod-template-generation": "1"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "otel-collector-agent-fxhxp",
+          "namespace": "default",
+          "container_name": "opentelemetry-collector",
+          "image": "otel/opentelemetry-collector-contrib:0.142.0",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 691190.0
+          },
+          "last_state": null,
+          "volume_mounts": [
+            {
+              "mount_path": "/conf",
+              "name": "opentelemetry-collector-configmap",
+              "read_only": null,
+              "recursive_read_only": null
+            },
+            {
+              "mount_path": "/hostfs",
+              "name": "hostfs",
+              "read_only": true,
+              "recursive_read_only": "Disabled"
+            }
+          ],
+          "resource_requests": {
+            "memory": "200Mi"
+          },
+          "resource_limits": {
+            "memory": "200Mi"
+          },
+          "allocated_resources": {
+            "memory": "200Mi"
+          }
+        }
+      ],
+      "spec": {
+        "containers": [
+          {
+            "name": "opentelemetry-collector",
+            "image": "otel/opentelemetry-collector-contrib:0.142.0",
+            "args": [
+              "--config=/conf/relay.yaml"
+            ],
+            "ports": [
+              {
+                "container_port": 4317,
+                "host_port": 4317,
+                "name": "otlp",
+                "protocol": "TCP"
+              },
+              {
+                "container_port": 4318,
+                "host_port": 4318,
+                "name": "otlp-http",
+                "protocol": "TCP"
+              },
+              {
+                "container_port": 8888,
+                "host_port": null,
+                "name": "metrics",
+                "protocol": "TCP"
+              }
+            ],
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "value": null,
+                "value_from": {
+                  "field_ref": {
+                    "api_version": "v1",
+                    "field_path": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "GOMEMLIMIT",
+                "value": "160MiB",
+                "value_from": null
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "200Mi"
+              },
+              "requests": {
+                "memory": "200Mi"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube",
+        "service_account_name": "otel-collector",
+        "tolerations": [
+          {
+            "effect": "NoExecute",
+            "key": "node.kubernetes.io/not-ready",
+            "operator": "Exists"
+          },
+          {
+            "effect": "NoExecute",
+            "key": "node.kubernetes.io/unreachable",
+            "operator": "Exists"
+          }
+        ]
+      },
+      "logs": {
+        "opentelemetry-collector": "2026-09-13T01:37:24.064704896Z 2026-09-13T01:37:24.064Z\tinfo\tMetrics\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"metrics\", \"resource metrics\": 9, \"metrics\": 30, \"data points\": 337}\n2026-09-13T01:37:24.945704548Z 2026-09-13T01:37:24.945Z\tinfo\tLogs\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"logs\", \"resource logs\": 1, \"log records\": 2}\n2026-09-13T01:37:25.022704770Z 2026-09-13T01:37:25.022Z\tinfo\tTraces\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"traces\", \"resource spans\": 1, \"spans\": 22}\n2026-09-13T01:37:25.150704157Z 2026-09-13T01:37:25.150Z\tinfo\tLogs\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"logs\", \"resource logs\": 1, \"log records\": 1}\n"
+      },
+      "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "test-deployment-7d4b9c85f-4kq9z",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 7198.0,
+        "ip": "10.244.0.11",
+        "node": "minikube",
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f"
+      },
+      "labels": {
+        "app": "cart",
+        "pod-template-hash": "7d4b9c85f"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "test-deployment-7d4b9c85f-4kq9z",
+          "namespace": "default",
+          "container_name": "cart",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 7195.0
+          },
+          "last_state": null,
+          "volume_mounts": [],
+          "resource_requests": {
+            "memory": "160Mi"
+          },
+          "resource_limits": {
+            "memory": "160Mi"
+          },
+          "allocated_resources": {
+            "memory": "160Mi"
+          }
+        }
+      ],
+      "spec": {
+        "containers": [
+          {
+            "name": "cart",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+            "ports": [
+              {
+                "container_port": 7070,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "160Mi"
+              },
+              "requests": {
+                "memory": "160Mi"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "cart": "2026-09-12T23:37:37.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:38.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:38.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:38.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
+      },
+      "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "test-deployment-7d4b9c85f-m7xpw",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 7198.0,
+        "ip": "10.244.0.12",
+        "node": "minikube",
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f"
+      },
+      "labels": {
+        "app": "cart",
+        "pod-template-hash": "7d4b9c85f"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "test-deployment-7d4b9c85f-m7xpw",
+          "namespace": "default",
+          "container_name": "cart",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 7194.0
+          },
+          "last_state": null,
+          "volume_mounts": [],
+          "resource_requests": {
+            "memory": "160Mi"
+          },
+          "resource_limits": {
+            "memory": "160Mi"
+          },
+          "allocated_resources": {
+            "memory": "160Mi"
+          }
+        }
+      ],
+      "spec": {
+        "containers": [
+          {
+            "name": "cart",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+            "ports": [
+              {
+                "container_port": 7070,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "160Mi"
+              },
+              "requests": {
+                "memory": "160Mi"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "cart": "2026-09-12T23:37:38.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:39.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:39.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:39.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
+      },
+      "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "test-deployment-7d4b9c85f-tb2ns",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 7198.0,
+        "ip": "10.244.0.13",
+        "node": "minikube",
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f"
+      },
+      "labels": {
+        "app": "cart",
+        "pod-template-hash": "7d4b9c85f"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "test-deployment-7d4b9c85f-tb2ns",
+          "namespace": "default",
+          "container_name": "cart",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 7193.0
+          },
+          "last_state": null,
+          "volume_mounts": [],
+          "resource_requests": {
+            "memory": "160Mi"
+          },
+          "resource_limits": {
+            "memory": "160Mi"
+          },
+          "allocated_resources": {
+            "memory": "160Mi"
+          }
+        }
+      ],
+      "spec": {
+        "containers": [
+          {
+            "name": "cart",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-cart",
+            "ports": [
+              {
+                "container_port": 7070,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "160Mi"
+              },
+              "requests": {
+                "memory": "160Mi"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "cart": "2026-09-12T23:37:39.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:40.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:40.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:40.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
+      },
+      "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "postgres-0",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 259190.0,
+        "ip": "10.244.0.4",
+        "node": "minikube",
+        "owner": "StatefulSet/postgres"
+      },
+      "labels": {
+        "app": "postgres",
+        "statefulset.kubernetes.io/pod-name": "postgres-0",
+        "controller-revision-hash": "postgres-5d8f6c7b9"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "postgres-0",
+          "namespace": "default",
+          "container_name": "postgres",
+          "image": "postgres:16.4",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 259185.0
+          },
+          "last_state": null,
+          "volume_mounts": [
+            {
+              "mount_path": "/var/lib/postgresql/data",
+              "name": "data",
+              "read_only": null,
+              "recursive_read_only": null
+            }
+          ],
+          "resource_requests": {
+            "cpu": "100m",
+            "memory": "512Mi"
+          },
+          "resource_limits": {
+            "memory": "512Mi"
+          },
+          "allocated_resources": {
+            "cpu": "100m",
+            "memory": "512Mi"
+          }
+        }
+      ],
+      "spec": {
+        "containers": [
+          {
+            "name": "postgres",
+            "image": "postgres:16.4",
+            "ports": [
+              {
+                "container_port": 5432,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "512Mi"
+              },
+              "requests": {
+                "cpu": "100m",
+                "memory": "512Mi"
+              }
+            },
+            "volume_mounts": [
+              {
+                "name": "data",
+                "mount_path": "/var/lib/postgresql/data"
+              }
+            ]
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "postgres": "2026-09-10T01:37:47.892704000Z 2026-09-10 01:37:47.892 UTC [1] LOG:  starting PostgreSQL 16.4 on x86_64-pc-linux-gnu\n2026-09-10T01:37:48.242704137Z 2026-09-10 01:37:48.242 UTC [1] LOG:  listening on IPv4 address '0.0.0.0', port 5432\n2026-09-10T01:37:48.592704274Z 2026-09-10 01:37:48.592 UTC [28] LOG:  database system was shut down at 2026-09-10 01:37:07 UTC\n2026-09-10T01:37:48.942704411Z 2026-09-10 01:37:48.942 UTC [1] LOG:  database system is ready to accept connections\n"
+      },
+      "previous_logs": {}
     }
   ],
   "deployments": [
@@ -397,7 +868,9 @@
         }
       ],
       "age_seconds": 691200.0,
-      "selector": {},
+      "selector": {
+        "app": "ad"
+      },
       "labels": {},
       "annotations": {}
     },
@@ -418,7 +891,28 @@
         }
       ],
       "age_seconds": 7200.0,
-      "selector": {},
+      "selector": {
+        "app": "cart"
+      },
+      "labels": {},
+      "annotations": {}
+    },
+    {
+      "name": "postgres",
+      "namespace": "default",
+      "type": "ClusterIP",
+      "cluster_ip": null,
+      "external_ip": null,
+      "ports": [
+        {
+          "port": 5432,
+          "protocol": "TCP"
+        }
+      ],
+      "age_seconds": 259200.0,
+      "selector": {
+        "app": "postgres"
+      },
       "labels": {},
       "annotations": {}
     }
@@ -442,7 +936,7 @@
       "namespace": "kube-system",
       "key_count": 1,
       "data_size": 1099,
-      "age_seconds": 604800.0,
+      "age_seconds": 777605.0,
       "data": {},
       "binary_data_keys": []
     }
@@ -457,6 +951,24 @@
       "update_strategy": "RollingUpdate",
       "service_name": "postgres",
       "age_seconds": 259200.0
+    }
+  ],
+  "daemonsets": [
+    {
+      "name": "otel-collector-agent",
+      "namespace": "default",
+      "desired_number_scheduled": 1,
+      "current_number_scheduled": 1,
+      "number_ready": 1,
+      "updated_number_scheduled": 1,
+      "number_available": 1,
+      "number_misscheduled": 0,
+      "node_selector": {},
+      "update_strategy": "RollingUpdate",
+      "images": [
+        "otel/opentelemetry-collector-contrib:0.142.0"
+      ],
+      "age_seconds": 691200.0
     }
   ],
   "cronjobs": [
@@ -537,7 +1049,9 @@
   ],
   "events": [
     {
-      "last_seen_seconds": 60.0,
+      "last_seen_seconds": 61.0,
+      "first_seen_seconds": 27110.0,
+      "count": 295,
       "type": "Warning",
       "reason": "BackOff",
       "namespace": "default",
@@ -548,6 +1062,8 @@
     },
     {
       "last_seen_seconds": 600.0,
+      "first_seen_seconds": 600.0,
+      "count": 1,
       "type": "Warning",
       "reason": "Evicted",
       "namespace": "default",
@@ -557,7 +1073,9 @@
       "message": "The node was low on resource: ephemeral-storage."
     },
     {
-      "last_seen_seconds": 60.0,
+      "last_seen_seconds": 59.0,
+      "first_seen_seconds": 27235.0,
+      "count": 68,
       "type": "Normal",
       "reason": "Pulled",
       "namespace": "default",

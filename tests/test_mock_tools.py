@@ -121,9 +121,9 @@ class TestMockPodContainerStatuses:
         assert status.pod_name == "ad-647b4947cc-s5mpm"
         assert status.namespace == "default"
         assert status.container_name == "ad"
-        assert status.image == "ghcr.io/open-telemetry/demo:2.0.2-ad"
+        assert status.image == "ghcr.io/open-telemetry/demo:2.2.0-ad"  # revision 2, its replica set
         assert status.ready is False
-        assert status.restart_count == 93
+        assert status.restart_count == 67
         
     def test_get_pod_container_statuses_generic_pod(self):
         """Test container statuses for a generic pod."""
@@ -190,7 +190,7 @@ class TestMockPodSpec:
         containers = spec["containers"]
         assert len(containers) == 1
         assert containers[0]["name"] == "ad"
-        assert containers[0]["image"] == "ghcr.io/open-telemetry/demo:2.0.2-ad"
+        assert containers[0]["image"] == "ghcr.io/open-telemetry/demo:2.2.0-ad"
         assert spec["restart_policy"] == "Always"
         assert spec["node_name"] == "minikube"
         
@@ -202,8 +202,8 @@ class TestMockPodSpec:
         assert "node_name" in spec
 
         containers = spec["containers"]
-        assert len(containers) == 1
-        assert containers[0]["image"] == "nginx:latest"
+        assert [c["name"] for c in containers] == ["container-1", "container-2"]
+        assert all(c["image"] == "nginx:latest" for c in containers)
 
     def test_get_pod_spec_pod_not_in_state(self):
         """A pod the capture does not contain raises, as the real tool does on a 404."""

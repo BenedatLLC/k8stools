@@ -34,6 +34,26 @@ dates are release-tag dates.
   the Deployment. `None` for a pod nobody manages; captures from before 2.3.0
   replay `None`. `print_pod_summaries` gains an OWNER column.
 
+- **The built-in `--mock` fixture shows the 2.3.0 fields** and now describes a
+  cluster that could exist. It gains an `otel-collector-agent` DaemonSet and its
+  pod, pod owners, node condition times, and event counts. Every workload now has
+  its pods (`test-deployment`'s three, and `postgres-0`, which a PVC already
+  named as mounting it), services select the pods they front, and the
+  `postgres` StatefulSet's headless service exists. It also fixes
+  contradictions in the old data that an agent would reason from:
+  - the `ad` pod ran its previous revision's image;
+  - its last instance's status said it ran 2 seconds while its log covered 2
+    minutes;
+  - its 93 restarts were more than its age allows at the 5-minute backoff cap
+    (now 67);
+  - several logs were dated 14 months before the capture;
+  - the namespaces were older than anything else in the cluster.
+  - `test-pod-123`'s spec declared one container while its status had two.
+
+  The `ad` container now shows the case `previous=True` is for: it restarted 58
+  seconds ago, so its current log is JVM startup and the OOM is only in the
+  previous one. A new test file keeps the fixture consistent.
+
 ### Changed
 - **A capture needs `list` on `daemonsets`** (apps). `k8s-capture-state` now
   captures DaemonSets, so it fails where the cluster role does not grant them,

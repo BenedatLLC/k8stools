@@ -309,11 +309,12 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
 ## Mock tools
 When building agents, it can be helpful to test them against *mock* versions that do
 not go against a real cluster, but return realistic values. The module
-`k8stools.mock_tools` does just that. The data values were captured when running
-against a real Minikube instance running the
+`k8stools.mock_tools` does just that. The data is a small, hand-maintained
+cluster modeled on a Minikube instance running the
 [Open Telemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
-application. When running the MCP server, this may be enabled by using the
-`--mock` command line option.
+application: a crash-looping `ad` service mid-upgrade, a DaemonSet, a CronJob and
+its Job, a StatefulSet with PVCs, and a few events. When running the MCP server,
+this may be enabled by using the `--mock` command line option.
 
 The mock serves a *capture* — a JSON snapshot of one cluster — rather than a set of
 per-tool canned answers, so the tools agree with each other: a pod that is not in the
