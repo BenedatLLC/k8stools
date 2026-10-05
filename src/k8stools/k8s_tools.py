@@ -16,6 +16,7 @@ import sys
 import os
 import logging
 import datetime
+import json
 from typing import Optional, Union, Literal, Any, Annotated
 
 from pydantic import BaseModel, Field, AfterValidator, model_validator
@@ -1470,7 +1471,10 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
             Comparing this across revisions shows what an upgrade changed.
         age : datetime.timedelta
             Age of the replica set (current time minus creation timestamp). For the
-            newest revision this is how long ago the deployment last changed.
+            newest revision this is usually how long ago the deployment last
+            changed - but not after a rollback, or a return to an identical
+            earlier template, which re-activate an existing replica set under a
+            new revision number; `get_workload_history` flags those as reused.
 
     Raises
     ------
@@ -1552,6 +1556,551 @@ def print_replicaset_summaries(namespace: Optional[str] = None,
         images = ", ".join(rs.images)
         print(f"{rs.name:<40} {rs.namespace:<16} {revision:<5} {rs.desired_replicas:<8} "
               f"{rs.current_replicas:<8} {rs.ready_replicas:<7} {age:<10} {images}")
+
+
+# ---------------------------------------------------------------------------
+# Workload change history (issue #11)
+# ---------------------------------------------------------------------------
+
+class TemplateChange(BaseModel):
+    """One difference between a revision's pod template and the previous one's."""
+    #: Where in the pod template, e.g. "containers[ad].image",
+    #: "containers[ad].resources.limits.memory", "containers[ad].env[LOG_LEVEL]",
+    #: "volumes[config]", "node_selector[disktype]",
+    #: "metadata.annotations[kubectl.kubernetes.io/restartedAt]".
+    field: str
+    change: Literal["added", "removed", "changed"]
+    #: Values are shown only where they are safe and short: never for env vars,
+    #: and not for structured fields outside the ones compared explicitly.
+    before: Optional[str] = None
+    after: Optional[str] = None
+
+
+class WorkloadRevision(BaseModel):
+    """One retained revision of a workload's pod template."""
+    revision: Optional[int]
+    #: "ReplicaSet/<name>" for a Deployment, "ControllerRevision/<name>" otherwise.
+    source: str
+    age: Duration
+    current: bool
+    reused: bool = False
+    images: list[str] = Field(default_factory=list)
+    #: The revision this one is compared with (the previous retained one), or
+    #: None for the oldest retained revision, which has no changes listed.
+    compared_with: Optional[int] = None
+    changes: list[TemplateChange] = Field(default_factory=list)
+    metadata_changes: list[TemplateChange] = Field(default_factory=list)
+    rollout_restart: bool = False
+
+
+class ConfigReference(BaseModel):
+    """A ConfigMap or Secret the workload's current pod template refers to."""
+    kind: Literal["ConfigMap", "Secret"]
+    name: str
+    #: How it is used: "env" (configMapKeyRef/secretKeyRef), "envFrom",
+    #: "volume", "volume (subPath)", "imagePullSecrets".
+    used_as: list[str] = Field(default_factory=list)
+    #: ConfigMaps only: whether it exists. None for Secrets, which are not read.
+    exists: Optional[bool] = None
+    age: Optional[Duration] = None
+    #: ConfigMaps only: time since the latest write recorded in its
+    #: managedFields, by any client, including label-only changes.
+    last_written: Optional[Duration] = None
+
+
+class WorkloadHistory(BaseModel):
+    """A workload's retained pod-template revisions and the config it references."""
+    kind: str
+    name: str
+    namespace: str
+    revisions: list[WorkloadRevision] = Field(default_factory=list)
+    config: list[ConfigReference] = Field(default_factory=list)
+    #: False when this was rebuilt from a capture that predates template
+    #: history: revisions then show images only.
+    complete: bool = True
+    limits: list[str] = Field(default_factory=list)
+
+
+_WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
+
+#: Labels the controllers stamp on every template; their change is not news.
+_IGNORED_TEMPLATE_LABELS = {"pod-template-hash", "controller-revision-hash",
+                            "pod-template-generation"}
+
+_RESTARTED_AT = "kubectl.kubernetes.io/restartedAt"
+
+#: Container fields compared explicitly; anything else that differs is named.
+_CONTAINER_FIELDS = {"name", "image", "resources", "command", "args", "env", "envFrom",
+                     "volumeMounts", "livenessProbe", "readinessProbe", "startupProbe"}
+_POD_FIELDS = {"containers", "initContainers", "volumes", "nodeSelector", "tolerations"}
+
+
+def _api_dict(obj) -> dict:
+    """A kubernetes model object (or a dict already) as the API's JSON dict."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    return _binding().api_client.sanitize_for_serialization(obj)
+
+
+def _short(value) -> Optional[str]:
+    """A scalar as a string; structured values as compact, key-sorted JSON."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _is_scalar(value) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _compare_maps(prefix: str, before: dict, after: dict, show_values: bool,
+                  out: list[TemplateChange]) -> None:
+    for key in sorted(set(before) | set(after)):
+        b, a = before.get(key), after.get(key)
+        if b == a:
+            continue
+        change = "added" if key not in before else "removed" if key not in after else "changed"
+        out.append(TemplateChange(field=f"{prefix}[{key}]", change=change,
+                                  before=_short(b) if show_values else None,
+                                  after=_short(a) if show_values else None))
+
+
+def _compare_other_fields(prefix: str, before: dict, after: dict, handled: set,
+                          out: list[TemplateChange]) -> None:
+    """Name any other changed field; show values only for plain scalars."""
+    for key in sorted((set(before) | set(after)) - handled):
+        b, a = before.get(key), after.get(key)
+        if b == a:
+            continue
+        change = "added" if key not in before else "removed" if key not in after else "changed"
+        scalar = _is_scalar(b) and _is_scalar(a)
+        out.append(TemplateChange(field=f"{prefix}.{key}", change=change,
+                                  before=_short(b) if scalar else None,
+                                  after=_short(a) if scalar else None))
+
+
+def _env_from_entries(container: dict) -> dict[str, dict]:
+    entries = {}
+    for item in container.get("envFrom") or []:
+        for source, kind in (("configMapRef", "configMap"), ("secretRef", "secret")):
+            if item.get(source):
+                label = f"{kind}:{item[source].get('name')}"
+                if item.get("prefix"):
+                    label += f" (prefix {item['prefix']})"
+                entries[label] = item
+    return entries
+
+
+def _compare_containers(group: str, before: list, after: list,
+                        out: list[TemplateChange]) -> None:
+    old = {c.get("name"): c for c in before or []}
+    new = {c.get("name"): c for c in after or []}
+    for name in [n for n in old if n not in new]:
+        out.append(TemplateChange(field=f"{group}[{name}]", change="removed",
+                                  before=old[name].get("image")))
+    for name in new:
+        prefix = f"{group}[{name}]"
+        if name not in old:
+            out.append(TemplateChange(field=prefix, change="added",
+                                      after=new[name].get("image")))
+            continue
+        b, a = old[name], new[name]
+        if b.get("image") != a.get("image"):
+            out.append(TemplateChange(field=f"{prefix}.image", change="changed",
+                                      before=b.get("image"), after=a.get("image")))
+        for part in ("requests", "limits"):
+            _compare_maps(f"{prefix}.resources.{part}",
+                          (b.get("resources") or {}).get(part) or {},
+                          (a.get("resources") or {}).get(part) or {}, True, out)
+        for key in ("command", "args", "livenessProbe", "readinessProbe", "startupProbe"):
+            if b.get(key) != a.get(key):
+                change = "added" if b.get(key) is None else \
+                    "removed" if a.get(key) is None else "changed"
+                out.append(TemplateChange(field=f"{prefix}.{key}", change=change,
+                                          before=_short(b.get(key)), after=_short(a.get(key))))
+        # Env vars by name, never by position; names only, never values.
+        _compare_maps(f"{prefix}.env",
+                      {e.get("name"): e for e in b.get("env") or []},
+                      {e.get("name"): e for e in a.get("env") or []}, False, out)
+        before_from, after_from = _env_from_entries(b), _env_from_entries(a)
+        for label in sorted(set(before_from) ^ set(after_from)):
+            out.append(TemplateChange(field=f"{prefix}.envFrom", change=(
+                "added" if label in after_from else "removed"),
+                before=label if label in before_from else None,
+                after=label if label in after_from else None))
+        _compare_maps(f"{prefix}.volumeMounts",
+                      {m.get("mountPath"): _mount_summary(m) for m in b.get("volumeMounts") or []},
+                      {m.get("mountPath"): _mount_summary(m) for m in a.get("volumeMounts") or []},
+                      True, out)
+        _compare_other_fields(prefix, b, a, _CONTAINER_FIELDS, out)
+
+
+def _mount_summary(mount: dict) -> str:
+    text = mount.get("name") or ""
+    if mount.get("subPath"):
+        text += f" subPath={mount['subPath']}"
+    if mount.get("readOnly"):
+        text += " (read-only)"
+    return text
+
+
+def _volume_summary(volume: dict) -> str:
+    for source, value in volume.items():
+        if source == "name" or not isinstance(value, dict):
+            continue
+        name = value.get("name") or value.get("secretName") or value.get("claimName") \
+            or value.get("path")
+        if source == "projected":
+            parts = [f"{k}:{(v or {}).get('name')}" for s in value.get("sources") or []
+                     for k, v in s.items() if isinstance(v, dict) and v.get("name")]
+            return "projected" + (f" ({', '.join(parts)})" if parts else "")
+        return f"{source}:{name}" if name else source
+    return "unknown"
+
+
+def _toleration_summary(t: dict) -> str:
+    text = t.get("key") or "*"
+    if t.get("operator") == "Exists":
+        text += " exists"
+    elif t.get("value") is not None:
+        text += f"={t['value']}"
+    if t.get("effect"):
+        text += f":{t['effect']}"
+    return text
+
+
+def _template_changes(before: dict, after: dict) -> tuple[list[TemplateChange],
+                                                          list[TemplateChange]]:
+    """Compare two pod templates (API JSON dicts): (spec changes, metadata changes)."""
+    changes: list[TemplateChange] = []
+    b_spec, a_spec = before.get("spec") or {}, after.get("spec") or {}
+    _compare_containers("containers", b_spec.get("containers"), a_spec.get("containers"), changes)
+    _compare_containers("init_containers", b_spec.get("initContainers"),
+                        a_spec.get("initContainers"), changes)
+    _compare_maps("volumes",
+                  {v.get("name"): _volume_summary(v) for v in b_spec.get("volumes") or []},
+                  {v.get("name"): _volume_summary(v) for v in a_spec.get("volumes") or []},
+                  True, changes)
+    _compare_maps("node_selector", b_spec.get("nodeSelector") or {},
+                  a_spec.get("nodeSelector") or {}, True, changes)
+    b_tol = {_toleration_summary(t) for t in b_spec.get("tolerations") or []}
+    a_tol = {_toleration_summary(t) for t in a_spec.get("tolerations") or []}
+    for t in sorted(b_tol ^ a_tol):
+        changes.append(TemplateChange(field="tolerations",
+                                      change="added" if t in a_tol else "removed",
+                                      before=t if t in b_tol else None,
+                                      after=t if t in a_tol else None))
+    _compare_other_fields("spec", b_spec, a_spec, _POD_FIELDS, changes)
+
+    metadata: list[TemplateChange] = []
+    b_meta, a_meta = before.get("metadata") or {}, after.get("metadata") or {}
+    _compare_maps("metadata.labels",
+                  {k: v for k, v in (b_meta.get("labels") or {}).items()
+                   if k not in _IGNORED_TEMPLATE_LABELS},
+                  {k: v for k, v in (a_meta.get("labels") or {}).items()
+                   if k not in _IGNORED_TEMPLATE_LABELS}, True, metadata)
+    _compare_maps("metadata.annotations", b_meta.get("annotations") or {},
+                  a_meta.get("annotations") or {}, True, metadata)
+    return changes, metadata
+
+
+def _template_images(template: dict) -> list[str]:
+    return [c.get("image") for c in (template.get("spec") or {}).get("containers") or []
+            if c.get("image")]
+
+
+def _config_references(template: dict) -> list[ConfigReference]:
+    """Every ConfigMap and Secret a pod template names, and how it uses each."""
+    uses: dict[tuple[str, str], list[str]] = {}
+
+    def use(kind, name, how):
+        if name:
+            seen = uses.setdefault((kind, name), [])
+            if how not in seen:
+                seen.append(how)
+
+    spec = template.get("spec") or {}
+    containers = (spec.get("containers") or []) + (spec.get("initContainers") or [])
+    sub_path_volumes = {m.get("name") for c in containers for m in c.get("volumeMounts") or []
+                        if m.get("subPath") or m.get("subPathExpr")}
+    for c in containers:
+        for e in c.get("env") or []:
+            source = e.get("valueFrom") or {}
+            if source.get("configMapKeyRef"):
+                use("ConfigMap", source["configMapKeyRef"].get("name"), "env")
+            if source.get("secretKeyRef"):
+                use("Secret", source["secretKeyRef"].get("name"), "env")
+        for item in c.get("envFrom") or []:
+            if item.get("configMapRef"):
+                use("ConfigMap", item["configMapRef"].get("name"), "envFrom")
+            if item.get("secretRef"):
+                use("Secret", item["secretRef"].get("name"), "envFrom")
+    for v in spec.get("volumes") or []:
+        how = "volume (subPath)" if v.get("name") in sub_path_volumes else "volume"
+        if v.get("configMap"):
+            use("ConfigMap", v["configMap"].get("name"), how)
+        if v.get("secret"):
+            use("Secret", v["secret"].get("secretName"), how)
+        for source in (v.get("projected") or {}).get("sources") or []:
+            if source.get("configMap"):
+                use("ConfigMap", source["configMap"].get("name"), how)
+            if source.get("secret"):
+                use("Secret", source["secret"].get("name"), how)
+    for ref in spec.get("imagePullSecrets") or []:
+        use("Secret", ref.get("name"), "imagePullSecrets")
+    return [ConfigReference(kind=kind, name=name, used_as=how)
+            for (kind, name), how in sorted(uses.items())]
+
+
+def _history_limits(kind: str, history_limit: Optional[int]) -> list[str]:
+    source = "ReplicaSet" if kind == "Deployment" else "ControllerRevision"
+    return [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the "
+        "update strategy are not, and neither are changes outside the cluster "
+        "(feature flags, traffic, dependencies).",
+        f"Kubernetes keeps {history_limit if history_limit is not None else 10} old "
+        "revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed "
+        "revision is not necessarily the first.",
+        f"A revision's age is when its {source} was created. A rollback reuses an "
+        "older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change "
+        "times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including "
+        "label-only changes such as a Helm upgrade: it does not show that the data "
+        "changed.",
+    ]
+
+
+def _read_workload(kind: str, name: str, namespace: str):
+    readers = {"Deployment": APPS_V1_API.read_namespaced_deployment,
+               "StatefulSet": APPS_V1_API.read_namespaced_stateful_set,
+               "DaemonSet": APPS_V1_API.read_namespaced_daemon_set}
+    try:
+        return readers[kind](name=name, namespace=namespace)
+    except client.ApiException as e:
+        if e.status == 404:
+            raise K8sApiError(
+                f"{kind} '{name}' not found in namespace '{namespace}'.") from e
+        raise K8sApiError(f"Error fetching {kind} '{name}': {e}") from e
+
+
+def _owned_by(obj, kind: str, name: str) -> bool:
+    return any(getattr(ref, "controller", False) and ref.kind == kind and ref.name == name
+               for ref in (obj.metadata.owner_references or []))
+
+
+def _raw_revisions(kind: str, name: str, namespace: str):
+    """(revision, source, created, reused, template dict) for each retained revision."""
+    try:
+        if kind == "Deployment":
+            items = APPS_V1_API.list_namespaced_replica_set(namespace=namespace).items
+        else:
+            items = APPS_V1_API.list_namespaced_controller_revision(namespace=namespace).items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching revisions of {kind} '{name}': {e}") from e
+    revisions = []
+    for item in items:
+        if not _owned_by(item, kind, name):
+            continue
+        if kind == "Deployment":
+            annotations = item.metadata.annotations or {}
+            try:
+                revision = int(annotations.get("deployment.kubernetes.io/revision"))
+            except (TypeError, ValueError):
+                revision = None
+            reused = "deployment.kubernetes.io/revision-history" in annotations
+            template = _api_dict(item.spec.template if item.spec else None)
+            source = f"ReplicaSet/{item.metadata.name}"
+        else:
+            revision = item.revision
+            reused = False
+            data = item.data if isinstance(item.data, dict) else {}
+            template = dict((data.get("spec") or {}).get("template") or {})
+            template.pop("$patch", None)
+            source = f"ControllerRevision/{item.metadata.name}"
+        revisions.append((revision, source, item.metadata.creation_timestamp, reused, template))
+    revisions.sort(key=lambda r: r[0] if r[0] is not None else -1)
+    return revisions
+
+
+def _configmap_reference(ref: ConfigReference, namespace: str,
+                         now: datetime.datetime) -> ConfigReference:
+    if ref.kind != "ConfigMap":
+        return ref
+    try:
+        cm = K8S.read_namespaced_config_map(name=ref.name, namespace=namespace)
+    except client.ApiException as e:
+        if e.status == 404:
+            return ref.model_copy(update={"exists": False})
+        raise K8sApiError(f"Error fetching ConfigMap '{ref.name}': {e}") from e
+    times = [m.time for m in (cm.metadata.managed_fields or []) if getattr(m, "time", None)]
+    created = cm.metadata.creation_timestamp
+    return ref.model_copy(update={
+        "exists": True,
+        "age": now - created if created else None,
+        "last_written": now - max(times) if times else None,
+    })
+
+
+def get_workload_history(name: str, namespace: str = "default",
+                         kind: str = "Deployment") -> WorkloadHistory:
+    """What changed in a workload, and when: its retained pod-template revisions,
+    newest first, each compared with the one before it, plus the ConfigMaps and
+    Secrets its pod template refers to. Ask early in an investigation: a recent
+    change is the first suspect, and a workload unchanged for months is a
+    finding too.
+
+    Parameters
+    ----------
+    name : str
+        Name of the workload.
+    namespace : str, default="default"
+        Namespace of the workload.
+    kind : str, default="Deployment"
+        "Deployment", "StatefulSet" or "DaemonSet". A Deployment's revisions are
+        its ReplicaSets; a StatefulSet's or DaemonSet's are its ControllerRevisions.
+
+    Returns
+    -------
+    WorkloadHistory
+        kind, name, namespace : str
+            The workload.
+        revisions : list[WorkloadRevision]
+            Retained revisions, newest first. Each has:
+
+            revision : Optional[int]
+                Revision number.
+            source : str
+                "ReplicaSet/<name>" or "ControllerRevision/<name>".
+            age : datetime.timedelta
+                Time since that ReplicaSet or ControllerRevision was created. This
+                is when the revision first went live, unless `reused` is true.
+            current : bool
+                True for the revision the workload runs now (the highest number).
+            reused : bool
+                True if a rollback, or a return to an identical earlier template,
+                re-activated this ReplicaSet under a new revision number. It went
+                live later than its age says. Deployments only.
+            images : list[str]
+                Container images, in container order.
+            compared_with : Optional[int]
+                The previous retained revision, which `changes` are relative to;
+                None for the oldest retained revision.
+            changes : list[TemplateChange]
+                What differs from that revision, each with `field`, `change`
+                ("added", "removed", "changed") and, where shown, `before`/`after`.
+                Compared per container (matched by name): image, resource requests
+                and limits, command, args, probes, env vars (by name; values are
+                never shown), envFrom, volume mounts; and for the pod: volumes,
+                node selector, tolerations. Any other field that changed is named,
+                with values only if they are plain scalars.
+            metadata_changes : list[TemplateChange]
+                Pod-template label and annotation changes, kept apart because tools
+                like Helm change them on every upgrade (e.g. a chart version
+                label). A changed "checksum/config"-style annotation often means
+                the chart's config changed.
+            rollout_restart : bool
+                True if the kubectl.kubernetes.io/restartedAt annotation changed:
+                a `kubectl rollout restart`, which changes nothing else.
+        config : list[ConfigReference]
+            Each ConfigMap and Secret the current template names: kind, name,
+            used_as ("env", "envFrom", "volume", "volume (subPath)",
+            "imagePullSecrets"). For ConfigMaps also exists, age and last_written
+            (time since its latest write by anyone, from managedFields - including
+            label-only writes, so it does not prove the data changed). Secrets are
+            never read: no time, and their changes are not visible here.
+
+            How a ConfigMap change reaches a running pod: env and envFrom values
+            are read only when a container starts, so a later write takes effect
+            at the next restart; a mounted volume is refreshed within about a
+            minute, except a subPath mount, which never is. Compare last_written
+            with the containers' started_at (`get_pod_container_statuses`).
+        complete : bool
+            False when replayed from a capture that predates this tool: revisions
+            then come from its ReplicaSet records and show only image changes.
+        limits : list[str]
+            What this history cannot show. It never sees changes made outside
+            the pod template, such as replica counts or a feature-flag toggle.
+
+    Raises
+    ------
+    K8sConfigError
+        If unable to initialize the K8S API.
+    K8sApiError
+        If the workload does not exist, `kind` is not supported, or an API call fails.
+    """
+    global K8S, APPS_V1_API
+    if kind not in _WORKLOAD_KINDS:
+        raise K8sApiError(f"Unsupported kind '{kind}': expected one of {', '.join(_WORKLOAD_KINDS)}.")
+    if APPS_V1_API is None:
+        APPS_V1_API = _get_apps_v1_api_client()
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_workload_history(name={name}, namespace={namespace}, kind={kind})")
+
+    workload = _read_workload(kind, name, namespace)
+    raw = _raw_revisions(kind, name, namespace)
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    revisions: list[WorkloadRevision] = []
+    for i, (number, source, created, reused, template) in enumerate(raw):
+        changes: list[TemplateChange] = []
+        metadata: list[TemplateChange] = []
+        compared_with = None
+        if i > 0:
+            compared_with = raw[i - 1][0]
+            changes, metadata = _template_changes(raw[i - 1][4], template)
+        revisions.append(WorkloadRevision(
+            revision=number, source=source,
+            age=now - created if created else datetime.timedelta(0),
+            current=(i == len(raw) - 1), reused=reused,
+            images=_template_images(template), compared_with=compared_with,
+            changes=changes, metadata_changes=metadata,
+            rollout_restart=any(c.field == f"metadata.annotations[{_RESTARTED_AT}]"
+                                for c in metadata),
+        ))
+    revisions.reverse()
+
+    spec = workload.spec
+    current_template = _api_dict(spec.template if spec else None)
+    config = [_configmap_reference(ref, namespace, now)
+              for ref in _config_references(current_template)]
+    history_limit = getattr(spec, "revision_history_limit", None) if spec else None
+    return WorkloadHistory(kind=kind, name=name, namespace=namespace,
+                           revisions=revisions, config=config, complete=True,
+                           limits=_history_limits(kind, history_limit))
+
+
+def print_workload_history(name: str, namespace: str = "default",
+                           kind: str = "Deployment") -> None:
+    """Calls get_workload_history and prints the revisions and config references."""
+    history = get_workload_history(name, namespace, kind)
+    print(f"{history.kind}/{history.name} in {history.namespace}"
+          + ("" if history.complete else " (images only: capture predates template history)"))
+    print(f"{'REV':<5} {'AGE':<10} {'SOURCE':<48} IMAGES")
+    for r in history.revisions:
+        marks = (" (current)" if r.current else "") + (" (reused)" if r.reused else "") \
+            + (" (rollout restart)" if r.rollout_restart else "")
+        revision = str(r.revision) if r.revision is not None else "-"
+        print(f"{revision:<5} {_format_timedelta(r.age):<10} {r.source:<48} "
+              f"{', '.join(r.images)}{marks}")
+        for c in r.changes + r.metadata_changes:
+            values = f": {c.before or '-'} -> {c.after or '-'}" if c.before or c.after else ""
+            print(f"      {c.change:<8} {c.field}{values}")
+    if history.config:
+        print(f"{'CONFIG':<36} {'USED AS':<28} {'AGE':<10} LAST WRITTEN")
+        for ref in history.config:
+            if ref.kind == "Secret":
+                age, written = "-", "(not read)"
+            elif ref.exists is False:
+                age, written = "-", "(missing)"
+            else:
+                age, written = _format_timedelta(ref.age), _format_timedelta(ref.last_written)
+            print(f"{ref.kind + '/' + ref.name:<36} {', '.join(ref.used_as):<28} {age:<10} {written}")
 
 
 def print_deployment_summaries(namespace: Optional[str] = None) -> None:
@@ -2887,6 +3436,7 @@ TOOLS = [
     get_logs_for_pod_and_container,
     get_deployment_summaries,
     get_replicaset_summaries,
+    get_workload_history,
     get_service_summaries,
     get_configmap_summaries,
     get_configmap,

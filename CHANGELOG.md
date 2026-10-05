@@ -3,6 +3,40 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 2.4.0 — unreleased
+
+### Added
+- **`get_workload_history` tool** (issue #11): what changed in a Deployment,
+  StatefulSet or DaemonSet, and when. It lists the retained pod-template revisions
+  newest first (a Deployment's ReplicaSets; a StatefulSet's or DaemonSet's
+  ControllerRevisions), each compared with the one before it:
+  - per container, matched by name: image, resource requests and limits,
+    command, args, probes, env vars, `envFrom` and volume mounts;
+  - for the pod: volumes, node selector and tolerations;
+  - any other changed field is named;
+  - template label and annotation changes are listed separately, so a Helm
+    version-label bump doesn't bury a memory-limit change;
+  - a `kubectl rollout restart` is flagged.
+
+  Env vars are compared by name and shown by name only, never by value. The
+  result also lists the ConfigMaps and Secrets the current template uses, and
+  how. ConfigMaps get their age and `last_written`. Secrets are named but never
+  read. Each result carries the limits of what history can show. `print_workload_history`
+  is its companion.
+- Captures store each workload's history (the tool's result, so no env values are
+  written); captures from before 2.4.0 replay an images-only history rebuilt from
+  their ReplicaSet records, marked `complete: false`. The `--mock` fixture has a
+  history for each of its four workloads.
+
+### Changed
+- **A capture needs `list` on `controllerrevisions`** (apps), for StatefulSet and
+  DaemonSet histories, and fails without it. The README's role includes it.
+
+### Documentation
+- `get_replicaset_summaries` no longer says the newest replica set's age is always
+  when the deployment last changed: a rollback re-activates an older replica set
+  under a new revision number.
+
 ## 2.3.0 — 2026-10-03
 
 ### Added

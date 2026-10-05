@@ -120,6 +120,13 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
 get_replicaset_summaries.__doc__ = k8s_tools.get_replicaset_summaries.__doc__
 
 
+def get_workload_history(name: str, namespace: str = "default",
+                         kind: str = "Deployment") -> k8s_tools.WorkloadHistory:
+    return _state().get_workload_history(name, namespace, kind)
+
+get_workload_history.__doc__ = k8s_tools.get_workload_history.__doc__
+
+
 def get_service_summaries(namespace: Optional[str] = None) -> list[k8s_tools.ServiceSummary]:
     return _state().get_service_summaries(namespace)
 
@@ -211,6 +218,7 @@ TOOLS = [
     get_logs_for_pod_and_container,
     get_deployment_summaries,
     get_replicaset_summaries,
+    get_workload_history,
     get_service_summaries,
     get_configmap_summaries,
     get_configmap,

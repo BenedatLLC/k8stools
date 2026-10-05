@@ -553,6 +553,53 @@ class MockState:
         return self._decode_all("deployments", k8s_tools.DeploymentSummary, namespace)
 
     @_pinned_query
+    def get_workload_history(self, name: str, namespace: str = "default",
+                             kind: str = "Deployment") -> k8s_tools.WorkloadHistory:
+        """The captured history, or, from a capture that predates it, an
+        images-only history rebuilt from the ReplicaSet records (``complete``
+        false, and ``limits`` says so). Unknown workloads raise, as live."""
+        if kind not in k8s_tools._WORKLOAD_KINDS:
+            raise k8s_tools.K8sApiError(
+                f"Unsupported kind '{kind}': expected one of "
+                f"{', '.join(k8s_tools._WORKLOAD_KINDS)}.")
+        for record in self._data.get("workload_histories", []):
+            if (record.get("kind"), record.get("name"), record.get("namespace")) == \
+                    (kind, name, namespace):
+                return decode_model(k8s_tools.WorkloadHistory, record, self._clock)
+
+        key = {"Deployment": "deployments", "StatefulSet": "statefulsets",
+               "DaemonSet": "daemonsets"}[kind]
+        if not any(r.get("name") == name and r.get("namespace") == namespace
+                   for r in self._data.get(key, [])):
+            raise k8s_tools.K8sApiError(
+                f"{kind} '{name}' not found in namespace '{namespace}'.")
+
+        revisions: list[k8s_tools.WorkloadRevision] = []
+        if kind == "Deployment":
+            owned = self.get_replicaset_summaries(namespace, deployment=name)
+            for i, rs in enumerate(owned):
+                previous = owned[i - 1] if i else None
+                changes = []
+                if previous is not None and previous.images != rs.images:
+                    changes.append(k8s_tools.TemplateChange(
+                        field="images", change="changed",
+                        before=", ".join(previous.images), after=", ".join(rs.images)))
+                revisions.append(k8s_tools.WorkloadRevision(
+                    revision=rs.revision, source=f"ReplicaSet/{rs.name}", age=rs.age,
+                    current=(i == len(owned) - 1), images=rs.images,
+                    compared_with=previous.revision if previous else None,
+                    changes=changes))
+            revisions.reverse()
+        return k8s_tools.WorkloadHistory(
+            kind=kind, name=name, namespace=namespace, revisions=revisions,
+            complete=False,
+            limits=k8s_tools._history_limits(kind, None) + [
+                "This capture predates workload history: revisions come from its "
+                "ReplicaSet records and show image changes only (none for a "
+                "StatefulSet or DaemonSet), and the ConfigMaps and Secrets the "
+                "workload uses are not known."])
+
+    @_pinned_query
     def get_replicaset_summaries(self, namespace: Optional[str] = None,
                                  deployment: Optional[str] = None) -> list[k8s_tools.ReplicaSetSummary]:
         """Replica sets, filtered and *then* ordered the way the real tool orders them.

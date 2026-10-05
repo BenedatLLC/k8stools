@@ -68,6 +68,8 @@ def _placeholder(annotation):
     """A minimal value satisfying `annotation`, for the fields we aren't testing."""
     if _accepts_none(annotation):
         return None
+    if typing.get_origin(annotation) is typing.Literal:
+        return typing.get_args(annotation)[0]
     origin = typing.get_origin(annotation) or annotation
     return {str: "x", int: 0, bool: False, float: 0.0, list: [], dict: {}}.get(origin)
 

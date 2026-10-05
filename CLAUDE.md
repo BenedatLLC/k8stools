@@ -28,7 +28,8 @@ tests/
   test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
   test_node_conditions.py    - NodeSummary.conditions_since (condition transition times), incl. capture replay
   test_workloads.py          - get_daemonset_summaries and PodSummary.owner, incl. capture replay
-  test_builtin_fixture.py    - The built-in fixture describes a cluster that could exist (owners, images, ages, log windows)
+  test_builtin_fixture.py    - The built-in fixture describes a cluster that could exist (owners, images, ages, log windows, histories)
+  test_workload_history.py   - get_workload_history: template diffs, revisions, config refs, no env values or Secret reads, replay
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree

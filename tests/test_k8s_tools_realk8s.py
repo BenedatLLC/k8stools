@@ -824,3 +824,45 @@ def test_pod_owner_names_an_object_the_tools_can_find():
         assert kind and name
         if kind == "ReplicaSet":
             assert (pod.namespace, name) in replicasets
+
+
+def test_workload_history_matches_the_replica_sets():
+    """Issue #11: a Deployment's history lists its replica sets, newest first,
+    each compared with the one before; env values never appear."""
+    deployments = k8s_tools.get_deployment_summaries()
+    if not deployments:
+        pytest.skip("No deployments found in the cluster.")
+    for d in deployments[:10]:
+        history = k8s_tools.get_workload_history(d.name, d.namespace)
+        assert history.complete and history.limits
+        owned = k8s_tools.get_replicaset_summaries(d.namespace, deployment=d.name)
+        assert [r.revision for r in history.revisions] == \
+            [rs.revision for rs in reversed(owned)]
+        assert [r.images for r in history.revisions] == [rs.images for rs in reversed(owned)]
+        if history.revisions:
+            assert history.revisions[0].current
+            assert history.revisions[-1].compared_with is None
+        for r in history.revisions:
+            for c in r.changes:
+                if ".env[" in c.field:
+                    assert c.before is None and c.after is None
+        for ref in history.config:
+            if ref.kind == "Secret":
+                assert (ref.exists, ref.age, ref.last_written) == (None, None, None)
+
+
+def test_workload_history_for_statefulsets_and_daemonsets():
+    workloads = [("StatefulSet", s.name, s.namespace) for s in k8s_tools.get_statefulset_summaries()] \
+        + [("DaemonSet", d.name, d.namespace) for d in k8s_tools.get_daemonset_summaries()]
+    if not workloads:
+        pytest.skip("No StatefulSets or DaemonSets found in the cluster.")
+    for kind, name, namespace in workloads:
+        history = k8s_tools.get_workload_history(name, namespace, kind)
+        assert history.revisions, f"{kind}/{name} has no ControllerRevisions"
+        assert all(r.source.startswith("ControllerRevision/") for r in history.revisions)
+        assert sum(r.current for r in history.revisions) == 1
+
+
+def test_workload_history_of_a_missing_workload_raises():
+    with pytest.raises(k8s_tools.K8sApiError, match="not found"):
+        k8s_tools.get_workload_history("no-such-deployment-k8stools-test", "default")

@@ -476,6 +476,26 @@
             "key": "node.kubernetes.io/unreachable",
             "operator": "Exists"
           }
+        ],
+        "volumes": [
+          {
+            "name": "opentelemetry-collector-configmap",
+            "config_map": {
+              "name": "otel-collector-agent",
+              "items": [
+                {
+                  "key": "relay",
+                  "path": "relay.yaml"
+                }
+              ]
+            }
+          },
+          {
+            "name": "hostfs",
+            "host_path": {
+              "path": "/"
+            }
+          }
         ]
       },
       "logs": {
@@ -939,6 +959,13 @@
       "age_seconds": 777605.0,
       "data": {},
       "binary_data_keys": []
+    },
+    {
+      "name": "otel-collector-agent",
+      "namespace": "default",
+      "key_count": 1,
+      "data_size": 234,
+      "age_seconds": 691200.0
     }
   ],
   "statefulsets": [
@@ -969,6 +996,173 @@
         "otel/opentelemetry-collector-contrib:0.142.0"
       ],
       "age_seconds": 691200.0
+    }
+  ],
+  "workload_histories": [
+    {
+      "kind": "Deployment",
+      "name": "ad",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 2,
+          "source": "ReplicaSet/ad-647b4947cc",
+          "age_seconds": 27240.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-ad"
+          ],
+          "compared_with": 1,
+          "changes": [
+            {
+              "field": "containers[ad].image",
+              "change": "changed",
+              "before": "ghcr.io/open-telemetry/demo:2.0.2-ad",
+              "after": "ghcr.io/open-telemetry/demo:2.2.0-ad"
+            },
+            {
+              "field": "containers[ad].env[OTEL_RESOURCE_ATTRIBUTES]",
+              "change": "removed",
+              "before": null,
+              "after": null
+            }
+          ],
+          "metadata_changes": [
+            {
+              "field": "metadata.labels[app.kubernetes.io/version]",
+              "change": "changed",
+              "before": "2.0.2",
+              "after": "2.2.0"
+            }
+          ],
+          "rollout_restart": false
+        },
+        {
+          "revision": 1,
+          "source": "ReplicaSet/ad-d5c94c49b",
+          "age_seconds": 691199.0,
+          "current": false,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.0.2-ad"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ReplicaSet was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "test-deployment",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 1,
+          "source": "ReplicaSet/test-deployment-7d4b9c85f",
+          "age_seconds": 7199.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-cart"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ReplicaSet was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
+    },
+    {
+      "kind": "StatefulSet",
+      "name": "postgres",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 1,
+          "source": "ControllerRevision/postgres-5d8f6c7b9",
+          "age_seconds": 259200.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "postgres:16.4"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ControllerRevision was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
+    },
+    {
+      "kind": "DaemonSet",
+      "name": "otel-collector-agent",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 1,
+          "source": "ControllerRevision/otel-collector-agent-7bfc667c67",
+          "age_seconds": 691200.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "otel/opentelemetry-collector-contrib:0.142.0"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [
+        {
+          "kind": "ConfigMap",
+          "name": "otel-collector-agent",
+          "used_as": [
+            "volume"
+          ],
+          "exists": true,
+          "age_seconds": 691200.0,
+          "last_written_seconds": 691200.0
+        }
+      ],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ControllerRevision was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
     }
   ],
   "cronjobs": [

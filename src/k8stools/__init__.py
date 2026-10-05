@@ -34,6 +34,7 @@ These are the tools we define:
 * get_logs_for_pod_and_container - retrieves logs from a pod and container (supports tail/since/previous)
 * get_deployment_summaries - get a list of deployments, like `kubectl get deployments`
 * get_replicaset_summaries - get a deployment's revision history, like `kubectl get replicasets`
+* get_workload_history - a workload's pod-template revisions, compared, and the config it references
 * get_service_summaries - get a list of services, like `kubectl get services`
 * get_configmap_summaries - get a list of ConfigMaps, like `kubectl get configmaps`
 * get_configmap - retrieve the full contents of a single ConfigMap
@@ -56,6 +57,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_pod_spec
 * print_deployment_summaries
 * print_replicaset_summaries
+* print_workload_history
 * print_service_summaries
 * print_configmap_summaries
 * print_configmap
@@ -80,4 +82,4 @@ the built-in OTel Demo snapshot by default, or your own via load_mock_state() or
 the server's --state-file option.
 """
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"

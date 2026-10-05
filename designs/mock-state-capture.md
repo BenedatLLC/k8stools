@@ -152,6 +152,7 @@ A single JSON file per capture. Top-level keys:
   "configmaps": [ ... ],
   "statefulsets": [ ... ],
   "daemonsets": [ ... ],
+  "workload_histories": [ ... ],
   "cronjobs": [ ... ],
   "jobs": [ ... ],
   "pvcs": [ ... ],
@@ -165,7 +166,10 @@ The `configmaps`..`events` keys were added alongside the 1.1.0 tool batch
 shapes. `replicasets` was added alongside the 1.2.0 tool batch — see
 [Resource records added in 1.2.0](#resource-records-added-in-120). `daemonsets` was added
 in 2.3.0: `DaemonSetSummary` fields with `age` → `age_seconds`; captures without it
-replay no DaemonSets.
+replay no DaemonSets. `workload_histories` was added in 2.4.0: one encoded
+`WorkloadHistory` (the tool's result, not raw pod templates, so env values never
+reach the file) per Deployment, StatefulSet and DaemonSet. Captures without it
+replay an images-only history rebuilt from `replicasets`, with `complete: false`.
 
 `redacted` records which mode the capture was taken in — see
 [Redaction](#redaction). It exists so a consumer can tell without guessing;

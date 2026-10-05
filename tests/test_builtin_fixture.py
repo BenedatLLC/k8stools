@@ -178,3 +178,39 @@ def test_event_windows_are_ordered(state):
     for e in state.get_events():
         assert e.count is not None and e.count >= 1
         assert e.first_seen >= e.last_seen
+
+
+def test_every_workload_has_a_history_that_agrees_with_it(state):
+    """Deployment histories mirror their replica sets; a StatefulSet's or
+    DaemonSet's current ControllerRevision is the one its pods carry as
+    controller-revision-hash; config references exist with consistent ages."""
+    raw = json.loads(BUILTIN_STATE_FILE.read_text())
+    labels = {p["summary"]["name"]: p["labels"] for p in raw["pods"]}
+    configmaps = {(c.namespace, c.name): c for c in state.get_configmap_summaries()}
+    workloads = [("Deployment", w) for w in state.get_deployment_summaries()] + \
+        [("StatefulSet", w) for w in state.get_statefulset_summaries()] + \
+        [("DaemonSet", w) for w in state.get_daemonset_summaries()]
+    for kind, w in workloads:
+        h = state.get_workload_history(w.name, w.namespace, kind)
+        assert h.complete and h.revisions, f"{kind}/{w.name}"
+        assert [r.current for r in h.revisions] == [True] + [False] * (len(h.revisions) - 1)
+        assert all(r.age <= w.age for r in h.revisions), f"{kind}/{w.name}"
+        if kind == "Deployment":
+            owned = state.get_replicaset_summaries(w.namespace, deployment=w.name)
+            assert [(r.source, r.revision, r.images, r.age) for r in h.revisions] == \
+                [(f"ReplicaSet/{rs.name}", rs.revision, rs.images, rs.age)
+                 for rs in reversed(owned)]
+        else:
+            current = h.revisions[0].source.split("/", 1)[1]
+            pods = [p for p in state.get_pod_summaries(w.namespace)
+                    if p.owner == f"{kind}/{w.name}"]
+            assert pods and all(labels[p.name]["controller-revision-hash"].endswith(
+                current.rsplit("-", 1)[1]) for p in pods), f"{kind}/{w.name}"
+        if kind == "DaemonSet":
+            assert h.revisions[0].images == w.images
+        for ref in h.config:
+            if ref.kind == "ConfigMap":
+                cm = configmaps.get((w.namespace, ref.name))
+                assert ref.exists == (cm is not None), ref.name
+                if cm is not None:
+                    assert ref.age == cm.age and ref.last_written <= ref.age

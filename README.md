@@ -73,7 +73,7 @@ rules:
               persistentvolumeclaims]
   verbs: [get, list]
 - apiGroups: [apps]
-  resources: [deployments, replicasets, statefulsets, daemonsets]
+  resources: [deployments, replicasets, statefulsets, daemonsets, controllerrevisions]
   verbs: [get, list]
 - apiGroups: [batch]
   resources: [jobs, cronjobs]
@@ -81,7 +81,8 @@ rules:
 ```
 
 `get_cluster_info` also reads the server version (`/version`), which every
-authenticated user can read by default. No tool reads Secrets.
+authenticated user can read by default. No tool reads Secrets: `get_workload_history`
+names the Secrets a workload uses, from its pod template, without reading them.
 
 ## Current tools
 
@@ -97,6 +98,7 @@ These are the tools we define:
 * `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`). See [Previous-instance log semantics](#previous-instance-log-semantics) for when `previous=True` returns the same text as `previous=False` — it is Kubernetes behavior, not a bug.
 * `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
 * `get_replicaset_summaries` - get a deployment's replica sets with their revision numbers and images. A deployment's replica sets are its change history: use this to see when a workload last changed and what the change was.
+* `get_workload_history` - what changed in a Deployment, StatefulSet or DaemonSet, and when: each retained revision of its pod template compared with the one before (images, resources, probes, command/args, env var *names*, volumes, scheduling), plus the ConfigMaps and Secrets it references. It states what history cannot show.
 * `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
 * `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
 * `get_configmap` - retrieve the full contents of a single ConfigMap
@@ -118,6 +120,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_pod_events`
 * `print_pod_spec`
 * `print_deployment_summaries`
+* `print_workload_history`
 * `print_service_summaries`
 * `print_configmap_summaries`
 * `print_configmap`
@@ -389,7 +392,7 @@ Everything the tools can read, so that every tool answers on replay:
 |---|---|
 | Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
 | Cluster-wide | namespaces, nodes |
-| Per namespace | deployments, replica sets, services, statefulsets, daemonsets, cronjobs, jobs, PVCs, events |
+| Per namespace | deployments, replica sets, services, statefulsets, daemonsets, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
 
