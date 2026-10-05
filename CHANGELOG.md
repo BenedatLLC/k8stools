@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 2.4.0 — unreleased
+## 2.4.0 — 2026-10-05
 
 ### Added
 - **`get_workload_history` tool** (issue #11): what changed in a Deployment,
