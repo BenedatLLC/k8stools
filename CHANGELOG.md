@@ -3,6 +3,16 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## Unreleased
+
+### Documentation
+- **The README says plainly where redaction applies.** The functions in `TOOLS`
+  return raw values; only `k8s-mcp-server` and `k8s-capture-state` redact. The
+  agent example now wraps the tools with `wrap_with_redaction` (it passed them
+  unwrapped, and a downstream MCP server built the same way served unredacted
+  output), a warning follows it, and a new "Where redaction applies" table covers
+  each way of using the tools.
+
 ## 2.4.0 — 2026-10-05
 
 ### Added

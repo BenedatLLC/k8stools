@@ -138,11 +138,12 @@ The core tools are in `k8stools.k8s_tools`. Here's an example usage in an agent:
 ```python
 from pydantic_ai.agent import Agent
 from k8stools.k8s_tools import TOOLS
+from k8stools.redaction import wrap_with_redaction
 
 agent = Agent(
         model="openai:gpt-4.1",
         system_prompt=SYSTEM_PROMPT,
-        tools=TOOLS
+        tools=[wrap_with_redaction(fn) for fn in TOOLS],
 )
 
 result = agent.run_sync("What is the status of the pods in my cluster?")
@@ -159,6 +160,15 @@ k8s_tools.configure(kubeconfig="~/.kube/prod.yaml", context="prod-eu")
 ```
 
 See [Selecting a cluster](#selecting-a-cluster) for how the selection is resolved.
+
+> **⚠️ Redaction is not automatic outside the k8stools MCP server.** The functions
+> in `TOOLS` (and `mock_tools.TOOLS`) return raw values: ConfigMap contents, env
+> values in pod specs, container logs and command-line args, exactly as the API
+> returns them. Only `k8s-mcp-server` and `k8s-capture-state` apply redaction for
+> you. If you hand `TOOLS` to an agent, or build your own MCP server from them,
+> wrap each one with `wrap_with_redaction` as above, or anything secret-shaped in
+> your cluster goes straight into the model's context. See
+> [Where redaction applies](#where-redaction-applies).
 
 ### Using via MCP
 The script `k8s-mcp-server` provides an MCP server for the same set of tools.
@@ -571,6 +581,18 @@ provide a reader for Kubernetes `Secret` objects.
    var and protects nothing. The exemption does not apply to env-var names, where
    a variable someone named `KEY` plausibly does hold one.
 
-If you call the tool functions directly in Python (rather than through the MCP
-server), you get raw, un-redacted values; you can apply the same pass yourself via
-`k8stools.redaction.redact_object`.
+### Where redaction applies
+
+| How the tools are used | Redacted? |
+|---|---|
+| `k8s-mcp-server` | **Yes**, on by default; `--no-redact` or `K8STOOLS_REDACT=0` turns it off |
+| `k8s-capture-state` | **Yes**: the capture applies the pass itself before writing the file |
+| `k8s_tools.TOOLS` / `mock_tools.TOOLS` given to an agent framework, or composed into your own MCP server | **No.** Wrap each function: `[wrap_with_redaction(fn) for fn in TOOLS]` |
+| Calling a tool function directly in Python | **No.** Apply the pass to the result: `redact_object(result)` returns `(redacted, count)` |
+
+`wrap_with_redaction` keeps each function's name, signature and docstring, so a
+framework that builds tool schemas from them (pydantic-ai, MCP) sees the same tool.
+Redaction catches known token shapes and values under sensitive names. It cannot
+catch everything: a credential embedded in a longer string, such as a connection
+URL or a `--password=` flag, can get through (see
+[#12](https://github.com/BenedatLLC/k8stools/issues/12)).

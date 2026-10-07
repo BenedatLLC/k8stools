@@ -171,9 +171,16 @@ never the kubeconfig path) with `source="capture"`.
 
 ```python
 from k8stools.k8s_tools import TOOLS
+from k8stools.redaction import wrap_with_redaction
 
-agent = Agent(model="openai:gpt-4.1", system_prompt=SYSTEM_PROMPT, tools=TOOLS)
+agent = Agent(model="openai:gpt-4.1", system_prompt=SYSTEM_PROMPT,
+              tools=[wrap_with_redaction(fn) for fn in TOOLS])
 ```
+
+`TOOLS` returns raw values; only `k8s-mcp-server` and `k8s-capture-state` redact.
+Anything that composes `TOOLS` itself must wrap them, and README examples must
+show the wrapping (a downstream server copied the unwrapped example and served
+unredacted output).
 
 ## MCP server
 
