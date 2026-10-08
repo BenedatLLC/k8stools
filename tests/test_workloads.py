@@ -125,9 +125,13 @@ def test_daemonset_tool_is_registered_in_both_tool_lists():
         k8s_tools.get_daemonset_summaries.__doc__
 
 
-def test_docstring_says_an_empty_node_selector_is_not_every_node():
-    doc = k8s_tools.get_daemonset_summaries.__doc__
-    assert "affinity" in doc and 'does not mean "every node"' in doc
+def test_an_empty_node_selector_says_it_is_not_every_node(apps):
+    apps(_daemonset("agent", desired_number_scheduled=1),
+         _daemonset("proxy", node_selector={"kubernetes.io/os": "linux"}))
+    agent, proxy = k8s_tools.get_daemonset_summaries()
+    assert agent.notes == [k8s_tools.NOTE_DAEMONSET_SELECTOR]
+    assert "affinity" in agent.notes[0]
+    assert proxy.notes == []
 
 
 # --- PodSummary.owner ----------------------------------------------------------
@@ -182,7 +186,7 @@ def test_a_non_controller_owner_is_not_the_owner(pods):
 
 def test_owner_docstring_points_from_replica_set_to_deployment():
     doc = k8s_tools.get_pod_summaries.__doc__
-    assert "owner_deployment" in doc and "suffixes" in doc
+    assert "owner_deployment" in doc and "not by name" in doc
 
 
 # --- capture and replay --------------------------------------------------------

@@ -143,6 +143,12 @@ def _model_classes(annotation: Any) -> list[type[BaseModel]]:
             for cls in _model_classes(arg)]
 
 
+#: Fields a model computes from its other fields (`notes`, issue #20). They are
+#: not written to captures: replay recomputes them, so a capture never carries
+#: stale wording, and one recorded before they existed gets them too.
+DERIVED_FIELDS = frozenset({"notes"})
+
+
 def encode_model(model: BaseModel, captured_at: datetime.datetime) -> dict[str, Any]:
     """Serialize a tool return model to its capture-file representation.
 
@@ -153,6 +159,8 @@ def encode_model(model: BaseModel, captured_at: datetime.datetime) -> dict[str, 
     """
     out: dict[str, Any] = {}
     for name, field in type(model).model_fields.items():
+        if name in DERIVED_FIELDS:
+            continue
         value = getattr(model, name)
         key = _encoded_name(name, field.annotation)
         out[key] = _encode_value(value, captured_at)
@@ -551,11 +559,15 @@ class MockState:
                 raise k8s_tools.K8sApiError(
                     f"Error fetching logs: previous terminated instance of container "
                     f"'{container_name}' in pod '{pod_name}' not found.")
-            return ''
-        return _slice_log(_reanchor_log(logs[container_name], self._log_shift),
-                          tail=tail, since_seconds=since_seconds,
-                          now=self._clock.server_start_time + datetime.timedelta(
-                              seconds=self._clock.elapsed()))
+            text = ''
+        else:
+            text = _slice_log(_reanchor_log(logs[container_name], self._log_shift),
+                              tail=tail, since_seconds=since_seconds,
+                              now=self._clock.server_start_time + datetime.timedelta(
+                                  seconds=self._clock.elapsed()))
+        # Notes from the replayed state, as the live tool adds them from the live one.
+        return k8s_tools._with_log_notes(
+            text, self.get_pod_container_statuses(pod_name, namespace), container_name)
 
     @_pinned_query
     def get_deployment_summaries(self,

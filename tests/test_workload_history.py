@@ -310,11 +310,15 @@ def test_registered_with_shared_docstring():
     assert mock_tools.get_workload_history.__doc__ == k8s_tools.get_workload_history.__doc__
 
 
-def test_docstring_states_what_history_cannot_show():
-    doc = k8s_tools.get_workload_history.__doc__
-    assert "subPath" in doc and "started_at" in doc
-    assert "Secrets are" in doc and "never read" in doc
-    assert "reused" in doc and "label-only" in doc
+def test_the_result_states_what_history_cannot_show(fake):
+    """Since #20 these travel in the result's limits, not the description."""
+    v1 = _template()
+    fake(workloads={("Deployment", "ad"): _workload(v1)},
+         replicasets=[_rs("ad-1", 1, v1, _ago(days=8))])
+    limits = " ".join(k8s_tools.get_workload_history("ad").limits)
+    assert "subPath" in limits and "started_at" in limits
+    assert "Secret contents and change times are not read" in limits
+    assert "reused" in limits and "label-only" in limits
 
 
 # --- capture and replay --------------------------------------------------------------

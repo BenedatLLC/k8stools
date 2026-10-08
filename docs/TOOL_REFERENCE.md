@@ -1,0 +1,722 @@
+# Tool reference
+
+The full description of every tool's parameters and output, field by field.
+
+The tools' own descriptions, which an MCP client sends to the model on every
+turn, are kept short (a test holds each to 700 characters). The detail lives here,
+and in two places in the results themselves:
+
+## Notes in results
+
+Warnings that apply to a particular result come back with it, so an agent sees
+them when they matter instead of carrying them on every turn. Five models have a
+`notes` list, empty unless a warning applies. Notes are derived from the item's
+own fields, so live calls and replayed captures (including captures made before
+notes existed) give the same notes; captures don't store them.
+
+| Model | When | Note |
+|---|---|---|
+| `NodeSummary` | it has a `Ready` time | Ready's time changes only when its status does: a restart that never went NotReady doesn't reset it, so it isn't uptime. For the node's last start, see its Starting/Rebooted events or kube-proxy's started_at. |
+| `EventSummary` | `count` > 1 | count covers first_seen to last_seen. Updates are rate-limited (after 25, at most one per 5 minutes per object and type), so both can lag; first_seen is where this record starts, not necessarily when the problem did. |
+| `EventSummary` | `reason` is `BackOff` | BackOff repeats while a container waits, so this count is several times the number of restarts; count restarts from restart_count or Created events. |
+| `PodSummary` | it has restarts and isn't fully ready | last_restart is when a container last terminated (in CrashLoopBackOff, its last crash), not when it was restarted. |
+| `ContainerStatus` | waiting after a restart | Waiting with no running instance: its logs, with previous=False or True, are the last terminated instance's. |
+| `ContainerStatus` | `last_state` has `ran_for` | last_state.ran_for is how long that instance ran; restarts are further apart, by the back-off between its finished_at and the next start. |
+| `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
+
+`get_workload_history` returns its caveats in the result's `limits` list.
+
+**Logs** are plain text, so the log tools (`get_logs_for_pod_and_container`,
+`get_logs_for_job`, `get_logs_for_cronjob`) put a note on a line of its own at
+the top, starting `[k8stools] note: `, which is not the container's output. A
+log gets a note when:
+
+- the container is waiting (e.g. in CrashLoopBackOff) after a restart: there is
+  no running instance, so `previous=False` and `previous=True` both return the
+  last terminated instance's log;
+- the text is the kubelet's `unable to retrieve container logs for ...` message
+  rather than a log: that instance's log file is gone.
+
+Captures store logs without these lines, and replay adds them for the replayed
+state. Strip lines starting with `[k8stools] note: ` (the constant
+`k8s_tools.LOG_NOTE_PREFIX`) to get the container's output alone.
+
+## Tools
+
+The sections below began as the tools' long descriptions (2.4.0) and are
+maintained by hand. Tools are listed in the order of `k8s_tools.TOOLS`.
+
+### `get_cluster_info`
+
+```python
+get_cluster_info() -> ClusterInfo
+```
+
+Report which Kubernetes cluster these tools are bound to. Call this first
+when more than one cluster could be involved, and before drawing conclusions
+that depend on which cluster the data came from.
+
+The binding is made once (at server startup, or on the first tool call) and
+shared by every tool, so all tools answer from this cluster.
+
+#### Returns
+
+ClusterInfo
+An object with the following fields:
+
+- **`source`** (`str`): "kubeconfig" (bound through a kubeconfig context), "in-cluster" (the service account of the pod the server runs in), or "capture" (a recorded snapshot of a cluster being replayed, not a live cluster).
+- **`context`** (`Optional[str]`): The kubeconfig context name. None for in-cluster config, and for a capture that did not record one.
+- **`server`** (`Optional[str]`): URL of the cluster's API server.
+- **`kubeconfig`** (`Optional[str]`): Path of the kubeconfig file (or ``:``-separated list of files) the binding was read from. None unless source is "kubeconfig".
+- **`server_version`** (`Optional[str]`): Kubernetes version reported by the API server, e.g. "v1.31.2". None if the server could not be reached, or the capture did not record it.
+- **`captured_at`** (`Optional[datetime.datetime]`): For a capture, when it was taken; every age and timestamp the tools return is relative to that moment. None for a live cluster.
+
+### `get_namespaces`
+
+```python
+get_namespaces() -> list[NamespaceSummary]
+```
+
+Return a summary of the namespaces for this Kubernetes cluster, similar to that
+returned by `kubectl get namespace`.
+
+#### Returns
+
+list of NamespaceSummary
+List of namespace summary objects. Each NamespaceSummary has the following fields:
+
+- **`name`** (`str`): Name of the namespace.
+- **`status`** (`str`): Status phase of the namespace.
+- **`age`** (`datetime.timedelta`): Age of the namespace (current time minus creation timestamp).
+
+### `get_node_summaries`
+
+```python
+get_node_summaries() -> list[NodeSummary]
+```
+
+Return a summary of the nodes for this Kubernetes cluster, similar to that
+returned by `kubectl get nodes -o wide`.
+
+#### Returns
+
+list of NodeSummary
+List of node summary objects. Each NodeSummary has the following fields:
+
+- **`name`** (`str`): Name of the node.
+- **`status`** (`str`): Status of the node (Ready, NotReady, etc.).
+- **`roles`** (`list[str]`): List of roles for the node (e.g., ['control-plane', 'master']).
+- **`age`** (`datetime.timedelta`): Age of the node (current time minus creation timestamp).
+- **`version`** (`str`): Kubernetes version running on the node.
+- **`internal_ip`** (`Optional[str]`): Internal IP address of the node.
+- **`external_ip`** (`Optional[str]`): External IP address of the node (if available).
+- **`os_image`** (`Optional[str]`): Operating system image running on the node.
+- **`kernel_version`** (`Optional[str]`): Kernel version of the node.
+- **`container_runtime`** (`Optional[str]`): Container runtime version on the node.
+- **`capacity`** (`dict[str, str]`): Total capacity of the node keyed by resource name (e.g. "cpu", "memory", "ephemeral-storage", "pods"). Empty if unavailable.
+- **`allocatable`** (`dict[str, str]`): Resources allocatable to pods (capacity minus system-reserved), keyed by resource name. Empty if unavailable.
+- **`conditions`** (`dict[str, str]`): Node conditions keyed by type with their status, e.g. {"Ready": "True", "MemoryPressure": "False", "DiskPressure": "False"}.
+- **`conditions_since`** (`dict[str, datetime.timedelta]`): For each condition in `conditions`, the time since its status last changed (the API's lastTransitionTime), e.g. how long the node has been Ready, or how long ago a MemoryPressure episode ended. A condition with no transition time is left out.
+
+  It changes only when the status does. A node or kubelet restart in which the node comes back Ready without having been marked NotReady or Unknown in between does not reset it: on a minikube cluster stopped and started together with its control plane, Ready stayed "True since the node was created" across a reboot. So a long Ready age does not mean the node or its pods have been running that long, and a short one can come from a brief NotReady flap rather than a reboot. To date a node's last start, use its "Starting" or "Rebooted" events (`get_events(involved_kind="Node")`, while they last - events usually expire after an hour), or the `started_at` of containers that start with the node, such as kube-proxy and the kube-system control-plane containers (`get_pod_container_statuses`).
+- **`taints`** (`list[str]`): Taints on the node formatted as "key=value:effect" (value omitted when empty).
+- **`labels`** (`dict[str, str]`): All labels on the node. Useful for identifying node pool / instance type and spotting version skew across pools.
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_pod_summaries`
+
+```python
+get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]
+```
+
+Retrieves a list of PodSummary objects for pods in a given namespace or all namespaces.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list pods from. If None, lists pods from all namespaces.
+
+#### Returns
+
+list of PodSummary
+A list of PodSummary objects, each providing a summary of a pod's status with the following fields:
+
+- **`name`** (`str`): Name of the pod.
+- **`namespace`** (`str`): Namespace in which the pod is running.
+- **`total_containers`** (`int`): Total number of containers in the pod.
+- **`ready_containers`** (`int`): Number of containers currently in ready state.
+- **`restarts`** (`int`): Total number of restarts for all containers in the pod.
+- **`last_restart`** (`Optional[datetime.timedelta]`): Time since a container of this pod last terminated - the most recent last_state.finished_at across its containers - or None if none has. For a container waiting in CrashLoopBackOff this is its last crash, not a restart: it has not been started again yet. Taken from the kubelet's status, so it is current, unlike event records.
+- **`age`** (`datetime.timedelta`): Age of the pod (current time minus creation timestamp).
+- **`ip`** (`Optional[str]`): Pod IP address (None if not assigned).
+- **`node`** (`Optional[str]`): Name of the node where the pod is running (None if not scheduled).
+- **`owner`** (`Optional[str]`): The pod's controlling owner, as "Kind/name" - the object that created and manages it, e.g. "DaemonSet/otel-collector-agent", "StatefulSet/valkey-cart", "Job/backup-29318400". None for a bare pod nobody manages. This is the direct owner only: a Deployment's pods are owned by one of its replica sets ("ReplicaSet/ad-7d9f8c6b5"), whose `owner_deployment` (`get_replicaset_summaries`) names the Deployment; likewise a Job's `owner` names its CronJob. Static (mirror) pods such as the control plane's report "Node/<node name>". Group pods into workloads by this field rather than by stripping name suffixes.
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_pod_container_statuses`
+
+```python
+get_pod_container_statuses(pod_name: str, namespace: str = 'default') -> list[ContainerStatus]
+```
+
+Get the status for all containers in a specified Kubernetes pod.
+
+#### Parameters
+
+- **`pod_name`** (`str`): Name of the pod to retrieve container statuses for.
+- **`namespace`** (`str, optional`): Namespace of the pod (default is "default").
+
+#### Returns
+
+list of ContainerStatus
+List of container status objects for the specified pod. Each ContainerStatus has the following fields:
+
+- **`pod_name`** (`str`): Name of the pod.
+- **`namespace`** (`str`): Namespace of the pod.
+- **`container_name`** (`str`): Name of the container.
+- **`image`** (`str`): Image name.
+- **`ready`** (`bool`): Whether the container is currently passing its readiness check. The value will change as readiness probes keep executing.
+- **`restart_count`** (`int`): Number of times the container has restarted.
+- **`started`** (`Optional[bool]`): Started indicates whether the container has finished its postStart lifecycle hook and passed its startup probe.
+- **`stop_signal`** (`Optional[str]`): Stop signal for the container.
+- **`state`** (`Optional[ContainerState]`): Current state of the container.
+- **`last_state`** (`Optional[ContainerState]`): Last state of the container. When Terminated, ``ran_for`` is how long that instance ran (``finished_at - started_at``). It is not the restart interval, which adds the back-off named in a Waiting ``state``'s message, and it is not how much time the container's log covers: a process can stop logging long before it is killed.
+- **`volume_mounts`** (`list[VolumeMountStatus]`): Status of volume mounts for the container
+- **`resource_requests`** (`dict[str, str]`): Describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits.
+- **`resource_limits`** (`dict[str, str]`): Describes the maximum amount of compute resources allowed.
+- **`allocated_resources`** (`dict[str, str]`): Compute resources allocated for this container by the node.
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_pod_events`
+
+```python
+get_pod_events(pod_name: str, namespace: str = 'default') -> list[EventSummary]
+```
+
+Get events for a specific Kubernetes pod. This is equivalent to the kubectl command:
+`kubectl get events -n NAMESPACE --field-selector involvedObject.name=POD_NAME,involvedObject.kind=Pod`
+
+#### Parameters
+
+- **`pod_name`** (`str`): Name of the pod to retrieve events for.
+- **`namespace`** (`str, optional`): Namespace of the pod (default is "default").
+
+#### Returns
+
+list of EventSummary
+List of events associated with the specified pod. Each EventSummary has the following fields:
+
+- **`last_seen`** (`Optional[datetime.timedelta]`): Time since the most recent occurrence of the event (if available).
+- **`first_seen`** (`Optional[datetime.timedelta]`): Time since the first occurrence combined into this record (if available).
+- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after 1h by default), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
+
+  A record can lag behind what it counts. By default the kubelet writes at most one event update per object and event type ("Normal" or "Warning") every 5 minutes, once a burst of 25 is used up; occurrences in between are counted but only written with the next update, which then jumps by several at once. So count and last_seen describe the most recent *written* occurrence and can trail reality by several occurrences and tens of minutes. They lag together, so the rate above still holds, but last_seen is not the time of the last restart: for that, use the container status (last_state.finished_at, state.started_at from get_pod_container_statuses) or PodSummary.last_restart, which come from the kubelet's status rather than from events. "Pulled", "Created" and "Started" share one write budget, so their counts for the same restarts can differ by a few; don't compare counts across reasons.
+- **`type`** (`str`): Type of the event.
+- **`reason`** (`str`): Reason for the event.
+- **`object`** (`str`): The object this event applies to.
+- **`message`** (`str`): Message describing the event.
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_pod_spec`
+
+```python
+get_pod_spec(pod_name: str, namespace: str = 'default') -> dict[str, Any]
+```
+
+Retrieves the spec for a given pod in a specific namespace.
+
+#### Parameters
+
+- **`pod_name`** (`str`): The name of the pod.
+- **`namespace`** (`str`): The namespace the pod belongs to (defaults to "default").
+
+#### Returns
+
+dict[str, Any]
+The pod's spec object, containing its desired state. It is converted
+from a V1PodSpec to a dictionary. Key fields include:
+
+- **`containers`** (`list of kubernetes.client.V1Container`): List of containers belonging to the pod. Each container defines its image, ports, environment variables, resource requests/limits, etc.
+- **`init_containers`** (`list of kubernetes.client.V1Container, optional`): List of initialization containers belonging to the pod.
+- **`volumes`** (`list of kubernetes.client.V1Volume, optional`): List of volumes mounted in the pod and the sources available for the containers.
+- **`node_selector`** (`dict, optional`): A selector which must be true for the pod to fit on a node. Keys and values are strings.
+- **`restart_policy`** (`str`): Restart policy for all containers within the pod. Common values are "Always", "OnFailure", "Never".
+- **`service_account_name`** (`str, optional`): Service account name in the namespace that the pod will use to access the Kubernetes API.
+- **`dns_policy`** (`str`): DNS policy for the pod. Common values are "ClusterFirst", "Default".
+- **`priority_class_name`** (`str, optional`): If specified, indicates the pod's priority_class via its name.
+- **`node_name`** (`str, optional`): NodeName is a request to schedule this pod onto a specific node.
+
+### `get_logs_for_pod_and_container`
+
+```python
+get_logs_for_pod_and_container(pod_name: str, namespace: str = 'default', container_name: Optional[str] = None, tail: Optional[int] = None, since_seconds: Optional[int] = None, previous: bool = False) -> Optional[str]
+```
+
+Retrieves logs from a Kubernetes pod and container.
+
+The log may begin with lines starting `[k8stools] note: `, added by the tool rather than the container; see [Notes in results](#notes-in-results).
+
+#### Parameters
+
+- **`pod_name`** (`str`): The name of the pod.
+- **`namespace`** (`str`): The namespace of the pod.
+- **`container_name`** (`str, optional`): The name of the container within the pod. If None, defaults to the first container.
+- **`tail`** (`int, optional`): Number of lines to return from the end of the log. If None, defaults to the last 1000 lines. Pass a larger value to retrieve more history, or a small value for a bounded recent slice.
+- **`since_seconds`** (`int, optional`): If set, only return logs newer than this many seconds. Combines with `tail` (both limits apply).
+- **`previous`** (`bool, default False`): If True, return logs from the *previous* terminated instance of the container instead of the current one. Indispensable for crashloop analysis, where the current instance's logs are empty or post-restart. Fails if there is no previous instance.
+
+  Three Kubernetes behaviors make `previous=True` look as though it were ignored or broken; none is a fault in this tool, and all are worth knowing before drawing a conclusion from the output:
+
+  - While a container sits in CrashLoopBackOff there is no running instance, so the kubelet serves the most recently *terminated* one for `previous=False` as well - both calls then return the same text. Check the container's state with `get_pod_container_statuses` before concluding the flag had no effect.
+  - A restart between two calls shifts the window: the instance that was current becomes the previous one, so a container crash-looping every few seconds can legitimately return identical bytes for both. Compare the log timestamps, not just the flag.
+  - Once the previous instance's log file has been reclaimed, the API answers 200 with the text `unable to retrieve container logs for <id>` - a successful call whose body is an error message, not a raised error.
+
+  Only the single most recent terminated instance is retained by the kubelet; there is no way to reach further back than one.
+
+#### Returns
+
+str: The log content as text, with real newlines. An empty string if the
+container has produced no log output (never None).
+
+### `get_deployment_summaries`
+
+```python
+get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]
+```
+
+Retrieves a list of DeploymentSummary objects for deployments in a given namespace or all namespaces.
+Similar to `kubectl get deployements`.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list deployments from. If None, lists deployments from all namespaces.
+
+#### Returns
+
+list of DeploymentSummary
+A list of DeploymentSummary objects, each providing a summary of a deployment's status with the following fields:
+
+- **`name`** (`str`): Name of the deployment.
+- **`namespace`** (`str`): Namespace in which the deployment is running.
+- **`total_replicas`** (`int`): Total number of replicas desired for this deployment.
+- **`ready_replicas`** (`int`): Number of replicas that are currently ready.
+- **`up_to_date_replicas`** (`int`): Number of replicas that are up to date.
+- **`available_replicas`** (`int`): Number of replicas that are available.
+- **`age`** (`datetime.timedelta`): Age of the deployment (current time minus creation timestamp).
+
+### `get_replicaset_summaries`
+
+```python
+get_replicaset_summaries(namespace: Optional[str] = None, deployment: Optional[str] = None) -> list[ReplicaSetSummary]
+```
+
+Retrieves a list of ReplicaSetSummary objects, similar to `kubectl get replicasets`
+but including each replica set's deployment revision and container images.
+
+A Deployment's replica sets are its revision history: every update to a Deployment
+creates a new replica set carrying that revision's pod template, and older replica
+sets are retained (scaled to zero). Listing them for one deployment therefore shows
+when it last changed and what its image was at each revision - which is how you
+answer "did something change recently?" without access to deployment tooling or
+version control.
+
+Results are grouped by namespace and owning deployment, and within each
+deployment sorted by revision, oldest first. So when filtered to a single
+deployment, the last entry is that deployment's current revision.
+
+Replica sets with no revision (see `revision` below) sort *first*, ahead of
+revision 1, rather than being dropped. They have no place in any deployment's
+history, so they are listed before it rather than appended to it. In practice
+they are only visible in an unfiltered listing: a replica set without a
+revision has no owning deployment either, so passing `deployment` filters them
+out, and the "last entry is the current revision" guarantee above is unaffected.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list replica sets from. If None, lists from all namespaces.
+- **`deployment`** (`Optional[str], default=None`): If given, return only replica sets owned by this deployment. This is the common case: one deployment's revision history.
+
+#### Returns
+
+list of ReplicaSetSummary
+A list of ReplicaSetSummary objects with the following fields:
+
+- **`name`** (`str`): Name of the replica set.
+- **`namespace`** (`str`): Namespace in which the replica set is defined.
+- **`owner_deployment`** (`Optional[str]`): Name of the Deployment that owns this replica set, or None if it is standalone (not managed by a Deployment).
+- **`revision`** (`Optional[int]`): The deployment revision this replica set represents, taken from the `deployment.kubernetes.io/revision` annotation. None when that annotation is absent, which means no Deployment created this replica set - only the Deployment controller writes it. A hand-written replica set, or one created by another controller, therefore has no revision (and no `owner_deployment`), and appears in neither `kubectl rollout history` nor a `deployment`-filtered call here. Also None if the annotation is present but not an integer.
+- **`desired_replicas`** (`int`): Replicas desired for this replica set. Old revisions are scaled to 0.
+- **`current_replicas`** (`int`): Replicas currently running.
+- **`ready_replicas`** (`int`): Replicas currently ready.
+- **`images`** (`list[str]`): Container images in this revision's pod template, in container order. Comparing this across revisions shows what an upgrade changed.
+- **`age`** (`datetime.timedelta`): Age of the replica set (current time minus creation timestamp). For the newest revision this is usually how long ago the deployment last changed - but not after a rollback, or a return to an identical earlier template, which re-activate an existing replica set under a new revision number; `get_workload_history` flags those as reused.
+
+### `get_workload_history`
+
+```python
+get_workload_history(name: str, namespace: str = 'default', kind: str = 'Deployment') -> WorkloadHistory
+```
+
+What changed in a workload, and when: its retained pod-template revisions,
+newest first, each compared with the one before it, plus the ConfigMaps and
+Secrets its pod template refers to. Ask early in an investigation: a recent
+change is the first suspect, and a workload unchanged for months is a
+finding too.
+
+#### Parameters
+
+- **`name`** (`str`): Name of the workload.
+- **`namespace`** (`str, default="default"`): Namespace of the workload.
+- **`kind`** (`str, default="Deployment"`): "Deployment", "StatefulSet" or "DaemonSet". A Deployment's revisions are its ReplicaSets; a StatefulSet's or DaemonSet's are its ControllerRevisions.
+
+#### Returns
+
+WorkloadHistory
+
+- **`kind, name, namespace`** (`str`): The workload.
+- **`revisions`** (`list[WorkloadRevision]`): Retained revisions, newest first. Each has
+  - **`revision`** (`Optional[int]`): Revision number.
+  - **`source`** (`str`): "ReplicaSet/<name>" or "ControllerRevision/<name>".
+  - **`age`** (`datetime.timedelta`): Time since that ReplicaSet or ControllerRevision was created. This is when the revision first went live, unless `reused` is true.
+  - **`current`** (`bool`): True for the revision the workload runs now (the highest number).
+  - **`reused`** (`bool`): True if a rollback, or a return to an identical earlier template, re-activated this ReplicaSet under a new revision number. It went live later than its age says. Deployments only.
+  - **`images`** (`list[str]`): Container images, in container order.
+  - **`compared_with`** (`Optional[int]`): The previous retained revision, which `changes` are relative to; None for the oldest retained revision.
+  - **`changes`** (`list[TemplateChange]`): What differs from that revision, each with `field`, `change` ("added", "removed", "changed") and, where shown, `before`/`after`. Compared per container (matched by name): image, resource requests and limits, command, args, probes, env vars (by name; values are never shown), envFrom, volume mounts; and for the pod: volumes, node selector, tolerations. Any other field that changed is named, with values only if they are plain scalars.
+  - **`metadata_changes`** (`list[TemplateChange]`): Pod-template label and annotation changes, kept apart because tools like Helm change them on every upgrade (e.g. a chart version label). A changed "checksum/config"-style annotation often means the chart's config changed.
+  - **`rollout_restart`** (`bool`): True if the kubectl.kubernetes.io/restartedAt annotation changed: a `kubectl rollout restart`, which changes nothing else.
+- **`config`** (`list[ConfigReference]`): Each ConfigMap and Secret the current template names: kind, name, used_as ("env", "envFrom", "volume", "volume (subPath)", "imagePullSecrets"). For ConfigMaps also exists, age and last_written (time since its latest write by anyone, from managedFields - including label-only writes, so it does not prove the data changed). Secrets are never read: no time, and their changes are not visible here.
+
+  How a ConfigMap change reaches a running pod: env and envFrom values are read only when a container starts, so a later write takes effect at the next restart; a mounted volume is refreshed within about a minute, except a subPath mount, which never is. Compare last_written with the containers' started_at (`get_pod_container_statuses`).
+- **`complete`** (`bool`): False when replayed from a capture that predates this tool: revisions then come from its ReplicaSet records and show only image changes.
+- **`limits`** (`list[str]`): What this history cannot show. It never sees changes made outside the pod template, such as replica counts or a feature-flag toggle.
+
+### `get_service_summaries`
+
+```python
+get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummary]
+```
+
+Retrieves a list of ServiceSummary objects for services in a given namespace or all namespaces.
+Similar to `kubectl get services`.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list services from. If None, lists services from all namespaces.
+
+#### Returns
+
+list of ServiceSummary
+A list of ServiceSummary objects, each providing a summary of a service's status with the following fields:
+
+- **`name`** (`str`): Name of the service.
+- **`namespace`** (`str`): Namespace in which the service is running.
+- **`type`** (`str`): Type of the service (ClusterIP, NodePort, LoadBalancer, ExternalName).
+- **`cluster_ip`** (`Optional[str]`): Cluster IP address assigned to the service (None for ExternalName services).
+- **`external_ip`** (`Optional[str]`): External IP address if applicable (for LoadBalancer services).
+- **`ports`** (`list[PortInfo]`): List of ports (and their protocols) exposed by the service.
+- **`age`** (`datetime.timedelta`): Age of the service (current time minus creation timestamp).
+- **`selector`** (`dict[str, str]`): The label selector the service uses to choose backing pods. Empty for services without a selector (e.g. ExternalName, or manually managed Endpoints).
+- **`labels`** (`dict[str, str]`): Labels on the service object.
+- **`annotations`** (`dict[str, str]`): Annotations on the service object.
+
+### `get_configmap_summaries`
+
+```python
+get_configmap_summaries(namespace: Optional[str] = None) -> list[ConfigMapSummary]
+```
+
+Retrieves a list of ConfigMapSummary objects for ConfigMaps in a given namespace
+or all namespaces, similar to `kubectl get configmaps`.
+
+Note that this returns only summary metadata (not the ConfigMap contents); use
+`get_configmap` to read the actual data map.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list ConfigMaps from. If None, lists ConfigMaps from all namespaces.
+
+#### Returns
+
+list of ConfigMapSummary
+A list of ConfigMapSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the ConfigMap.
+- **`namespace`** (`str`): Namespace in which the ConfigMap lives.
+- **`key_count`** (`int`): Number of keys across `data` and `binary_data`.
+- **`data_size`** (`int`): Approximate total size in bytes of all values.
+- **`age`** (`datetime.timedelta`): Age of the ConfigMap (current time minus creation timestamp).
+
+### `get_configmap`
+
+```python
+get_configmap(name: str, namespace: str = 'default') -> dict[str, Any]
+```
+
+Retrieves the full contents of a single ConfigMap.
+
+WARNING: ConfigMaps can contain secret-shaped values (e.g. credentials stored
+as plain config). When this tool is served through the k8stools MCP server, the
+output passes through a redaction step by default (see the `redaction` module
+and the server's `--no-redact` flag). Callers using this function directly get
+the raw values and are responsible for their own redaction.
+
+#### Parameters
+
+- **`name`** (`str`): Name of the ConfigMap.
+- **`namespace`** (`str, optional`): Namespace of the ConfigMap (default is "default").
+
+#### Returns
+
+dict[str, Any]
+A dictionary describing the ConfigMap with the following keys:
+
+- **`name`** (`str`): Name of the ConfigMap.
+- **`namespace`** (`str`): Namespace of the ConfigMap.
+- **`data`** (`dict[str, str]`): The string key/value data map (empty dict if none).
+- **`binary_data_keys`** (`list[str]`): Names of any binary keys. The binary values themselves are not returned.
+
+### `get_statefulset_summaries`
+
+```python
+get_statefulset_summaries(namespace: Optional[str] = None) -> list[StatefulSetSummary]
+```
+
+Retrieves a list of StatefulSetSummary objects for StatefulSets in a given
+namespace or all namespaces, similar to `kubectl get statefulsets`.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list StatefulSets from. If None, lists from all namespaces.
+
+#### Returns
+
+list of StatefulSetSummary
+A list of StatefulSetSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the StatefulSet.
+- **`namespace`** (`str`): Namespace in which the StatefulSet runs.
+- **`total_replicas`** (`int`): Desired number of replicas.
+- **`ready_replicas`** (`int`): Number of replicas currently ready.
+- **`current_replicas`** (`int`): Number of replicas created by the current revision.
+- **`update_strategy`** (`str`): Update strategy type (e.g. "RollingUpdate", "OnDelete").
+- **`service_name`** (`Optional[str]`): Name of the governing (headless) service.
+- **`age`** (`datetime.timedelta`): Age of the StatefulSet (current time minus creation timestamp).
+
+### `get_daemonset_summaries`
+
+```python
+get_daemonset_summaries(namespace: Optional[str] = None) -> list[DaemonSetSummary]
+```
+
+Retrieves a list of DaemonSetSummary objects for DaemonSets in a given
+namespace or all namespaces, similar to `kubectl get daemonsets -o wide`.
+
+A DaemonSet runs one pod on each node it targets; its pods are named
+"<daemonset>-<5 characters>" and have `owner` "DaemonSet/<daemonset>" in
+`get_pod_summaries`. A shortfall between the counts below ("desired 5,
+ready 4") is often the first sign of a problem with a particular node.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list DaemonSets from. If None, lists from all namespaces.
+
+#### Returns
+
+list of DaemonSetSummary
+A list of DaemonSetSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the DaemonSet.
+- **`namespace`** (`str`): Namespace in which the DaemonSet runs.
+- **`desired_number_scheduled`** (`int`): Number of nodes that should be running the DaemonSet's pod - the actual number of nodes it targets.
+- **`current_number_scheduled`** (`int`): Number of nodes running at least one of its pods that should.
+- **`number_ready`** (`int`): Number of nodes whose pod is ready.
+- **`updated_number_scheduled`** (`int`): Number of nodes running a pod from the current pod template. Less than desired means a rollout is in progress or stuck.
+- **`number_available`** (`int`): Number of nodes whose pod has been ready for at least minReadySeconds.
+- **`number_misscheduled`** (`int`): Number of nodes running its pod that should not be.
+- **`node_selector`** (`dict[str, str]`): The pod template's nodeSelector (kubectl's NODE SELECTOR column). Many DaemonSets choose their nodes with node affinity and tolerations instead, which this does not show, so an empty selector does not mean "every node"; desired_number_scheduled is the count.
+- **`update_strategy`** (`str`): Update strategy type ("RollingUpdate" or "OnDelete").
+- **`images`** (`list[str]`): Container images of the current pod template, in container order. A pod running a different image is from an earlier revision.
+- **`age`** (`datetime.timedelta`): Age of the DaemonSet (current time minus creation timestamp).
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_cronjob_summaries`
+
+```python
+get_cronjob_summaries(namespace: Optional[str] = None) -> list[CronJobSummary]
+```
+
+Retrieves a list of CronJobSummary objects for CronJobs in a given namespace
+or all namespaces, similar to `kubectl get cronjobs`.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list CronJobs from. If None, lists from all namespaces.
+
+#### Returns
+
+list of CronJobSummary
+A list of CronJobSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the CronJob.
+- **`namespace`** (`str`): Namespace of the CronJob.
+- **`schedule`** (`str`): Cron schedule expression.
+- **`suspend`** (`bool`): Whether the CronJob is suspended.
+- **`active`** (`int`): Number of currently active (running) jobs.
+- **`last_schedule_time`** (`Optional[datetime.timedelta]`): Time since the CronJob was last scheduled (None if never).
+- **`last_successful_time`** (`Optional[datetime.timedelta]`): Time since the CronJob last completed successfully (None if never).
+- **`age`** (`datetime.timedelta`): Age of the CronJob (current time minus creation timestamp).
+- **`containers`** (`list[ContainerTemplateSummary]`): The job pod template's containers, each with name, image, and literal environment values.
+
+### `get_job_summaries`
+
+```python
+get_job_summaries(namespace: Optional[str] = None) -> list[JobSummary]
+```
+
+Retrieves a list of JobSummary objects for Jobs in a given namespace or all
+namespaces, similar to `kubectl get jobs`.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list Jobs from. If None, lists from all namespaces.
+
+#### Returns
+
+list of JobSummary
+A list of JobSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the Job.
+- **`namespace`** (`str`): Namespace of the Job.
+- **`owner`** (`Optional[str]`): Name of the owning CronJob, if this Job was created by one.
+- **`active`** (`int`): Number of actively running pods.
+- **`succeeded`** (`int`): Number of pods that completed successfully.
+- **`failed`** (`int`): Number of pods that terminated in failure.
+- **`start_time`** (`Optional[datetime.timedelta]`): Time since the Job started (None if not started).
+- **`completion_time`** (`Optional[datetime.timedelta]`): Time since the Job completed (None if not complete).
+- **`conditions`** (`list[str]`): Status condition types currently True (e.g. ["Complete"], ["Failed"]).
+- **`age`** (`datetime.timedelta`): Age of the Job (current time minus creation timestamp).
+- **`containers`** (`list[ContainerTemplateSummary]`): The Job pod template's containers, each with name, image, and literal environment values.
+
+### `get_logs_for_job`
+
+```python
+get_logs_for_job(job_name: str, namespace: str = 'default', container_name: Optional[str] = None, tail: Optional[int] = None, since_seconds: Optional[int] = None, previous: bool = False) -> Optional[str]
+```
+
+Retrieves logs from the most-recently-created pod of a Job.
+
+Job pods are short-lived, so this convenience finds the newest pod belonging to
+the Job (via its `job-name` label) and returns its logs, saving the caller from
+listing pods and sorting by creation time.
+
+#### Parameters
+
+- **`job_name`** (`str`): Name of the Job.
+- **`namespace`** (`str, optional`): Namespace of the Job (default is "default").
+- **`container_name`** (`str, optional`): Container within the pod. If None, defaults to the first container.
+- **`tail`** (`int, optional`): Number of lines from the end of the log (default: last 1000).
+- **`since_seconds`** (`int, optional`): If set, only return logs newer than this many seconds.
+- **`previous`** (`bool, default False`): If True, return logs from the previous terminated container instance. See `get_logs_for_pod_and_container` for the cases - CrashLoopBackOff, a restart racing the call, a reclaimed log file - where that legitimately returns the same text as `previous=False`, or a 200 whose body is an error message.
+
+#### Returns
+
+str, optional
+Log content, or None if the Job has no pods.
+
+### `get_logs_for_cronjob`
+
+```python
+get_logs_for_cronjob(cronjob_name: str, namespace: str = 'default', container_name: Optional[str] = None, tail: Optional[int] = None, since_seconds: Optional[int] = None, previous: bool = False) -> Optional[str]
+```
+
+Retrieves logs from the most-recent run of a CronJob.
+
+Finds the newest Job owned by the CronJob, then returns the logs of that Job's
+most-recently-created pod. Removes the need to manually locate the right
+short-lived pod for a CronJob's last tick.
+
+#### Parameters
+
+- **`cronjob_name`** (`str`): Name of the CronJob.
+- **`namespace`** (`str, optional`): Namespace of the CronJob (default is "default").
+- **`container_name`** (`str, optional`): Container within the pod. If None, defaults to the first container.
+- **`tail`** (`int, optional`): Number of lines from the end of the log (default: last 1000).
+- **`since_seconds`** (`int, optional`): If set, only return logs newer than this many seconds.
+- **`previous`** (`bool, default False`): If True, return logs from the previous terminated container instance. See `get_logs_for_pod_and_container` for the cases - CrashLoopBackOff, a restart racing the call, a reclaimed log file - where that legitimately returns the same text as `previous=False`, or a 200 whose body is an error message.
+
+#### Returns
+
+str, optional
+Log content, or None if the CronJob has no jobs/pods yet.
+
+### `get_pvc_summaries`
+
+```python
+get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]
+```
+
+Retrieves a list of PVCSummary objects for PersistentVolumeClaims in a given
+namespace or all namespaces, similar to `kubectl get pvc`.
+
+For each PVC, this also resolves which pods currently mount it (by scanning pod
+volumes in the same scope), which is useful for spotting orphaned PVCs — claims
+with an empty `mounted_by` and no owning pod.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): The specific namespace to list PVCs from. If None, lists from all namespaces.
+
+#### Returns
+
+list of PVCSummary
+A list of PVCSummary objects, each with the following fields:
+
+- **`name`** (`str`): Name of the PVC.
+- **`namespace`** (`str`): Namespace of the PVC.
+- **`status`** (`str`): Phase of the PVC ("Bound", "Pending", or "Lost").
+- **`volume_name`** (`Optional[str]`): Name of the bound PersistentVolume (None if unbound).
+- **`capacity`** (`Optional[str]`): Storage capacity (e.g. "10Gi"); falls back to the requested size when the claim is not yet bound.
+- **`access_modes`** (`list[str]`): Access modes (e.g. ["ReadWriteOnce"]).
+- **`storage_class`** (`Optional[str]`): StorageClass backing the claim.
+- **`mounted_by`** (`list[str]`): Names of pods (in the same scope) currently mounting this PVC. Empty for orphaned/unmounted claims.
+- **`age`** (`datetime.timedelta`): Age of the PVC (current time minus creation timestamp).
+
+### `get_events`
+
+```python
+get_events(namespace: Optional[str] = None, reason: Optional[str] = None, involved_kind: Optional[str] = None, involved_name: Optional[str] = None, event_type: Optional[str] = None) -> list[EventSummary]
+```
+
+Lists cluster- or namespace-wide events with optional server-side filtering.
+
+Unlike `get_pod_events` (which is scoped to a single named pod), this supports
+the sweep queries common in capacity/storage runbooks — e.g. all "Evicted"
+events, or all "FailedScheduling" events — where the affected pods often have no
+stable name to look up. Note Kubernetes expires an event record about an hour
+(by default) after its last occurrence, so events that stopped repeating
+earlier than that are gone.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str], default=None`): Namespace to list events from. If None, lists across all namespaces.
+- **`reason`** (`Optional[str], default=None`): If set, only return events with this reason (e.g. "Evicted", "FailedScheduling", "BackOff").
+- **`involved_kind`** (`Optional[str], default=None`): If set, only return events whose involved object is of this kind (e.g. "Pod", "Node", "PersistentVolumeClaim").
+- **`involved_name`** (`Optional[str], default=None`): If set, only return events whose involved object has this name.
+- **`event_type`** (`Optional[str], default=None`): If set, only return events of this type ("Normal" or "Warning").
+
+#### Returns
+
+list of EventSummary
+Matching events. Each EventSummary has the following fields:
+
+- **`last_seen`** (`Optional[datetime.timedelta]`): Time since the event was last seen (if available).
+- **`first_seen`** (`Optional[datetime.timedelta]`): Time since the first occurrence combined into this record (if available).
+- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after 1h by default), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
+
+  A record can lag behind what it counts. By default the kubelet writes at most one event update per object and event type ("Normal" or "Warning") every 5 minutes, once a burst of 25 is used up; occurrences in between are counted but only written with the next update, which then jumps by several at once. So count and last_seen describe the most recent *written* occurrence and can trail reality by several occurrences and tens of minutes. They lag together, so the rate above still holds, but last_seen is not the time of the last restart: for that, use the container status (last_state.finished_at, state.started_at from get_pod_container_statuses) or PodSummary.last_restart, which come from the kubelet's status rather than from events. "Pulled", "Created" and "Started" share one write budget, so their counts for the same restarts can differ by a few; don't compare counts across reasons.
+- **`type`** (`str`): Type of the event ("Normal" or "Warning").
+- **`reason`** (`str`): Reason for the event.
+- **`object`** (`str`): The involved object as "Kind/name" (or just the name when the kind is unavailable).
+- **`message`** (`str`): Message describing the event.
+- **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+

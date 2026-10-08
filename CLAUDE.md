@@ -31,6 +31,7 @@ tests/
   test_builtin_fixture.py    - The built-in fixture describes a cluster that could exist (owners, images, ages, log windows, histories)
   test_workload_history.py   - get_workload_history: template diffs, revisions, config refs, no env values or Secret reads, replay
   test_toolsets.py           - Toolsets: named subsets, include/exclude, server flags
+  test_notes.py              - Description budgets, notes on results and logs, notes in replay
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -127,9 +128,33 @@ test fake that returns `str` hides the whole failure, which is how it shipped.
 
 `previous=True` has three Kubernetes behaviors that read as bugs (identical output
 during CrashLoopBackOff, a restart shifting the window between two calls, and a
-reclaimed log file answering 200 with `unable to retrieve container logs`). They are
-documented in the tool's docstring — which is the MCP tool description — and in
-README's "Previous-instance log semantics". Don't "fix" them in code.
+reclaimed log file answering 200 with `unable to retrieve container logs`). Two are
+detected and noted in the log itself (below); all three are in README's
+"Previous-instance log semantics" and `docs/TOOL_REFERENCE.md`. Don't "fix" them in code.
+
+### Descriptions and notes (#20)
+
+A tool's docstring is its MCP description, sent to the model on every turn of
+every agent that has the tool. Keep it to what question the tool answers, its
+parameters, and at most one warning: `tests/test_notes.py` holds each to 700
+characters and all of them to 6,000. The field-by-field reference lives in
+`docs/TOOL_REFERENCE.md`, maintained by hand; update it with the code.
+
+A warning that applies to particular results goes in those results:
+
+- **Models** get a `notes: list[str]` derived in a `model_validator` from the
+  item's own fields, recomputed on every construction (input is ignored). That
+  makes a replayed capture, even one made before the note existed, note the same
+  things as a live call. `mock_state.DERIVED_FIELDS` keeps notes out of captures.
+  Note texts are module constants (`NOTE_*`), so tests and the reference cite them.
+- **Logs** are plain strings, so notes are `[k8stools] note: ` lines at the top
+  (`LOG_NOTE_PREFIX`), from the container's status at call time. The capture reads
+  logs with `_read_pod_log`, which adds none, and `MockState` adds notes for the
+  replayed state; never store a noted log.
+
+Several of these warnings exist because agents kept misreading the data (event
+counts and lag, node Ready time, previous-instance logs, `ran_for` vs restart
+cadence). Moving one out of a description is fine; dropping it isn't.
 
 `print_*` companion functions exist for each `get_*` summary/spec function — for human-readable debugging output only. The log readers (`get_logs_for_pod_and_container`, `get_logs_for_job`, `get_logs_for_cronjob`) have no `print_*` companion since they already return a printable string.
 

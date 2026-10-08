@@ -86,6 +86,13 @@ names the Secrets a workload uses, from its pod template, without reading them.
 
 ## Current tools
 
+Each tool's description, which an MCP client sends to the model on every turn,
+is a few lines. [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md) documents every
+parameter and field. Warnings that apply to a particular result come back in that
+result: a `notes` list on nodes, pods, container statuses, events and DaemonSets,
+and `[k8stools] note:` lines at the top of a log (see
+[Notes in results](docs/TOOL_REFERENCE.md#notes-in-results)).
+
 These are the tools we define:
 
 * `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
@@ -537,6 +544,9 @@ as well as in live queries:
 
 Only the single most recent terminated instance is retained; there is no way to
 reach further back than one.
+
+The first and third are detected for you: the log then starts with a
+`[k8stools] note:` line saying so. The second can't be seen from a single call.
 
 ### Replay clock
 
