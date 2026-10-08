@@ -19,7 +19,7 @@ import datetime
 import json
 from typing import Optional, Union, Literal, Any, Annotated
 
-from pydantic import BaseModel, Field, AfterValidator, model_validator
+from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
 import yaml
 
 from kubernetes import client, config
@@ -2521,8 +2521,168 @@ def print_cluster_info() -> None:
           f"{info.server_version or '-':<12}")
 
 
+# ---------------------------------------------------------------------------
+# Composite investigation tools (issue #13), built from the tools above. The
+# models are here with the others; the logic is in composites.py, imported when
+# a tool is called so the two modules don't import each other at load time.
+# ---------------------------------------------------------------------------
+
+class _Compact(BaseModel):
+    """Serializes without empty fields: these results are one line per workload,
+    and the MCP server sends a result twice (as text and as structured content)."""
+
+    @model_serializer(mode="wrap")
+    def _drop_empty(self, handler):
+        return {k: v for k, v in handler(self).items() if v not in (None, [], {})}
+
+
+
+class Termination(_Compact):
+    """A container's last termination, and how long until it started again."""
+    #: Omitted where the termination sits under an instance that names them.
+    pod: Optional[str] = None
+    container: Optional[str] = None
+    exit_code: Optional[int] = None
+    exit_meaning: Optional[str] = None
+    #: Kubernetes' recorded reason (OOMKilled, Error, Completed, ...).
+    reason: Optional[str] = None
+    #: How long that instance ran. Not the restart cadence: see restart_gap.
+    instance_lifetime: Optional[Interval] = None
+    #: Time since it finished.
+    finished: Optional[Duration] = None
+    #: The back-off: from finishing to the next start. While the container is
+    #: still waiting, the time waited so far (and `waiting` is set).
+    restart_gap: Optional[Duration] = None
+    #: The current waiting reason, e.g. CrashLoopBackOff, if not running.
+    waiting: Optional[str] = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class WorkloadHealth(_Compact):
+    """One unhealthy workload's health."""
+    workload: str
+    ready: int
+    desired: int
+    #: None when none of its pods could be found (see notes), rather than 0.
+    restarts: Optional[int] = None
+    healthy: bool = False
+    last_termination: Optional[Termination] = None
+    #: e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit".
+    memory: Optional[str] = None
+    #: Time since the pod template last changed (the current revision's age).
+    template_changed: Optional[Duration] = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class FailureGroup(_Compact):
+    """Unhealthy workloads failing the same way."""
+    signature: str
+    workloads: list[str]
+
+
+class NamespaceHealth(_Compact):
+    namespace: str
+    #: Unhealthy workloads, in full, by name.
+    workloads: list[WorkloadHealth] = Field(default_factory=list)
+    #: Healthy workloads, one line each: "Deployment/cart 3/3", with restarts if any.
+    healthy: list[str] = Field(default_factory=list)
+    #: Two or more unhealthy workloads with the same failure signature.
+    common_failures: list[FailureGroup] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ContainerEssentials(_Compact):
+    container: str
+    image: str
+    requests: dict[str, str] = Field(default_factory=dict)
+    limits: dict[str, str] = Field(default_factory=dict)
+    #: e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or
+    #: "none configured".
+    probes: list[str] = Field(default_factory=list)
+
+
+class Instance(_Compact):
+    """One container instance of one pod, now."""
+    pod: str
+    container: str
+    state: str
+    #: Time since the current instance started (if running).
+    started: Optional[Duration] = None
+    ready: bool = False
+    restarts: int = 0
+    last_termination: Optional[Termination] = None
+
+
+class EventLine(_Compact):
+    """Events deduplicated across the workload's objects."""
+    type: str
+    reason: str
+    message: str
+    #: Occurrences, summed over the objects it was recorded for.
+    count: Optional[int] = None
+    first_seen: Optional[Duration] = None
+    last_seen: Optional[Duration] = None
+    objects: int = 1
+
+
+class LogTail(_Compact):
+    pod: str
+    container: str
+    previous: bool
+    lines: list[str] = Field(default_factory=list)
+    #: Lines the tool added about this log ("[k8stools] note: ..."), not output.
+    notes: list[str] = Field(default_factory=list)
+
+
+class LastChange(_Compact):
+    revision: Optional[int] = None
+    #: Time since the current revision went live (its object was created).
+    age: Optional[Duration] = None
+    reused: bool = False
+    rollout_restart: bool = False
+    #: "field: before -> after", or "field: added/removed/changed".
+    changes: list[str] = Field(default_factory=list)
+
+
+class WorkloadReport(_Compact):
+    workload: str
+    ready: int
+    desired: int
+    containers: list[ContainerEssentials] = Field(default_factory=list)
+    instances: list[Instance] = Field(default_factory=list)
+    events: list[EventLine] = Field(default_factory=list)
+    logs: list[LogTail] = Field(default_factory=list)
+    last_change: Optional[LastChange] = None
+    config: list[ConfigReference] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+def get_namespace_health(namespace: str = "default") -> NamespaceHealth:
+    """What is wrong in a namespace, and where. Each unhealthy workload
+    (Deployment, StatefulSet, DaemonSet, Job, or a pod nothing owns) in full:
+    ready/desired, restarts, the last termination (exit code and its meaning
+    beside Kubernetes' recorded reason), instance lifetime and restart gap,
+    memory limit vs request, when the pod template last changed. Healthy ones
+    in a line each. Workloads failing the same way are grouped. Facts only."""
+    from .composites import namespace_health
+    return namespace_health(sys.modules[__name__], namespace)
+
+
+def get_workload_report(name: str, namespace: str = "default", kind: Optional[str] = None,
+                        log_lines: int = 20, grep: Optional[str] = None) -> WorkloadReport:
+    """Everything about one workload in one call: container images, resources
+    and probes; each instance's state and last termination; its events,
+    deduplicated; current and previous log tails of its most troubled pod; the
+    last pod-template change; the ConfigMaps and Secrets it uses. kind:
+    Deployment, StatefulSet, DaemonSet or Job (found by name if omitted).
+    log_lines: per log (max 100). grep: keep only matching log lines."""
+    from .composites import workload_report
+    return workload_report(sys.modules[__name__], name, namespace, kind, log_lines, grep)
+
 TOOLS = [
     get_cluster_info,
+    get_namespace_health,
+    get_workload_report,
     get_namespaces,
     get_node_summaries,
     get_pod_summaries,
@@ -2570,10 +2730,10 @@ OVERLAPPING_TOOLS = (
 TOOLSET_NAMES: dict[str, tuple[str, ...]] = {
     "triage": (
         "get_cluster_info",
-        "get_node_summaries",
-        "get_pod_summaries",
+        "get_namespace_health",
+        "get_workload_report",
         "get_events",
-        "get_workload_history",
+        "get_node_summaries",
     ),
     "investigate": tuple(fn.__name__ for fn in TOOLS
                          if fn.__name__ not in OVERLAPPING_TOOLS),

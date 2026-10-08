@@ -95,6 +95,8 @@ and `[k8stools] note:` lines at the top of a log (see
 
 These are the tools we define:
 
+* `get_namespace_health` - what is wrong in a namespace, and where: a full entry per unhealthy workload and one line per healthy one, with the last termination (exit code and its meaning beside Kubernetes' reason), instance lifetime and restart gap, memory limit vs request, and when the template last changed; workloads failing the same way are grouped
+* `get_workload_report` - everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails; the last template change; the ConfigMaps and Secrets it uses
 * `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
 * `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide` (includes capacity/allocatable/conditions/taints/labels)
@@ -250,7 +252,7 @@ less reliably among many similar tools. `--toolset` serves a named subset:
 
 | Toolset | Tools | Use it for |
 |---|---|---|
-| `triage` | `get_cluster_info`, `get_node_summaries`, `get_pod_summaries`, `get_events`, `get_workload_history` | finding where to look |
+| `triage` | `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | finding where to look |
 | `investigate` | every tool except those another tool already covers | a full investigation |
 | `all` (default) | every tool | compatibility; the default until 3.0.0 |
 
