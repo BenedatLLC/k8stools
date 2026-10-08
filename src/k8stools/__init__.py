@@ -44,6 +44,8 @@ These are the tools we define:
 * get_statefulset_summaries - get a list of StatefulSets, like `kubectl get statefulsets`
 * get_daemonset_summaries - get a list of DaemonSets, like `kubectl get daemonsets`
 * get_hpa_summaries - get HorizontalPodAutoscalers, like `kubectl get hpa`
+* get_container_metrics - container CPU and memory use beside requests and limits
+* get_node_metrics - node CPU and memory use against allocatable
 * get_cronjob_summaries - get a list of CronJobs, like `kubectl get cronjobs`
 * get_job_summaries - get a list of Jobs, like `kubectl get jobs`
 * get_logs_for_job - retrieve logs from a Job's most-recent pod
@@ -69,6 +71,8 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_statefulset_summaries
 * print_daemonset_summaries
 * print_hpa_summaries
+* print_container_metrics
+* print_node_metrics
 * print_cronjob_summaries
 * print_job_summaries
 * print_pvc_summaries

@@ -17,6 +17,7 @@ import os
 import logging
 import datetime
 import json
+import re
 from typing import Optional, Union, Literal, Any, Annotated
 
 from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
@@ -49,6 +50,12 @@ class K8sClusterSelectionError(K8sConfigError):
 class K8sApiError(Exception):
     """This is thrown when one of the kubernetes calls (other than initial API load) fails."""
     pass
+
+
+class K8sMetricsUnavailable(K8sApiError):
+    """The metrics API (metrics.k8s.io, served by metrics-server) isn't available:
+    a normal cluster setup, not a fault. Also raised when replaying a capture
+    taken without metrics."""
 
 
 #: Environment variable naming the kubeconfig context to use, for deployments that
@@ -321,6 +328,16 @@ NOTE_HPA_AT_MAX = (
     "ScalingLimited condition.")
 NOTE_NO_READY_ENDPOINTS = (
     "No ready endpoints: traffic sent to this Service has no pod to reach.")
+NOTE_NO_READING = (
+    "No reading: the container isn't running, or started within about one "
+    "metrics-server scrape interval.")
+NOTE_SHORT_WINDOW = (
+    "A sample averages a short window: a spike that ends in an OOM kill usually "
+    "never appears in one.")
+NOTE_WORKING_SET = (
+    "Memory is the working set: memory in use plus recently used file cache, which "
+    "the kernel reclaims before an OOM kill. Near the limit is common; it isn't "
+    "proof a kill is coming.")
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
@@ -2378,6 +2395,275 @@ def print_hpa_summaries(namespace: Optional[str] = None) -> None:
               f"{h.current_replicas:<9} {_format_timedelta(h.age):<10}")
 
 
+# ---------------------------------------------------------------------------
+# Resource usage: metrics.k8s.io (issue #16)
+# ---------------------------------------------------------------------------
+
+_BINARY_SUFFIXES = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50, "Ei": 2**60}
+_DECIMAL_SUFFIXES = {"n": 1e-9, "u": 1e-6, "m": 1e-3, "": 1, "k": 1e3, "K": 1e3, "M": 1e6,
+                     "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18}
+
+
+def parse_quantity(quantity: Optional[str]) -> Optional[float]:
+    """A Kubernetes quantity ("250m", "1.5", "128Mi", "12345678n", "1e3") as a number."""
+    if quantity is None:
+        return None
+    q = str(quantity).strip()
+    match = re.fullmatch(r"([+-]?[0-9.]+(?:[eE][+-]?[0-9]+)?)([a-zA-Z]*)", q)
+    if not match:
+        return None
+    number, suffix = float(match.group(1)), match.group(2)
+    if suffix in _BINARY_SUFFIXES:
+        return number * _BINARY_SUFFIXES[suffix]
+    if suffix in _DECIMAL_SUFFIXES:
+        return number * _DECIMAL_SUFFIXES[suffix]
+    return None
+
+
+def _millicores(q: Optional[str]) -> Optional[int]:
+    v = parse_quantity(q)
+    return None if v is None else round(v * 1000)
+
+
+def _bytes(q: Optional[str]) -> Optional[int]:
+    v = parse_quantity(q)
+    return None if v is None else round(v)
+
+
+def _show_cpu(m: Optional[int]) -> Optional[str]:
+    return None if m is None else f"{m}m"
+
+
+def _show_memory(b: Optional[int]) -> Optional[str]:
+    return None if b is None else f"{round(b / 2**20)}Mi"
+
+
+def _percent(part: Optional[int], whole: Optional[int]) -> Optional[float]:
+    return round(100 * part / whole, 1) if part is not None and whole else None
+
+
+def _go_duration(text: Optional[str]) -> Optional[datetime.timedelta]:
+    """A Go duration as metrics-server writes windows: "15.018s", "1m0.002s"."""
+    if not text:
+        return None
+    units = {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
+    total, found = 0.0, False
+    for number, unit in re.findall(r"([0-9.]+)(h|ms|us|µs|ns|m|s)", text):
+        total += float(number) * units[unit]
+        found = True
+    return datetime.timedelta(seconds=total) if found else None
+
+
+#: A current instance younger than this is "just restarted" for usage notes.
+_RECENT_START = datetime.timedelta(minutes=10)
+
+
+class ContainerUsage(BaseModel):
+    """One container's resource usage from metrics-server, beside its requests
+    and limits. Whole millicores and bytes for calculating; display strings
+    like `kubectl top`."""
+    pod: str
+    namespace: str
+    container: str
+    #: None when there's no reading (see notes).
+    cpu_millicores: Optional[int] = None
+    memory_bytes: Optional[int] = None
+    cpu: Optional[str] = None
+    memory: Optional[str] = None
+    cpu_request_millicores: Optional[int] = None
+    cpu_limit_millicores: Optional[int] = None
+    memory_request_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
+    #: Usage as a percentage of the limit (memory) and of the request and limit (CPU).
+    memory_percent_of_limit: Optional[float] = None
+    cpu_percent_of_request: Optional[float] = None
+    cpu_percent_of_limit: Optional[float] = None
+    #: Time since the sample was taken. A replayed sample keeps its values; this grows.
+    sampled: Optional[Duration] = None
+    #: The span the sample averages.
+    window: Optional[Interval] = None
+    #: Time since the current instance started, its restarts, and how the last
+    #: one ended: which instance the reading is from.
+    started: Optional[Duration] = None
+    restarts: int = 0
+    last_termination_reason: Optional[str] = None
+    last_terminated: Optional[Duration] = None
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "ContainerUsage":
+        notes = []
+        if self.memory_bytes is None and self.cpu_millicores is None:
+            notes.append(NOTE_NO_READING)
+        elif self.last_termination_reason == "OOMKilled" or (
+                self.last_termination_reason not in (None, "Completed")
+                and self.started is not None and self.started < _RECENT_START):
+            # When it was OOM-killed (a sample can't show that spike), or ended
+            # abnormally and the current instance is young (its low reading reads as
+            # "it can't be memory"). Not after every restart: a node restart leaves
+            # most containers with an Error or Completed ending, and the note on all
+            # of them (14 of 31 on one cluster) was noise.
+            started = f"started {_format_timedelta(self.started)} ago" if self.started else "restarted"
+            ended = (f" {_format_timedelta(self.last_terminated)} ago"
+                     if self.last_terminated is not None else "")
+            notes.append(f"The last instance ended {self.last_termination_reason}{ended}; this "
+                         f"sample is from the current one, {started}. {NOTE_SHORT_WINDOW}")
+        if self.memory_percent_of_limit is not None and self.memory_percent_of_limit >= 90:
+            notes.append(NOTE_WORKING_SET)
+        self.notes = notes
+        return self
+
+
+class NodeUsage(BaseModel):
+    """A node's resource usage from metrics-server, against its allocatable."""
+    node: str
+    cpu_millicores: int
+    memory_bytes: int
+    cpu: str
+    memory: str
+    cpu_allocatable_millicores: Optional[int] = None
+    memory_allocatable_bytes: Optional[int] = None
+    cpu_percent: Optional[float] = None
+    memory_percent: Optional[float] = None
+    sampled: Optional[Duration] = None
+    window: Optional[Interval] = None
+
+
+def _metrics_api():
+    return client.CustomObjectsApi(_binding().api_client)
+
+
+def _list_metrics(plural: str, namespace: Optional[str] = None) -> list[dict]:
+    """metrics.k8s.io items; K8sMetricsUnavailable when the API isn't served."""
+    api = _metrics_api()
+    try:
+        if namespace:
+            body = api.list_namespaced_custom_object("metrics.k8s.io", "v1beta1", namespace, plural)
+        else:
+            body = api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", plural)
+    except client.ApiException as e:
+        if e.status in (404, 503):
+            raise K8sMetricsUnavailable(
+                f"The metrics API (metrics.k8s.io) isn't available ({e.status} {e.reason}): "
+                "metrics-server is not installed or not running.") from e
+        raise K8sApiError(f"Error fetching {plural} metrics: {e}") from e
+    return body.get("items", []) if isinstance(body, dict) else []
+
+
+def _sample_age(item: dict, now: datetime.datetime) -> Optional[datetime.timedelta]:
+    ts = item.get("timestamp")
+    if not ts:
+        return None
+    return now - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def get_container_metrics(namespace: Optional[str] = None) -> list[ContainerUsage]:
+    """Each running container's current CPU and memory use (metrics-server, like
+    `kubectl top pod --containers`) beside its requests and limits, with
+    percentages. A reading is a recent short-window sample; each reading's notes
+    say which instance it's from and what it can't show. Raises
+    K8sMetricsUnavailable when metrics-server isn't installed. namespace: one,
+    or all if omitted."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_container_metrics(namespace={namespace})")
+    items = _list_metrics("pods", namespace)
+    try:
+        pods = (K8S.list_namespaced_pod(namespace=namespace) if namespace
+                else K8S.list_pod_for_all_namespaces()).items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching pods: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    readings = {(i["metadata"]["namespace"], i["metadata"]["name"]): i for i in items}
+    out: list[ContainerUsage] = []
+    for pod in pods:
+        if pod.status is None or pod.status.phase not in ("Running", "Pending"):
+            continue  # a finished pod has nothing to measure
+        key = (pod.metadata.namespace, pod.metadata.name)
+        item = readings.get(key, {})
+        usage = {c["name"]: c.get("usage", {}) for c in item.get("containers", [])}
+        statuses = {cs.name: cs for cs in (pod.status.container_statuses or [])}
+        for c in pod.spec.containers:
+            resources = c.resources
+            requests = dict(resources.requests or {}) if resources else {}
+            limits = dict(resources.limits or {}) if resources else {}
+            u = usage.get(c.name)
+            cpu = _millicores(u.get("cpu")) if u else None
+            memory = _bytes(u.get("memory")) if u else None
+            cs = statuses.get(c.name)
+            running = cs.state.running if cs and cs.state else None
+            last = cs.last_state.terminated if cs and cs.last_state else None
+            out.append(ContainerUsage(
+                pod=pod.metadata.name, namespace=pod.metadata.namespace, container=c.name,
+                cpu_millicores=cpu, memory_bytes=memory,
+                cpu=_show_cpu(cpu), memory=_show_memory(memory),
+                cpu_request_millicores=_millicores(requests.get("cpu")),
+                cpu_limit_millicores=_millicores(limits.get("cpu")),
+                memory_request_bytes=_bytes(requests.get("memory")),
+                memory_limit_bytes=_bytes(limits.get("memory")),
+                memory_percent_of_limit=_percent(memory, _bytes(limits.get("memory"))),
+                cpu_percent_of_request=_percent(cpu, _millicores(requests.get("cpu"))),
+                cpu_percent_of_limit=_percent(cpu, _millicores(limits.get("cpu"))),
+                sampled=_sample_age(item, now) if u else None,
+                window=_go_duration(item.get("window")) if u else None,
+                started=now - running.started_at if running and running.started_at else None,
+                restarts=cs.restart_count if cs else 0,
+                last_termination_reason=last.reason if last else None,
+                last_terminated=now - last.finished_at if last and last.finished_at else None))
+    return out
+
+
+def get_node_metrics() -> list[NodeUsage]:
+    """Each node's current CPU and memory use (metrics-server, like `kubectl top
+    node`) against its allocatable, with percentages. Raises
+    K8sMetricsUnavailable when metrics-server isn't installed."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info("get_node_metrics()")
+    items = _list_metrics("nodes")
+    try:
+        nodes = {n.metadata.name: n for n in K8S.list_node().items}
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching nodes: {e}") from e
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = []
+    for item in items:
+        name = item["metadata"]["name"]
+        usage = item.get("usage", {})
+        cpu, memory = _millicores(usage.get("cpu")) or 0, _bytes(usage.get("memory")) or 0
+        node = nodes.get(name)
+        allocatable = dict(node.status.allocatable or {}) if node and node.status else {}
+        cpu_alloc, mem_alloc = _millicores(allocatable.get("cpu")), _bytes(allocatable.get("memory"))
+        out.append(NodeUsage(
+            node=name, cpu_millicores=cpu, memory_bytes=memory,
+            cpu=_show_cpu(cpu), memory=_show_memory(memory),
+            cpu_allocatable_millicores=cpu_alloc, memory_allocatable_bytes=mem_alloc,
+            cpu_percent=_percent(cpu, cpu_alloc), memory_percent=_percent(memory, mem_alloc),
+            sampled=_sample_age(item, now), window=_go_duration(item.get("window"))))
+    return out
+
+
+def print_container_metrics(namespace: Optional[str] = None) -> None:
+    """Calls get_container_metrics and prints it, like `kubectl top pod --containers`."""
+    print(f"{'POD':<40} {'CONTAINER':<24} {'CPU':<8} {'MEMORY':<9} {'MEM/LIMIT':<16} {'SAMPLED':<8}")
+    for u in get_container_metrics(namespace):
+        limit = (f"{u.memory}/{_show_memory(u.memory_limit_bytes)} ({u.memory_percent_of_limit}%)"
+                 if u.memory_limit_bytes and u.memory else "-")
+        print(f"{u.pod:<40} {u.container:<24} {u.cpu or '-':<8} {u.memory or '-':<9} "
+              f"{limit:<16} {_format_timedelta(u.sampled) if u.sampled else '-':<8}")
+
+
+def print_node_metrics() -> None:
+    """Calls get_node_metrics and prints it, like `kubectl top node`."""
+    print(f"{'NODE':<32} {'CPU':<10} {'CPU%':<6} {'MEMORY':<10} {'MEMORY%':<8}")
+    for n in get_node_metrics():
+        print(f"{n.node:<32} {n.cpu:<10} {n.cpu_percent if n.cpu_percent is not None else '-':<6} "
+              f"{n.memory:<10} {n.memory_percent if n.memory_percent is not None else '-':<8}")
+
+
 class ContainerTemplateSummary(BaseModel):
     """A container as declared in a pod template (e.g. inside a CronJob or Job),
     with just the image and literal environment values that matter for RCA."""
@@ -2870,6 +3156,9 @@ class WorkloadHealth(_Compact):
     autoscaler: Optional[str] = None
     #: Services sending traffic to its pods, e.g. "Service/ad: 0 ready, 1 not ready".
     services: list[str] = Field(default_factory=list)
+    #: Each container's current usage, e.g. "ad: memory 140Mi of 300Mi (46.7%), cpu
+    #: 850m"; "ad: no reading" when there is none. See notes on what a sample shows.
+    usage: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2959,6 +3248,8 @@ class WorkloadReport(_Compact):
     autoscaler: Optional[HpaSummary] = None
     #: Services sending traffic to its pods, with each pod's endpoint state.
     services: list[EndpointSummary] = Field(default_factory=list)
+    #: Its containers' current usage against requests and limits.
+    usage: list[ContainerUsage] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -3005,6 +3296,8 @@ TOOLS = [
     get_statefulset_summaries,
     get_daemonset_summaries,
     get_hpa_summaries,
+    get_container_metrics,
+    get_node_metrics,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

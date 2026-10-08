@@ -220,7 +220,27 @@ def capture_state(namespaces: Optional[list[str]] = None,
         state["events"] += _capture_events(ns, captured_at, redactor)
         state["pods"] += _capture_pods(ns, captured_at, include_logs, max_log_lines,
                                        include_previous_logs, stats, redactor)
+    state["metrics"] = _capture_metrics(target_namespaces, captured_at, redactor)
     return state
+
+
+def _capture_metrics(namespaces: list[str], captured_at: datetime.datetime,
+                     redactor: "_Redactor") -> dict[str, Any]:
+    """The usage tools' results, or why metrics weren't available.
+
+    No metrics-server is a normal setup, so it's recorded rather than failing the
+    capture, and replay raises the same error the live tool would. Any other
+    error (e.g. no permission on metrics.k8s.io) still fails the capture.
+    """
+    try:
+        containers: list[dict[str, Any]] = []
+        for ns in namespaces:
+            containers += _encode_all(redactor(k8s_tools.get_container_metrics(ns)), captured_at)
+        nodes = _encode_all(redactor(k8s_tools.get_node_metrics()), captured_at)
+    except k8s_tools.K8sMetricsUnavailable as e:
+        logging.warning(f"Resource metrics not captured: {e}")
+        return {"available": False, "reason": str(e)}
+    return {"available": True, "containers": containers, "nodes": nodes}
 
 
 def _capture_configmaps(namespace: str, captured_at: datetime.datetime,

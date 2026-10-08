@@ -36,6 +36,7 @@ tests/
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
+  test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -320,6 +321,13 @@ Invariants worth preserving when touching this code:
   functions, so it bypasses the MCP server's redaction boundary; without an
   explicit `redact_object` pass it would write raw secrets to disk while the server
   in front of the same cluster redacted them. `tests/test_capture.py` guards this.
+- **Resource metrics are one sample, kept apart.** The capture stores the usage
+  tools' results under `metrics`, with `available: false` and the reason when
+  metrics-server isn't there (that doesn't fail a capture; a permission error
+  does). Replay keeps the values and lets `sampled` grow; `window` is an
+  `Interval`. Three cases stay distinct and all raise `K8sMetricsUnavailable`
+  with different messages: recorded unavailable (as live), and no `metrics` key
+  (the capture predates them). Never fill in a missing reading.
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
   synthesizes answers for unknown pod names.
 
