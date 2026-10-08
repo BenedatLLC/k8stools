@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Seven models have a
+them when they matter instead of carrying them on every turn. Eight models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -25,6 +25,9 @@ notes existed) give the same notes; captures don't store them.
 | `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
 | `HpaSummary` | at `max_replicas` | At maxReplicas: it can't add replicas, whatever its metrics say. See the ScalingLimited condition. |
 | `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
+| `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
+| `ContainerUsage` | the last instance was OOM-killed, or ended abnormally and the current one started within 10 minutes | "The last instance ended OOMKilled 6m ago; this sample is from the current one, started 58s ago." followed by: A sample averages a short window: a spike that ends in an OOM kill usually never appears in one. |
+| `ContainerUsage` | memory at 90% or more of its limit | Memory is the working set: memory in use plus recently used file cache, which the kernel reclaims before an OOM kill. Near the limit is common; it isn't proof a kill is coming. |
 
 `get_workload_history` returns its caveats in the result's `limits` list.
 
@@ -112,11 +115,12 @@ the record, not the current rhythm.
     - **`waiting`**: the current waiting reason, e.g. CrashLoopBackOff.
   - **`autoscaler`** (`str`): its HPA in a line, e.g. "HPA cart: 3 replicas (min 1, max 3), at max; cpu 92%/80%".
   - **`services`** (`list[str]`): Services sending traffic to its pods, e.g. "Service/ad: 0 ready, 1 not ready". Linked through their endpoints, which name the pods they selected, ready or not.
+  - **`usage`** (`list[str]`): each container's current usage, e.g. "ad: memory 140Mi of 300Mi (46.7%), cpu 850m", or "ad: no reading". The readings' notes (e.g. that the sample is from a fresh instance after an OOM kill) are added to the workload's `notes`.
   - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ.
   - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
   - **`notes`** (`list[str]`)
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
-- **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", or "Deployment/accounting 1/1, 762 restarts" when it has restarted.
+- **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
 - **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
 
@@ -150,6 +154,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
 - **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
 - **`services`** (`list[EndpointSummary]`): Services sending traffic to its pods, with each backend's state.
+- **`usage`** (`list[ContainerUsage]`): its containers' current usage, as from `get_container_metrics`. When metrics aren't available, `notes` says why.
 - **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers and logs come from, and an exit code / reason disagreement.
 
 Empty fields are left out of the result.
@@ -694,6 +699,81 @@ list of HpaSummary, each with:
 - **`last_scale`** (`Optional[timedelta]`): time since it last changed the replica count.
 - **`age`** (`timedelta`)
 - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+### `get_container_metrics`
+
+```python
+get_container_metrics(namespace: Optional[str] = None) -> list[ContainerUsage]
+```
+
+Each running container's current CPU and memory use, from metrics-server
+(`metrics.k8s.io/v1beta1`, like `kubectl top pod --containers`), beside its
+requests and limits. Answers "how close is this container to its limit?". It's
+per container, not per pod, because limits apply per container: a pod total
+hides the container that's near its limit.
+
+**What a reading is, and isn't.** metrics-server reports a recent average over a
+short window (`window`, typically 15s to 1m), sampled every scrape interval.
+Several things follow:
+
+- **A spike can be missed.** A spike that ends in an OOM kill usually never
+  appears in a sample.
+- **A fresh instance reads low.** A container that just restarted reports its
+  new instance's low usage, so "140Mi of 300Mi" right after an OOM kill doesn't
+  mean memory wasn't the problem.
+- **Memory is the working set:** memory in use plus recently used file cache,
+  which the kernel reclaims before an OOM kill. Near the limit is common.
+
+Each reading's `notes` say which of these apply to it.
+
+**Without metrics-server**, the tool raises `K8sMetricsUnavailable` (a
+`K8sApiError`), a normal setup rather than a fault. A permission error on the
+metrics API is an ordinary `K8sApiError`.
+
+**Replayed from a capture**, readings keep their values while `sampled`
+grows, so a capture replayed a day later honestly reports "sampled 1d ago". A
+capture made where metrics-server wasn't available raises the same
+`K8sMetricsUnavailable` as live. One made before 3.0.0 raises it with
+"predates resource metrics".
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+list of ContainerUsage, one per container of each running or pending pod
+(finished pods have nothing to measure), each with:
+
+- **`pod`**, **`namespace`**, **`container`**
+- **`cpu_millicores`**, **`memory_bytes`** (`Optional[int]`): whole numbers for calculating; None when there's no reading (not running, or started within about one scrape interval).
+- **`cpu`**, **`memory`** (`Optional[str]`): `kubectl top`-style display, e.g. "150m", "140Mi".
+- **`cpu_request_millicores`**, **`cpu_limit_millicores`**, **`memory_request_bytes`**, **`memory_limit_bytes`** (`Optional[int]`): the container's requests and limits in the same units.
+- **`memory_percent_of_limit`**, **`cpu_percent_of_request`**, **`cpu_percent_of_limit`** (`Optional[float]`): one decimal. CPU against its request is what an HPA's utilization target measures.
+- **`sampled`** (`Optional[timedelta]`): time since the sample was taken.
+- **`window`** (`Optional[timedelta]`): the span the sample averages; a fixed span, which doesn't grow on replay.
+- **`started`** (`Optional[timedelta]`): time since the current instance started. Compare it with `sampled` to see which instance a reading is from.
+- **`restarts`** (`int`), **`last_termination_reason`** (`Optional[str]`), **`last_terminated`** (`Optional[timedelta]`): how the last instance ended, and when.
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+### `get_node_metrics`
+
+```python
+get_node_metrics() -> list[NodeUsage]
+```
+
+Each node's current CPU and memory use, from metrics-server (like `kubectl top
+node`), against its allocatable. The same sampling caveats and
+`K8sMetricsUnavailable` behavior as `get_container_metrics` apply.
+
+#### Returns
+
+list of NodeUsage, each with:
+
+- **`node`**
+- **`cpu_millicores`**, **`memory_bytes`** (`int`), and display strings **`cpu`**, **`memory`**.
+- **`cpu_allocatable_millicores`**, **`memory_allocatable_bytes`** (`Optional[int]`), and **`cpu_percent`**, **`memory_percent`** of them.
+- **`sampled`**, **`window`**: as for containers.
 
 ### `get_cronjob_summaries`
 

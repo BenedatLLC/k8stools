@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from k8stools import k8s_tools
 from k8stools.mock_state import BUILTIN_STATE_FILE, MockState
 
 _TS = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?Z", re.M)
@@ -249,3 +250,30 @@ def test_endpoints_agree_with_pods_and_services(state):
             pod = pods[a.pod]
             assert (a.ip, a.node) == (pod.ip, pod.node), a.pod
             assert a.ready == (pod.ready_containers == pod.total_containers), a.pod
+
+
+def test_usage_readings_agree_with_the_containers_they_measure(state):
+    """Only running containers have readings, each sampled after its instance
+    started, within its limit, with its requests and limits; and the HPA's CPU
+    reading is its pods' average."""
+    statuses = {(p.namespace, p.name, s.container_name): s
+                for p in state.get_pod_summaries()
+                for s in state.get_pod_container_statuses(p.name, p.namespace)}
+    readings = state.get_container_metrics()
+    assert readings
+    for u in readings:
+        s = statuses[(u.namespace, u.pod, u.container)]
+        assert s.state.state_name == "Running", u.pod
+        assert u.sampled < u.started, u.pod
+        assert u.memory_limit_bytes is None or u.memory_bytes <= u.memory_limit_bytes
+        assert u.restarts == s.restart_count
+    running = {k for k, s in statuses.items() if s.state and s.state.state_name == "Running"}
+    assert {(u.namespace, u.pod, u.container) for u in readings} == running
+    for h in state.get_hpa_summaries():
+        name = h.scale_target.split("/")[1]
+        pods = [u for u in readings if u.pod.startswith(f"{name}-")]
+        average = sum(u.cpu_percent_of_request for u in pods) / len(pods)
+        assert abs(average - float(h.metrics[0].current.rstrip("%"))) < 1
+    [node] = state.get_node_metrics()
+    [n] = state.get_node_summaries()
+    assert node.memory_allocatable_bytes == k8s_tools._bytes(n.allocatable["memory"])

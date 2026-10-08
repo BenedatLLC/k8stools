@@ -935,3 +935,22 @@ def test_endpoint_summaries_agree_with_services():
         for a in e.addresses:
             if a.pod in pods:
                 assert a.ip == pods[a.pod].ip
+
+
+def test_container_and_node_metrics():
+    """Issue #16: readings beside limits, or the typed error without metrics-server."""
+    try:
+        readings = k8s_tools.get_container_metrics("default")
+        nodes = k8s_tools.get_node_metrics()
+    except k8s_tools.K8sMetricsUnavailable:
+        pytest.skip("metrics-server is not available on this cluster.")
+    assert readings and nodes
+    for u in readings:
+        if u.memory_bytes is None:
+            assert u.notes == [k8s_tools.NOTE_NO_READING]
+            continue
+        assert u.memory_bytes > 0 and u.sampled is not None and u.window is not None
+        if u.memory_limit_bytes:
+            assert u.memory_percent_of_limit == round(100 * u.memory_bytes / u.memory_limit_bytes, 1)
+    for n in nodes:
+        assert n.cpu_millicores > 0 and n.memory_percent is not None

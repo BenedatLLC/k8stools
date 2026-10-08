@@ -121,6 +121,18 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
 get_replicaset_summaries.__doc__ = k8s_tools.get_replicaset_summaries.__doc__
 
 
+def get_container_metrics(namespace: Optional[str] = None) -> list[k8s_tools.ContainerUsage]:
+    return _state().get_container_metrics(namespace)
+
+get_container_metrics.__doc__ = k8s_tools.get_container_metrics.__doc__
+
+
+def get_node_metrics() -> list[k8s_tools.NodeUsage]:
+    return _state().get_node_metrics()
+
+get_node_metrics.__doc__ = k8s_tools.get_node_metrics.__doc__
+
+
 def get_endpoint_summaries(namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
     return _state().get_endpoint_summaries(namespace)
 
@@ -255,6 +267,8 @@ TOOLS = [
     get_statefulset_summaries,
     get_daemonset_summaries,
     get_hpa_summaries,
+    get_container_metrics,
+    get_node_metrics,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

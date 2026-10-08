@@ -689,6 +689,33 @@ class MockState:
                                   namespace: Optional[str] = None) -> list[k8s_tools.StatefulSetSummary]:
         return self._decode_all("statefulsets", k8s_tools.StatefulSetSummary, namespace)
 
+    def _metrics(self) -> dict[str, Any]:
+        """The capture's metrics record, or the error the live tool would raise.
+
+        Three cases stay distinct (#16): metrics recorded; the cluster had no
+        metrics-server when captured (the live tool's error, as live); and a
+        capture taken before metrics were recorded."""
+        metrics = self._data.get("metrics")
+        if metrics is None:
+            raise k8s_tools.K8sMetricsUnavailable(
+                "This capture predates resource metrics (recorded from k8stools 3.0.0).")
+        if not metrics.get("available"):
+            raise k8s_tools.K8sMetricsUnavailable(
+                metrics.get("reason") or "The metrics API was not available when captured.")
+        return metrics
+
+    @_pinned_query
+    def get_container_metrics(self, namespace: Optional[str] = None) -> list[k8s_tools.ContainerUsage]:
+        records = self._metrics().get("containers", [])
+        if namespace is not None:
+            records = [r for r in records if r.get("namespace") == namespace]
+        return [decode_model(k8s_tools.ContainerUsage, r, self._clock) for r in records]
+
+    @_pinned_query
+    def get_node_metrics(self) -> list[k8s_tools.NodeUsage]:
+        return [decode_model(k8s_tools.NodeUsage, r, self._clock)
+                for r in self._metrics().get("nodes", [])]
+
     @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
         """Captures from before endpoints were captured replay none."""

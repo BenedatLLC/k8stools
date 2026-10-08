@@ -30,7 +30,8 @@ import re
 import signal
 from typing import Any, Optional
 
-from .k8s_tools import (ContainerEssentials, EndpointSummary, HpaSummary, ContainerStateRunning, ContainerStateTerminated,
+from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
+                        K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         LastChange, LOG_NOTE_PREFIX, LogTail, NamespaceHealth, Termination,
                         WorkloadHealth, WorkloadReport, _to_whole_seconds)
@@ -226,6 +227,27 @@ def _services_for(endpoints: list[EndpointSummary], pod_names: set[str]) -> list
     return [e for e in endpoints if any(a.pod in pod_names for a in e.addresses)]
 
 
+#: A healthy workload this close to a memory limit is worth a mention.
+_NEAR_LIMIT_PERCENT = 90.0
+
+
+def _usage(api, namespace: str) -> tuple[Optional[list[ContainerUsage]], Optional[str]]:
+    """Container usage, or (None, why not) when metrics aren't available."""
+    try:
+        return api.get_container_metrics(namespace), None
+    except K8sMetricsUnavailable as e:
+        return None, str(e)
+
+
+def _usage_line(u: ContainerUsage) -> str:
+    if u.memory_bytes is None and u.cpu_millicores is None:
+        return f"{u.container}: no reading"
+    memory = f"memory {u.memory}"
+    if u.memory_limit_bytes:
+        memory += f" of {_show_memory(u.memory_limit_bytes)} ({u.memory_percent_of_limit}%)"
+    return f"{u.container}: {memory}, cpu {u.cpu}"
+
+
 def _autoscaler_line(h: HpaSummary) -> str:
     at_max = h.current_replicas >= h.max_replicas
     line = (f"HPA {h.name}: {h.current_replicas} replicas (min "
@@ -255,6 +277,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads)
     autoscalers = _autoscalers(api, namespace)
     endpoints = api.get_endpoint_summaries(namespace)
+    usage, usage_unavailable = _usage(api, namespace)
     entries: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
 
@@ -272,18 +295,28 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         failed_job = kind == "Job" and last is not None and last.exit_code not in (0, None)
         restarts = sum(p.restarts for p in pods) if pods or not desired else None
         hpa = autoscalers.get(label)
+        pod_names = {p.name for p in pods}
+        readings = [u for u in usage or [] if u.pod in pod_names]
         if ready >= desired and not waiting and not failed_job:
             at_max = hpa is not None and hpa.current_replicas >= hpa.max_replicas
+            peak = max((u.memory_percent_of_limit for u in readings
+                        if u.memory_percent_of_limit is not None), default=None)
             healthy_lines.append(f"{label} {ready}/{desired}"
                                  + (f", {restarts} restarts" if restarts else "")
-                                 + (f", HPA at max {hpa.max_replicas}" if at_max else ""))
+                                 + (f", HPA at max {hpa.max_replicas}" if at_max else "")
+                                 + (f", memory at {peak}% of limit"
+                                    if peak is not None and peak >= _NEAR_LIMIT_PERCENT else ""))
             return
         w = WorkloadHealth(
             workload=label, ready=ready, desired=desired, restarts=restarts,
             last_termination=last, memory=_memory_shape(first_pod),
             template_changed=_template_changed(api, kind, name, namespace) if kind else None,
             autoscaler=_autoscaler_line(hpa) if hpa else None,
-            services=[_endpoint_line(e) for e in _services_for(endpoints, {p.name for p in pods})])
+            services=[_endpoint_line(e) for e in _services_for(endpoints, pod_names)],
+            usage=list(dict.fromkeys(_usage_line(u) for u in readings)))
+        for note in (n for u in readings for n in u.notes):
+            if note not in w.notes:
+                w.notes.append(note)
         if restarts is None:
             w.notes.append("None of its pods could be found, so its restarts and "
                            "terminations are unknown.")
@@ -324,6 +357,10 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready])
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
+    if usage_unavailable:
+        result.notes.append(f"Usage unavailable: {usage_unavailable}")
+    if any("of limit" in line for line in healthy_lines):
+        result.notes.append(NOTE_WORKING_SET)
     if any(w.last_termination for w in entries):
         result.notes.append(
             "instance_lifetime is how long the last instance ran; restart_gap is the "
@@ -534,6 +571,10 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         report.config = history.config
     report.autoscaler = _autoscalers(api, namespace).get(f"{kind}/{name}")
     report.services = _services_for(api.get_endpoint_summaries(namespace), {p.name for p in pods})
+    usage, usage_unavailable = _usage(api, namespace)
+    if usage_unavailable:
+        report.notes.append(f"Usage unavailable: {usage_unavailable}")
+    report.usage = [u for u in usage or [] if u.pod in {p.name for p in pods}]
 
     if any(i.last_termination for i in report.instances):
         report.notes.append(
@@ -544,6 +585,10 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
             report.notes.extend(n for n in i.last_termination.notes if n not in report.notes)
             i.last_termination.notes = []
     return report
+
+
+def _show_memory(b: Optional[int]) -> Optional[str]:
+    return None if b is None else f"{round(b / 2**20)}Mi"
 
 
 def _change_text(c) -> str:

@@ -14,8 +14,34 @@ dates are release-tag dates.
   (HorizontalPodAutoscaler, autoscaling/v2).
 - [#15](https://github.com/BenedatLLC/k8stools/issues/15): Service backends:
   get_endpoint_summaries (EndpointSlice) and ready counts on ServiceSummary.
+- [#16](https://github.com/BenedatLLC/k8stools/issues/16): Container and node
+  resource usage (metrics.k8s.io), alongside limits.
 
 ### Added
+- **`get_container_metrics` and `get_node_metrics`** (issue #16): current CPU
+  and memory use from metrics-server.
+  - **Per container,** because limits apply per container, beside its requests
+    and limits, in whole millicores and bytes for calculating, with percentages
+    and `kubectl top`-style display strings. Nodes are measured against their
+    allocatable.
+  - **Each reading says what it can't show.** A note marks a reading taken
+    after an OOM kill, or after an abnormal end within 10 minutes: the sample is
+    from the fresh instance, and a short-window sample usually misses the spike
+    that ends in a kill. Another marks memory at 90% or more of its limit:
+    that's the working set, cache included, and isn't proof a kill is coming. A
+    container with no reading is listed, with a note, not left out.
+  - **Without metrics-server** the tools raise `K8sMetricsUnavailable`, since
+    that's a normal setup.
+  - **Captures** store one sample, or why metrics weren't available, which
+    doesn't fail the capture. Replay keeps the values while `sampled` grows.
+    Captures from before 3.0.0 raise "predates resource metrics".
+  - **Composites:** each unhealthy workload gets its containers' usage, and a
+    healthy workload near a memory limit says so; `get_workload_report`
+    includes the readings.
+  - **`--mock`:** `ad` reads 140Mi of 300Mi from the instance that started 58s
+    after an OOM kill, which is the trap the notes are for.
+    `test-deployment`'s CPU averages the 92% its HPA reports.
+  - `print_container_metrics` and `print_node_metrics` are their companions.
 - **`get_endpoint_summaries`** (issue #15): each Service's backends, from its
   EndpointSlices. Each address has its ready, serving and terminating state, pod
   and node, and the Service gets ready, not-ready and terminating counts. Unset
@@ -91,6 +117,9 @@ dates are release-tag dates.
 - **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling) **and
   `endpointslices`** (discovery.k8s.io). The README's role includes both.
   `get_service_summaries` works without the latter, with unknown counts.
+- **A capture needs `list` on `metrics.k8s.io` pods and nodes** where
+  metrics-server runs. A cluster without metrics-server captures fine; a
+  permission error fails the capture.
 - **Tool descriptions are a few lines each** (issue #20): what the tool answers,
   its parameters, and at most one warning. Together they went from 47,946
   characters to about 5,000, which is roughly 11,000 fewer tokens on every turn

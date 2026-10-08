@@ -20,7 +20,7 @@ UTC = datetime.timezone.utc
 NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 
 #: Size budgets (characters of JSON), part of the contract (#13).
-NAMESPACE_BUDGET_PER_WORKLOAD = 450   # an unhealthy workload, in full
+NAMESPACE_BUDGET_PER_WORKLOAD = 900   # an unhealthy workload, in full (with usage, #16)
 HEALTHY_LINE_BUDGET = 60              # a healthy one, in a line
 REPORT_BUDGET = 8000
 
