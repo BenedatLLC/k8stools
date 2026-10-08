@@ -235,3 +235,17 @@ def test_every_hpa_scales_a_workload_that_agrees_with_it(state):
             assert pods and all(s.resource_requests.get("cpu")
                                 for p in pods
                                 for s in state.get_pod_container_statuses(p.name, p.namespace))
+
+
+def test_endpoints_agree_with_pods_and_services(state):
+    """Each address is a real pod with its IP, node and readiness; each
+    Service's counts are its endpoints'; every Service has a record."""
+    pods = {p.name: p for p in state.get_pod_summaries()}
+    endpoints = {(e.namespace, e.service): e for e in state.get_endpoint_summaries()}
+    for svc in state.get_service_summaries():
+        e = endpoints[(svc.namespace, svc.name)]
+        assert (svc.ready_endpoints, svc.not_ready_endpoints) == (e.ready, e.not_ready)
+        for a in e.addresses:
+            pod = pods[a.pod]
+            assert (a.ip, a.node) == (pod.ip, pod.node), a.pod
+            assert a.ready == (pod.ready_containers == pod.total_containers), a.pod

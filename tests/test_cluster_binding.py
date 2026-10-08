@@ -41,7 +41,8 @@ def kubeconfig(tmp_path):
 @pytest.fixture(autouse=True)
 def unbound(monkeypatch):
     """Start every test unbound, with no ambient selection, and restore afterwards."""
-    for name in ("_BINDING", "K8S", "APPS_V1_API", "BATCH_V1_API", "AUTOSCALING_V2_API"):
+    for name in ("_BINDING", "K8S", "APPS_V1_API", "BATCH_V1_API", "AUTOSCALING_V2_API",
+                 "DISCOVERY_V1_API"):
         monkeypatch.setattr(k8s_tools, name, None)
     monkeypatch.delenv(k8s_tools.CONTEXT_ENV_VAR, raising=False)
 

@@ -30,7 +30,7 @@ import re
 import signal
 from typing import Any, Optional
 
-from .k8s_tools import (ContainerEssentials, HpaSummary, ContainerStateRunning, ContainerStateTerminated,
+from .k8s_tools import (ContainerEssentials, EndpointSummary, HpaSummary, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         LastChange, LOG_NOTE_PREFIX, LogTail, NamespaceHealth, Termination,
                         WorkloadHealth, WorkloadReport, _to_whole_seconds)
@@ -214,6 +214,18 @@ def _autoscalers(api, namespace: str) -> dict[str, HpaSummary]:
     return {h.scale_target: h for h in api.get_hpa_summaries(namespace)}
 
 
+def _endpoint_line(e: EndpointSummary) -> str:
+    return (f"Service/{e.service}: {e.ready} ready, {e.not_ready} not ready"
+            + (f", {e.terminating} terminating" if e.terminating else ""))
+
+
+def _services_for(endpoints: list[EndpointSummary], pod_names: set[str]) -> list[EndpointSummary]:
+    """Services whose endpoints include any of these pods. Pods carry no labels
+    in these tools, so a Service's selector can't be matched directly; its
+    endpoints name the pods it selected, ready or not."""
+    return [e for e in endpoints if any(a.pod in pod_names for a in e.addresses)]
+
+
 def _autoscaler_line(h: HpaSummary) -> str:
     at_max = h.current_replicas >= h.max_replicas
     line = (f"HPA {h.name}: {h.current_replicas} replicas (min "
@@ -242,6 +254,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     workloads = _workloads(api, namespace)
     grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads)
     autoscalers = _autoscalers(api, namespace)
+    endpoints = api.get_endpoint_summaries(namespace)
     entries: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
 
@@ -269,7 +282,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
             workload=label, ready=ready, desired=desired, restarts=restarts,
             last_termination=last, memory=_memory_shape(first_pod),
             template_changed=_template_changed(api, kind, name, namespace) if kind else None,
-            autoscaler=_autoscaler_line(hpa) if hpa else None)
+            autoscaler=_autoscaler_line(hpa) if hpa else None,
+            services=[_endpoint_line(e) for e in _services_for(endpoints, {p.name for p in pods})])
         if restarts is None:
             w.notes.append("None of its pods could be found, so its restarts and "
                            "terminations are unknown.")
@@ -306,7 +320,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                 workloads=[m.workload for m in members]))
     result = NamespaceHealth(
         namespace=namespace, workloads=entries, healthy=healthy_lines,
-        common_failures=failures)
+        common_failures=failures,
+        services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready])
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
     if any(w.last_termination for w in entries):
@@ -518,6 +533,7 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                 "it changed, not how long the workload has been healthy.")
         report.config = history.config
     report.autoscaler = _autoscalers(api, namespace).get(f"{kind}/{name}")
+    report.services = _services_for(api.get_endpoint_summaries(namespace), {p.name for p in pods})
 
     if any(i.last_termination for i in report.instances):
         report.notes.append(

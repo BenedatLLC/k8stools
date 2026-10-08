@@ -690,6 +690,11 @@ class MockState:
         return self._decode_all("statefulsets", k8s_tools.StatefulSetSummary, namespace)
 
     @_pinned_query
+    def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
+        """Captures from before endpoints were captured replay none."""
+        return self._decode_all("endpoints", k8s_tools.EndpointSummary, namespace)
+
+    @_pinned_query
     def get_hpa_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.HpaSummary]:
         """Captures from before HPAs were captured replay none."""
         return self._decode_all("hpas", k8s_tools.HpaSummary, namespace)

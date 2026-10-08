@@ -35,6 +35,7 @@ tests/
   test_notes.py              - Description budgets, notes on results and logs, notes in replay
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
+  test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree

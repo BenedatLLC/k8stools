@@ -187,6 +187,7 @@ def capture_state(namespaces: Optional[list[str]] = None,
         "statefulsets": [],
         "daemonsets": [],
         "hpas": [],
+        "endpoints": [],
         "workload_histories": [],
         "cronjobs": [],
         "jobs": [],
@@ -199,6 +200,7 @@ def capture_state(namespaces: Optional[list[str]] = None,
         state["deployments"] += _encode_all(redactor(deployments), captured_at)
         state["replicasets"] += _encode_all(redactor(k8s_tools.get_replicaset_summaries(ns)), captured_at)
         state["services"] += _encode_all(redactor(k8s_tools.get_service_summaries(ns)), captured_at)
+        state["endpoints"] += _encode_all(redactor(k8s_tools.get_endpoint_summaries(ns)), captured_at)
         statefulsets = k8s_tools.get_statefulset_summaries(ns)
         state["statefulsets"] += _encode_all(redactor(statefulsets), captured_at)
         daemonsets = k8s_tools.get_daemonset_summaries(ns)

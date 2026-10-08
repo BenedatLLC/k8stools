@@ -30,6 +30,7 @@ K8S:Optional[client.CoreV1Api] = None
 APPS_V1_API:Optional[client.AppsV1Api] = None
 BATCH_V1_API:Optional[client.BatchV1Api] = None
 AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
+DISCOVERY_V1_API:Optional[client.DiscoveryV1Api] = None
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -160,10 +161,10 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
         If there is no selection and neither a kubeconfig nor in-cluster config
         can be loaded.
     """
-    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API
+    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API, DISCOVERY_V1_API
     binding = _resolve_binding(kubeconfig, context)
     _BINDING = binding
-    K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = None
+    K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = DISCOVERY_V1_API = None
     return binding.describe()
 
 
@@ -194,6 +195,10 @@ def _get_batch_v1_api_client() -> client.BatchV1Api:
 
 def _get_autoscaling_v2_api_client() -> client.AutoscalingV2Api:
     return client.AutoscalingV2Api(_binding().api_client)
+
+
+def _get_discovery_v1_api_client() -> client.DiscoveryV1Api:
+    return client.DiscoveryV1Api(_binding().api_client)
 
 
 def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
@@ -314,6 +319,8 @@ NOTE_CONTAINER_WAITING = (
 NOTE_HPA_AT_MAX = (
     "At maxReplicas: it can't add replicas, whatever its metrics say. See the "
     "ScalingLimited condition.")
+NOTE_NO_READY_ENDPOINTS = (
+    "No ready endpoints: traffic sent to this Service has no pod to reach.")
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
@@ -1733,10 +1740,16 @@ class ServiceSummary(BaseModel):
     selector: dict[str, str] = Field(default_factory=dict)
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
+    #: Ready and not-ready backends, from its EndpointSlices. None when unknown:
+    #: an ExternalName Service, EndpointSlices not readable, or a capture taken
+    #: before these were recorded.
+    ready_endpoints: Optional[int] = None
+    not_ready_endpoints: Optional[int] = None
 
 def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummary]:
     """Services, like `kubectl get services`: type, cluster and external IP,
-    ports, selector, labels, annotations, age. namespace: one, or all if omitted."""
+    ports, selector, labels, annotations, age, and how many ready and not-ready
+    endpoints (backends) each has. namespace: one, or all if omitted."""
     global K8S
     
     # Load Kubernetes configuration and initialize client only once
@@ -1757,6 +1770,14 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
         raise K8sApiError(f"Error fetching services: {e}") from e
 
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    # One more list call, so "does this Service have backends?" needs no second
+    # tool. Older roles may not grant EndpointSlices: counts are then unknown.
+    try:
+        endpoint_counts = {(e.namespace, e.service): (e.ready, e.not_ready)
+                           for e in get_endpoint_summaries(namespace)}
+    except K8sApiError as e:
+        logging.warning(f"get_service_summaries: endpoint counts unavailable: {e}")
+        endpoint_counts = None
 
     for service in services:
         service_name = service.metadata.name
@@ -1795,6 +1816,8 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
         annotations = dict(service.metadata.annotations) \
             if getattr(service.metadata, "annotations", None) else {}
 
+        counts = endpoint_counts.get((service_namespace, service_name), (0, 0)) \
+            if endpoint_counts is not None and service_type != "ExternalName" else (None, None)
         service_summary = ServiceSummary(
             name=service_name,
             namespace=service_namespace,
@@ -1806,6 +1829,8 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
             selector=selector,
             labels=labels,
             annotations=annotations,
+            ready_endpoints=counts[0],
+            not_ready_endpoints=counts[1],
         )
         service_summaries.append(service_summary)
     
@@ -1829,6 +1854,110 @@ def print_service_summaries(namespace: Optional[str] = None) -> None:
         
         age = _format_timedelta(service.age)
         print(f"{service.name:<32} {service.namespace:<20} {service_type:<15} {cluster_ip:<16} {external_ip:<16} {age:<12} {ports_str:<20}")
+
+
+class EndpointAddress(BaseModel):
+    """One backend of a Service, from its EndpointSlices."""
+    ip: str
+    #: Ready to receive traffic (an unset condition means ready).
+    ready: bool
+    #: Serving, even if terminating (an unset condition takes ready's value).
+    serving: bool
+    terminating: bool = False
+    #: The backing pod's name, when the endpoint targets a pod.
+    pod: Optional[str] = None
+    node: Optional[str] = None
+
+
+class EndpointSummary(BaseModel):
+    """A Service's backends, merged from its EndpointSlices."""
+    service: str
+    namespace: str
+    ports: list[PortInfo] = Field(default_factory=list)
+    addresses: list[EndpointAddress] = Field(default_factory=list)
+    ready: int = 0
+    not_ready: int = 0
+    terminating: int = 0
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "EndpointSummary":
+        self.notes = [] if self.ready else [NOTE_NO_READY_ENDPOINTS]
+        return self
+
+
+_SERVICE_NAME_LABEL = "kubernetes.io/service-name"
+
+
+def get_endpoint_summaries(namespace: Optional[str] = None) -> list[EndpointSummary]:
+    """Each Service's backends, from its EndpointSlices: every address with its
+    ready, serving and terminating state, pod and node, and counts of ready,
+    not-ready and terminating ones. A Service with no ready endpoints has
+    nowhere to send traffic. namespace: one, or all if omitted."""
+    global DISCOVERY_V1_API
+    if DISCOVERY_V1_API is None:
+        DISCOVERY_V1_API = _get_discovery_v1_api_client()
+    logging.info(f"get_endpoint_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            slices = DISCOVERY_V1_API.list_namespaced_endpoint_slice(namespace=namespace).items
+        else:
+            slices = DISCOVERY_V1_API.list_endpoint_slice_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching endpoint slices: {e}") from e
+
+    merged: dict[tuple[str, str], EndpointSummary] = {}
+    seen: dict[tuple[str, str], set] = {}
+    for sl in slices:
+        labels = sl.metadata.labels or {}
+        key = (sl.metadata.namespace, labels.get(_SERVICE_NAME_LABEL) or sl.metadata.name)
+        summary = merged.setdefault(key, EndpointSummary(service=key[1], namespace=key[0]))
+        for port in sl.ports or []:
+            info = PortInfo(port=port.port or 0, protocol=port.protocol or "TCP")
+            if info not in summary.ports:
+                summary.ports.append(info)
+        for ep in sl.endpoints or []:
+            if not ep.addresses:
+                continue
+            ref = ep.target_ref
+            pod = ref.name if ref is not None and ref.kind == "Pod" else None
+            # A dual-stack Service has one slice per IP family: count a pod once.
+            identity = pod or ep.addresses[0]
+            if identity in seen.setdefault(key, set()):
+                continue
+            seen[key].add(identity)
+            cond = ep.conditions
+            ready = cond.ready if cond is not None and cond.ready is not None else True
+            serving = cond.serving if cond is not None and cond.serving is not None else ready
+            terminating = bool(cond.terminating) if cond is not None else False
+            summary.addresses.append(EndpointAddress(
+                ip=ep.addresses[0], ready=ready, serving=serving, terminating=terminating,
+                pod=pod, node=ep.node_name))
+    summaries = []
+    for summary in merged.values():
+        summary.ready = sum(a.ready for a in summary.addresses)
+        summary.terminating = sum(a.terminating for a in summary.addresses)
+        summary.not_ready = len(summary.addresses) - summary.ready - sum(
+            a.terminating and not a.ready for a in summary.addresses)
+        # Revalidate so notes see the final counts.
+        summaries.append(EndpointSummary.model_validate(summary.model_dump()))
+    summaries.sort(key=lambda e: (e.namespace, e.service))
+    return summaries
+
+
+def print_endpoint_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_endpoint_summaries and prints the output to stdout, like
+    `kubectl get endpoints`."""
+    summaries = get_endpoint_summaries(namespace)
+    print(f"{'SERVICE':<32} {'NAMESPACE':<16} {'READY':<6} {'NOT-READY':<10} "
+          f"{'TERMINATING':<12} ENDPOINTS")
+    for e in summaries:
+        ports = ",".join(str(p.port) for p in e.ports)
+        shown = ", ".join(f"{a.ip}:{ports}" for a in e.addresses[:3]) or "<none>"
+        if len(e.addresses) > 3:
+            shown += f" + {len(e.addresses) - 3} more"
+        print(f"{e.service:<32} {e.namespace:<16} {e.ready:<6} {e.not_ready:<10} "
+              f"{e.terminating:<12} {shown}")
 
 
 
@@ -2739,6 +2868,8 @@ class WorkloadHealth(_Compact):
     #: Its HorizontalPodAutoscaler, in a line, e.g. "HPA cart: 3 replicas (min 1,
     #: max 3), at max; cpu 92%/80%".
     autoscaler: Optional[str] = None
+    #: Services sending traffic to its pods, e.g. "Service/ad: 0 ready, 1 not ready".
+    services: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2756,6 +2887,8 @@ class NamespaceHealth(_Compact):
     healthy: list[str] = Field(default_factory=list)
     #: Two or more unhealthy workloads with the same failure signature.
     common_failures: list[FailureGroup] = Field(default_factory=list)
+    #: Services with no ready endpoints, e.g. "Service/ad: 0 ready, 1 not ready".
+    services_without_ready_endpoints: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2824,6 +2957,8 @@ class WorkloadReport(_Compact):
     config: list[ConfigReference] = Field(default_factory=list)
     #: Its HorizontalPodAutoscaler, if one scales it.
     autoscaler: Optional[HpaSummary] = None
+    #: Services sending traffic to its pods, with each pod's endpoint state.
+    services: list[EndpointSummary] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2864,6 +2999,7 @@ TOOLS = [
     get_replicaset_summaries,
     get_workload_history,
     get_service_summaries,
+    get_endpoint_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,

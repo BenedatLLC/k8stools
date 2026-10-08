@@ -901,7 +901,9 @@
         "app": "ad"
       },
       "labels": {},
-      "annotations": {}
+      "annotations": {},
+      "ready_endpoints": 0,
+      "not_ready_endpoints": 1
     },
     {
       "name": "test-service",
@@ -924,7 +926,9 @@
         "app": "cart"
       },
       "labels": {},
-      "annotations": {}
+      "annotations": {},
+      "ready_endpoints": 3,
+      "not_ready_endpoints": 0
     },
     {
       "name": "postgres",
@@ -943,7 +947,96 @@
         "app": "postgres"
       },
       "labels": {},
-      "annotations": {}
+      "annotations": {},
+      "ready_endpoints": 1,
+      "not_ready_endpoints": 0
+    }
+  ],
+  "endpoints": [
+    {
+      "service": "ad",
+      "namespace": "default",
+      "ports": [
+        {
+          "port": 8080,
+          "protocol": "TCP"
+        }
+      ],
+      "addresses": [
+        {
+          "ip": "10.244.0.6",
+          "ready": false,
+          "serving": false,
+          "terminating": false,
+          "pod": "ad-647b4947cc-s5mpm",
+          "node": "minikube"
+        }
+      ],
+      "ready": 0,
+      "not_ready": 1,
+      "terminating": 0
+    },
+    {
+      "service": "test-service",
+      "namespace": "default",
+      "ports": [
+        {
+          "port": 7070,
+          "protocol": "TCP"
+        }
+      ],
+      "addresses": [
+        {
+          "ip": "10.244.0.11",
+          "ready": true,
+          "serving": true,
+          "terminating": false,
+          "pod": "test-deployment-7d4b9c85f-4kq9z",
+          "node": "minikube"
+        },
+        {
+          "ip": "10.244.0.12",
+          "ready": true,
+          "serving": true,
+          "terminating": false,
+          "pod": "test-deployment-7d4b9c85f-m7xpw",
+          "node": "minikube"
+        },
+        {
+          "ip": "10.244.0.13",
+          "ready": true,
+          "serving": true,
+          "terminating": false,
+          "pod": "test-deployment-7d4b9c85f-tb2ns",
+          "node": "minikube"
+        }
+      ],
+      "ready": 3,
+      "not_ready": 0,
+      "terminating": 0
+    },
+    {
+      "service": "postgres",
+      "namespace": "default",
+      "ports": [
+        {
+          "port": 5432,
+          "protocol": "TCP"
+        }
+      ],
+      "addresses": [
+        {
+          "ip": "10.244.0.4",
+          "ready": true,
+          "serving": true,
+          "terminating": false,
+          "pod": "postgres-0",
+          "node": "minikube"
+        }
+      ],
+      "ready": 1,
+      "not_ready": 0,
+      "terminating": 0
     }
   ],
   "configmaps": [
