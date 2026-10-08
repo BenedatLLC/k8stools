@@ -33,6 +33,7 @@ BATCH_V1_API:Optional[client.BatchV1Api] = None
 AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
 DISCOVERY_V1_API:Optional[client.DiscoveryV1Api] = None
 NETWORKING_V1_API:Optional[client.NetworkingV1Api] = None
+APIEXTENSIONS_V1_API:Optional[client.ApiextensionsV1Api] = None
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -170,11 +171,11 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
         can be loaded.
     """
     global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API, DISCOVERY_V1_API, \
-        NETWORKING_V1_API
+        NETWORKING_V1_API, APIEXTENSIONS_V1_API
     binding = _resolve_binding(kubeconfig, context)
     _BINDING = binding
     K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = DISCOVERY_V1_API = None
-    NETWORKING_V1_API = None
+    NETWORKING_V1_API = APIEXTENSIONS_V1_API = None
     return binding.describe()
 
 
@@ -213,6 +214,10 @@ def _get_discovery_v1_api_client() -> client.DiscoveryV1Api:
 
 def _get_networking_v1_api_client() -> client.NetworkingV1Api:
     return client.NetworkingV1Api(_binding().api_client)
+
+
+def _get_apiextensions_v1_api_client() -> client.ApiextensionsV1Api:
+    return client.ApiextensionsV1Api(_binding().api_client)
 
 
 def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
@@ -351,6 +356,12 @@ NOTE_INGRESS_BACKEND = (
 NOTE_INGRESS_NO_READY = (
     "A backend Service has no ready endpoints (backend_ready 0): requests matching "
     "that rule can't reach a pod.")
+NOTE_CR_NOT_OBSERVED = (
+    "observed_generation < generation: its controller hasn't yet acted on the latest "
+    "spec change, so the conditions may describe the previous spec.")
+NOTE_CR_NO_CONDITIONS = (
+    "No status.conditions: this resource reports its state some other way, which "
+    "this tool doesn't read.")
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
@@ -2839,6 +2850,172 @@ def print_node_metrics() -> None:
               f"{n.memory:<10} {n.memory_percent if n.memory_percent is not None else '-':<8}")
 
 
+# ---------------------------------------------------------------------------
+# Custom resources (issue #18): definitions, and instances' conditions only
+# ---------------------------------------------------------------------------
+
+class CrdSummary(BaseModel):
+    """A CustomResourceDefinition: a custom kind this cluster serves."""
+    #: "<plural>.<group>", e.g. "certificates.cert-manager.io".
+    name: str
+    group: str
+    kind: str
+    plural: str
+    #: "Namespaced" or "Cluster".
+    scope: str
+    #: Served versions; storage_version is the one stored in etcd.
+    versions: list[str] = Field(default_factory=list)
+    storage_version: Optional[str] = None
+    short_names: list[str] = Field(default_factory=list)
+    age: Duration
+
+
+class ResourceCondition(BaseModel):
+    """A status condition, as most operators report health (Ready, Synced, ...)."""
+    type: str
+    status: str
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    #: Time since its status last changed.
+    since: Optional[Duration] = None
+
+
+class CustomResourceStatus(BaseModel):
+    """One custom resource's health: its conditions and whether its controller
+    has caught up with its spec. No spec, no other status."""
+    kind: str
+    name: str
+    #: None for a cluster-scoped resource.
+    namespace: Optional[str] = None
+    age: Duration
+    generation: Optional[int] = None
+    #: status.observedGeneration, or the highest a condition reports.
+    observed_generation: Optional[int] = None
+    conditions: list[ResourceCondition] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "CustomResourceStatus":
+        notes = []
+        if self.generation is not None and self.observed_generation is not None \
+                and self.observed_generation < self.generation:
+            notes.append(NOTE_CR_NOT_OBSERVED)
+        if not self.conditions:
+            notes.append(NOTE_CR_NO_CONDITIONS)
+        self.notes = notes
+        return self
+
+
+def get_custom_resource_definitions() -> list[CrdSummary]:
+    """The custom kinds this cluster serves (CustomResourceDefinitions): name,
+    group, kind, plural, scope, versions, short names. Use group and plural with
+    get_custom_resource_status to see instances' health."""
+    global APIEXTENSIONS_V1_API
+    if APIEXTENSIONS_V1_API is None:
+        APIEXTENSIONS_V1_API = _get_apiextensions_v1_api_client()
+    logging.info("get_custom_resource_definitions()")
+    try:
+        crds = APIEXTENSIONS_V1_API.list_custom_resource_definition().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching custom resource definitions: {e}") from e
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = []
+    for crd in crds:
+        spec = crd.spec
+        versions = [v.name for v in (spec.versions or []) if v.served]
+        storage = next((v.name for v in (spec.versions or []) if v.storage), None)
+        out.append(CrdSummary(
+            name=crd.metadata.name, group=spec.group, kind=spec.names.kind,
+            plural=spec.names.plural, scope=spec.scope, versions=versions,
+            storage_version=storage, short_names=list(spec.names.short_names or []),
+            age=now - crd.metadata.creation_timestamp if crd.metadata.creation_timestamp
+            else datetime.timedelta(0)))
+    out.sort(key=lambda c: c.name)
+    return out
+
+
+def _since(timestamp: Optional[str], now: datetime.datetime) -> Optional[datetime.timedelta]:
+    if not timestamp:
+        return None
+    try:
+        return now - datetime.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def get_custom_resource_status(group: str, plural: str, version: Optional[str] = None,
+                               namespace: Optional[str] = None) -> list[CustomResourceStatus]:
+    """Custom resources' health, e.g. group="cert-manager.io",
+    plural="certificates": each instance's conditions (Ready, Synced, ...) with
+    time since each changed, and whether its controller has acted on the latest
+    spec (observed_generation vs generation). No spec or other status. version
+    defaults to the stored version. namespace: one, or all if omitted."""
+    global APIEXTENSIONS_V1_API
+    logging.info(f"get_custom_resource_status(group={group}, plural={plural}, "
+                 f"version={version}, namespace={namespace})")
+    if version is None:
+        if APIEXTENSIONS_V1_API is None:
+            APIEXTENSIONS_V1_API = _get_apiextensions_v1_api_client()
+        try:
+            crd = APIEXTENSIONS_V1_API.read_custom_resource_definition(f"{plural}.{group}")
+        except client.ApiException as e:
+            if e.status == 404:
+                raise K8sApiError(f"No custom resource '{plural}.{group}' in this cluster.") from e
+            raise K8sApiError(f"Error fetching custom resource definition: {e}") from e
+        version = next((v.name for v in (crd.spec.versions or []) if v.storage), None) \
+            or crd.spec.versions[0].name
+    api = client.CustomObjectsApi(_binding().api_client)
+    try:
+        if namespace:
+            body = api.list_namespaced_custom_object(group, version, namespace, plural)
+        else:
+            body = api.list_cluster_custom_object(group, version, plural)
+    except client.ApiException as e:
+        if e.status == 404:
+            raise K8sApiError(f"No custom resource '{plural}.{group}/{version}' in this cluster.") from e
+        raise K8sApiError(f"Error fetching {plural}.{group}: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = []
+    for item in (body.get("items", []) if isinstance(body, dict) else []):
+        meta = item.get("metadata", {})
+        status = item.get("status") or {}
+        conditions = [c for c in (status.get("conditions") or []) if isinstance(c, dict)]
+        observed = status.get("observedGeneration")
+        if observed is None:
+            per_condition = [c.get("observedGeneration") for c in conditions
+                             if c.get("observedGeneration") is not None]
+            observed = max(per_condition) if per_condition else None
+        out.append(CustomResourceStatus(
+            kind=item.get("kind", ""), name=meta.get("name", ""),
+            namespace=meta.get("namespace"),
+            age=_since(meta.get("creationTimestamp"), now) or datetime.timedelta(0),
+            generation=meta.get("generation"), observed_generation=observed,
+            conditions=[ResourceCondition(
+                type=str(c.get("type", "")), status=str(c.get("status", "")),
+                reason=c.get("reason"), message=c.get("message"),
+                since=_since(c.get("lastTransitionTime"), now)) for c in conditions]))
+    return out
+
+
+def print_custom_resource_definitions() -> None:
+    """Calls get_custom_resource_definitions and prints it, like `kubectl get crd`."""
+    print(f"{'NAME':<48} {'KIND':<24} {'SCOPE':<11} {'VERSIONS':<16} {'AGE':<10}")
+    for c in get_custom_resource_definitions():
+        print(f"{c.name:<48} {c.kind:<24} {c.scope:<11} {','.join(c.versions):<16} "
+              f"{_format_timedelta(c.age):<10}")
+
+
+def print_custom_resource_status(group: str, plural: str, version: Optional[str] = None,
+                                 namespace: Optional[str] = None) -> None:
+    """Calls get_custom_resource_status and prints one line per condition."""
+    print(f"{'NAMESPACE':<16} {'NAME':<32} {'CONDITION':<14} {'STATUS':<8} {'REASON':<24} {'SINCE':<10}")
+    for r in get_custom_resource_status(group, plural, version, namespace):
+        for c in r.conditions or [ResourceCondition(type="-", status="-")]:
+            print(f"{r.namespace or '-':<16} {r.name:<32} {c.type:<14} {c.status:<8} "
+                  f"{c.reason or '-':<24} {_format_timedelta(c.since) if c.since else '-':<10}")
+
+
 class ContainerTemplateSummary(BaseModel):
     """A container as declared in a pod template (e.g. inside a CronJob or Job),
     with just the image and literal environment values that matter for RCA."""
@@ -3482,6 +3659,8 @@ TOOLS = [
     get_node_metrics,
     get_cronjob_summaries,
     get_job_summaries,
+    get_custom_resource_definitions,
+    get_custom_resource_status,
     get_logs_for_job,
     get_logs_for_cronjob,
     get_pvc_summaries,

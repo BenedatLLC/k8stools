@@ -964,3 +964,13 @@ def test_ingress_summaries():
     for ing in ingresses:
         for r in ing.rules:
             assert r.service or r.resource
+
+
+def test_custom_resources():
+    """Issue #18: every CRD's instances can be listed with their conditions."""
+    crds = k8s_tools.get_custom_resource_definitions()
+    if not crds:
+        pytest.skip("No CustomResourceDefinitions in the cluster.")
+    for crd in crds[:5]:
+        for r in k8s_tools.get_custom_resource_status(crd.group, crd.plural):
+            assert r.kind == crd.kind

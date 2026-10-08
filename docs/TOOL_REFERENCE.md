@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Nine models have a
+them when they matter instead of carrying them on every turn. Ten models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -27,6 +27,8 @@ notes existed) give the same notes; captures don't store them.
 | `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
 | `IngressSummary` | a backend doesn't resolve | A backend doesn't resolve: see the rule's backend_problem. Requests matching that rule can't reach a pod. |
 | `IngressSummary` | a backend Service has no ready endpoints | A backend Service has no ready endpoints (backend_ready 0): requests matching that rule can't reach a pod. |
+| `CustomResourceStatus` | `observed_generation` < `generation` | observed_generation < generation: its controller hasn't yet acted on the latest spec change, so the conditions may describe the previous spec. |
+| `CustomResourceStatus` | no conditions | No status.conditions: this resource reports its state some other way, which this tool doesn't read. |
 | `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
 | `ContainerUsage` | the last instance was OOM-killed, or ended abnormally and the current one started within 10 minutes | "The last instance ended OOMKilled 6m ago; this sample is from the current one, started 58s ago." followed by: A sample averages a short window: a spike that ends in an OOM kill usually never appears in one. |
 | `ContainerUsage` | memory at 90% or more of its limit | Memory is the working set: memory in use plus recently used file cache, which the kernel reclaims before an OOM kill. Near the limit is common; it isn't proof a kill is coming. |
@@ -871,6 +873,54 @@ A list of JobSummary objects, each with the following fields:
 - **`conditions`** (`list[str]`): Status condition types currently True (e.g. ["Complete"], ["Failed"]).
 - **`age`** (`datetime.timedelta`): Age of the Job (current time minus creation timestamp).
 - **`containers`** (`list[ContainerTemplateSummary]`): The Job pod template's containers, each with name, image, and literal environment values.
+
+### `get_custom_resource_definitions`
+
+```python
+get_custom_resource_definitions() -> list[CrdSummary]
+```
+
+The custom kinds the cluster serves: the discovery step before
+`get_custom_resource_status`.
+
+#### Returns
+
+list of CrdSummary, sorted by name, each with **`name`** ("certificates.cert-manager.io"),
+**`group`**, **`kind`**, **`plural`**, **`scope`** ("Namespaced" or "Cluster"),
+**`versions`** (served ones), **`storage_version`**, **`short_names`** and **`age`**.
+
+### `get_custom_resource_status`
+
+```python
+get_custom_resource_status(group: str, plural: str, version: Optional[str] = None, namespace: Optional[str] = None) -> list[CustomResourceStatus]
+```
+
+Custom resources' health, the part of an operator's objects that matters for
+root-cause analysis: their `status.conditions` (Ready, Synced, ...) and whether
+the controller has caught up with the spec. Deliberately not the objects
+themselves. Raw custom resources can be thousands of lines each (Argo, Crossplane,
+Flux), some operators keep credentials in spec, and reading them generally needs
+wildcard permissions.
+
+#### Parameters
+
+- **`group`**, **`plural`**: from `get_custom_resource_definitions`, e.g. "cert-manager.io", "certificates".
+- **`version`**: defaults to the CRD's stored version.
+- **`namespace`**: one namespace, or all if omitted.
+
+#### Returns
+
+list of CustomResourceStatus, each with:
+
+- **`kind`**, **`name`**, **`namespace`** (None for a cluster-scoped resource), **`age`**
+- **`generation`**, **`observed_generation`** (`Optional[int]`): `status.observedGeneration`, or the highest a condition reports, as many operators record it per condition. Below `generation`, the controller hasn't acted on the latest spec change yet.
+- **`conditions`** (`list[ResourceCondition]`): `type`, `status`, `reason`, `message`, and `since` (time since its status last changed).
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+A type the server can't read raises `K8sApiError`, as does one that doesn't exist.
+Captures store each type's instances (up to 500) or, when a type wasn't readable
+with the capture's permissions, the reason, which replay raises as a live call
+would.
 
 ### `get_logs_for_job`
 

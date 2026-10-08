@@ -90,6 +90,19 @@ rules:
 - apiGroups: [networking.k8s.io]
   resources: [ingresses]
   verbs: [get, list]
+- apiGroups: [apiextensions.k8s.io]
+  resources: [customresourcedefinitions]
+  verbs: [get, list]
+```
+
+`get_custom_resource_status` also needs read access to each custom resource you
+want it to see, granted per group. Add a rule like this for each operator you
+use, rather than a wildcard:
+
+```yaml
+- apiGroups: [cert-manager.io]
+  resources: [certificates, issuers, clusterissuers]
+  verbs: [get, list]
 ```
 
 `get_cluster_info` also reads the server version (`/version`), which every
@@ -132,6 +145,8 @@ These are the tools we define:
 * `get_node_metrics` - each node's current CPU and memory use against its allocatable, like `kubectl top node`
 * `get_cronjob_summaries` - get a list of CronJobs, like `kubectl get cronjobs`
 * `get_job_summaries` - get a list of Jobs, like `kubectl get jobs`
+* `get_custom_resource_definitions` - the custom kinds the cluster serves (CRDs): group, kind, plural, scope, versions
+* `get_custom_resource_status` - custom resources' health: each instance's conditions (Ready, Synced, ...) and whether its controller has caught up with its spec. Not the objects themselves
 * `get_logs_for_job` - retrieve logs from a Job's most-recent pod
 * `get_logs_for_cronjob` - retrieve logs from a CronJob's most-recent run
 * `get_pvc_summaries` - get a list of PersistentVolumeClaims, like `kubectl get pvc` (resolves mounting pods)
@@ -159,6 +174,8 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_node_metrics`
 * `print_cronjob_summaries`
 * `print_job_summaries`
+* `print_custom_resource_definitions`
+* `print_custom_resource_status`
 * `print_pvc_summaries`
 * `print_events`
 
@@ -485,7 +502,7 @@ Everything the tools can read, so that every tool answers on replay:
 | | |
 |---|---|
 | Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
-| Cluster-wide | namespaces, nodes, and resource usage (one metrics-server sample of containers and nodes, or why metrics weren't available) |
+| Cluster-wide | namespaces, nodes, custom resource definitions and their instances' conditions (up to 500 per type), and resource usage (one metrics-server sample of containers and nodes, or why metrics weren't available) |
 | Per namespace | deployments, replica sets, services and their endpoints, ingresses, statefulsets, daemonsets, HPAs, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
