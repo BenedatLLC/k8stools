@@ -30,7 +30,7 @@ import re
 import signal
 from typing import Any, Optional
 
-from .k8s_tools import (ContainerEssentials, ContainerStateRunning, ContainerStateTerminated,
+from .k8s_tools import (ContainerEssentials, HpaSummary, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         LastChange, LOG_NOTE_PREFIX, LogTail, NamespaceHealth, Termination,
                         WorkloadHealth, WorkloadReport, _to_whole_seconds)
@@ -209,6 +209,23 @@ def _template_changed(api, kind: str, name: str, namespace: str) -> Optional[dat
     return current[0].age if current else None
 
 
+def _autoscalers(api, namespace: str) -> dict[str, HpaSummary]:
+    """HPAs by the "Kind/name" they scale."""
+    return {h.scale_target: h for h in api.get_hpa_summaries(namespace)}
+
+
+def _autoscaler_line(h: HpaSummary) -> str:
+    at_max = h.current_replicas >= h.max_replicas
+    line = (f"HPA {h.name}: {h.current_replicas} replicas (min "
+            f"{h.min_replicas if h.min_replicas is not None else 1}, max {h.max_replicas})"
+            + (", at max" if at_max else ""))
+    readings = [f"{m.name} {m.current or 'unknown'}/{m.target}" for m in h.metrics]
+    inactive = [c for c in h.conditions if c.type == "ScalingActive" and c.status == "False"]
+    if inactive:
+        readings.append(f"not scaling: {inactive[0].reason}")
+    return line + ("; " + ", ".join(readings) if readings else "")
+
+
 def _lifetimes(terminations: list[Termination]) -> str:
     """The range of instance lifetimes in a group, e.g. "lifetimes 2s-20s"."""
     known = sorted(t.instance_lifetime for t in terminations if t.instance_lifetime is not None)
@@ -224,6 +241,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     now = _now()
     workloads = _workloads(api, namespace)
     grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads)
+    autoscalers = _autoscalers(api, namespace)
     entries: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
 
@@ -240,14 +258,18 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         last = _latest(terminations)
         failed_job = kind == "Job" and last is not None and last.exit_code not in (0, None)
         restarts = sum(p.restarts for p in pods) if pods or not desired else None
+        hpa = autoscalers.get(label)
         if ready >= desired and not waiting and not failed_job:
+            at_max = hpa is not None and hpa.current_replicas >= hpa.max_replicas
             healthy_lines.append(f"{label} {ready}/{desired}"
-                                 + (f", {restarts} restarts" if restarts else ""))
+                                 + (f", {restarts} restarts" if restarts else "")
+                                 + (f", HPA at max {hpa.max_replicas}" if at_max else ""))
             return
         w = WorkloadHealth(
             workload=label, ready=ready, desired=desired, restarts=restarts,
             last_termination=last, memory=_memory_shape(first_pod),
-            template_changed=_template_changed(api, kind, name, namespace) if kind else None)
+            template_changed=_template_changed(api, kind, name, namespace) if kind else None,
+            autoscaler=_autoscaler_line(hpa) if hpa else None)
         if restarts is None:
             w.notes.append("None of its pods could be found, so its restarts and "
                            "terminations are unknown.")
@@ -495,6 +517,7 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                 f"The pod template last changed {_human(current.age)} ago. That is when "
                 "it changed, not how long the workload has been healthy.")
         report.config = history.config
+    report.autoscaler = _autoscalers(api, namespace).get(f"{kind}/{name}")
 
     if any(i.last_termination for i in report.instances):
         report.notes.append(

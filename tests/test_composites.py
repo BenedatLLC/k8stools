@@ -247,7 +247,7 @@ def test_namespace_health_on_the_mock_fixture():
     assert ad.workload == "Deployment/ad" and not ad.healthy
     assert ad.last_termination.reason == "OOMKilled"
     assert ad.template_changed == datetime.timedelta(hours=7, minutes=34)
-    assert h.healthy == ["DaemonSet/otel-collector-agent 1/1", "Deployment/test-deployment 3/3",
+    assert h.healthy == ["DaemonSet/otel-collector-agent 1/1", "Deployment/test-deployment 3/3, HPA at max 3",
                          "Job/cleanup-28999999 1/1", "Pod/test-pod-123 2/2", "StatefulSet/postgres 1/1"]
     assert h.common_failures == []  # only one workload is failing
 

@@ -10,8 +10,26 @@ dates are release-tag dates.
   credentials embedded in args, flags and URLs.
 - [#13](https://github.com/BenedatLLC/k8stools/issues/13): RCA-oriented composite
   tools: namespace health and workload report.
+- [#14](https://github.com/BenedatLLC/k8stools/issues/14): Add get_hpa_summaries
+  (HorizontalPodAutoscaler, autoscaling/v2).
 
 ### Added
+- **`get_hpa_summaries`** (issue #14): HorizontalPodAutoscalers from
+  `autoscaling/v2`, with:
+  - the scale target as `"Kind/name"`, which joins with `owner` and
+    `get_workload_history`;
+  - min, max, current and desired replicas;
+  - each metric's current value against its target, in the target's terms
+    (`92%` of `80%`, `150Mi (average)`);
+  - the `AbleToScale` / `ScalingActive` / `ScalingLimited` conditions, with the
+    time since each changed;
+  - the time since it last scaled;
+  - a note when it's at `maxReplicas`.
+
+  `print_hpa_summaries` is its companion. Captures store HPAs; older captures
+  replay none. The composites show a workload's autoscaler (`get_namespace_health`
+  flags a healthy workload "HPA at max"; `get_workload_report` includes the HPA),
+  and the `--mock` fixture's `test-deployment` has one, at its maximum.
 - **`get_namespace_health` and `get_workload_report`** (issue #13), composite
   tools for investigation.
   - **`get_namespace_health`:** a full entry per unhealthy workload, and one line
@@ -55,6 +73,8 @@ dates are release-tag dates.
   hold the credentials below in full.
 
 ### Changed
+- **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling). The
+  README's role includes it.
 - **Tool descriptions are a few lines each** (issue #20): what the tool answers,
   its parameters, and at most one warning. Together they went from 47,946
   characters to about 5,000, which is roughly 11,000 fewer tokens on every turn

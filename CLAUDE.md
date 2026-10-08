@@ -34,6 +34,7 @@ tests/
   test_toolsets.py           - Toolsets: named subsets, include/exclude, server flags
   test_notes.py              - Description budgets, notes on results and logs, notes in replay
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
+  test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -171,7 +172,7 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 A tool's docstring is its MCP description, sent to the model on every turn of
 every agent that has the tool. Keep it to what question the tool answers, its
 parameters, and at most one warning: `tests/test_notes.py` holds each to 700
-characters and all of them to 6,000. The field-by-field reference lives in
+characters, their average to 300, and the `triage` toolset to 2,000. The field-by-field reference lives in
 `docs/TOOL_REFERENCE.md`, maintained by hand; update it with the code.
 
 A warning that applies to particular results goes in those results:

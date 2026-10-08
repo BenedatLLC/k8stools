@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Five models have a
+them when they matter instead of carrying them on every turn. Six models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -23,6 +23,7 @@ notes existed) give the same notes; captures don't store them.
 | `ContainerStatus` | waiting after a restart | Waiting with no running instance: its logs, with previous=False or True, are the last terminated instance's. |
 | `ContainerStatus` | `last_state` has `ran_for` | last_state.ran_for is how long that instance ran; restarts are further apart, by the back-off between its finished_at and the next start. |
 | `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
+| `HpaSummary` | at `max_replicas` | At maxReplicas: it can't add replicas, whatever its metrics say. See the ScalingLimited condition. |
 
 `get_workload_history` returns its caveats in the result's `limits` list.
 
@@ -614,6 +615,42 @@ A list of DaemonSetSummary objects, each with the following fields:
 - **`images`** (`list[str]`): Container images of the current pod template, in container order. A pod running a different image is from an earlier revision.
 - **`age`** (`datetime.timedelta`): Age of the DaemonSet (current time minus creation timestamp).
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_hpa_summaries`
+
+```python
+get_hpa_summaries(namespace: Optional[str] = None) -> list[HpaSummary]
+```
+
+HorizontalPodAutoscalers, from `autoscaling/v2` (the v1 API has no per-metric
+status): like `kubectl get hpa` and the condition and metric detail of `kubectl
+describe hpa`. Answers "why did this scale, or not?", which workload history
+can't: replica counts and autoscaling aren't part of a pod template.
+
+When it scaled is in its events: `get_events(involved_kind="HorizontalPodAutoscaler")`
+returns its `SuccessfulRescale` events, with counts.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+list of HpaSummary, each with:
+
+- **`name`**, **`namespace`** (`str`)
+- **`scale_target`** (`str`): what it scales, as "Kind/name" (e.g. "Deployment/cart"), the same form as `PodSummary.owner`, so it joins with `get_workload_history`.
+- **`min_replicas`** (`Optional[int]`): None means the API default, 1.
+- **`max_replicas`**, **`current_replicas`**, **`desired_replicas`** (`int`)
+- **`metrics`** (`list[HpaMetric]`): one per metric it scales on:
+  - **`type`**: Resource, ContainerResource, Pods, Object or External.
+  - **`name`**: e.g. "cpu", "memory (container app)", "requests_per_second on Ingress/main".
+  - **`target`**: "80%" (average utilization, as a percentage of the pods' requests), "500m (average)" (average value per pod) or "10k" (total value).
+  - **`current`**: the current reading in the target's own terms; None when the HPA has none (e.g. metrics unavailable, see ScalingActive).
+- **`conditions`** (`list[HpaCondition]`): `type`, `status`, `reason`, `message`, and `since` (time since its status last changed). `AbleToScale`, `ScalingActive` (False: it can't compute a scale, often missing metrics) and `ScalingLimited` (True: the desired count was capped at min or max; the reason says which).
+- **`last_scale`** (`Optional[timedelta]`): time since it last changed the replica count.
+- **`age`** (`timedelta`)
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 
 ### `get_cronjob_summaries`
 
