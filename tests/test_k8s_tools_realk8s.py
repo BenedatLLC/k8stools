@@ -866,3 +866,39 @@ def test_workload_history_for_statefulsets_and_daemonsets():
 def test_workload_history_of_a_missing_workload_raises():
     with pytest.raises(k8s_tools.K8sApiError, match="not found"):
         k8s_tools.get_workload_history("no-such-deployment-k8stools-test", "default")
+
+
+def test_namespace_health_agrees_with_the_raw_tools():
+    """Issue #13: one entry per workload, unhealthy first, consistent with
+    the summaries it's built from."""
+    namespace = "default"
+    health = k8s_tools.get_namespace_health(namespace)
+    deployments = {f"Deployment/{d.name}": d for d in k8s_tools.get_deployment_summaries(namespace)}
+    names = [w.workload for w in health.workloads]
+    assert set(deployments) <= set(names)
+    healthy = [w.healthy for w in health.workloads]
+    assert healthy == sorted(healthy)  # unhealthy (False) first
+    for w in health.workloads:
+        if w.workload in deployments:
+            d = deployments[w.workload]
+            assert (w.ready, w.desired) == (d.ready_replicas, d.total_replicas)
+        if not w.healthy and w.last_termination and w.last_termination.exit_code is not None:
+            assert w.last_termination.exit_meaning
+    for group in health.common_failures:
+        assert len(group.workloads) >= 2
+
+
+def test_workload_report_for_the_least_healthy_workload():
+    health = k8s_tools.get_namespace_health("default")
+    candidates = [w for w in health.workloads if not w.workload.startswith("Pod/")]
+    if not candidates:
+        pytest.skip("No workloads in the default namespace.")
+    kind, _, name = candidates[0].workload.partition("/")
+    report = k8s_tools.get_workload_report(name, "default", kind, log_lines=5)
+    assert report.workload == candidates[0].workload
+    assert report.instances and report.containers
+    for tail in report.logs:
+        assert len(tail.lines) <= 5
+        assert not any(l.startswith(k8s_tools.LOG_NOTE_PREFIX) for l in tail.lines)
+    if kind != "Job":
+        assert report.last_change is not None

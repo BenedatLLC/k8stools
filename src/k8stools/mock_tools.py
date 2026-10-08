@@ -12,6 +12,7 @@ synthesized answers, the tools agree with each other: a pod that is not in the
 capture does not exist for *any* tool, and a pod that is has consistent statuses,
 events, spec and logs.
 """
+import sys
 from pathlib import Path
 from typing import Optional, Any
 
@@ -207,8 +208,24 @@ def get_events(namespace: Optional[str] = None,
 get_events.__doc__ = k8s_tools.get_events.__doc__
 
 
+def get_namespace_health(namespace: str = "default") -> k8s_tools.NamespaceHealth:
+    from .composites import namespace_health
+    return namespace_health(sys.modules[__name__], namespace)
+
+get_namespace_health.__doc__ = k8s_tools.get_namespace_health.__doc__
+
+
+def get_workload_report(name: str, namespace: str = "default", kind: Optional[str] = None,
+                        log_lines: int = 20, grep: Optional[str] = None) -> k8s_tools.WorkloadReport:
+    from .composites import workload_report
+    return workload_report(sys.modules[__name__], name, namespace, kind, log_lines, grep)
+
+get_workload_report.__doc__ = k8s_tools.get_workload_report.__doc__
+
 TOOLS = [
     get_cluster_info,
+    get_namespace_health,
+    get_workload_report,
     get_namespaces,
     get_node_summaries,
     get_pod_summaries,

@@ -8,15 +8,43 @@ dates are release-tag dates.
 ### Issues fixed
 - [#12](https://github.com/BenedatLLC/k8stools/issues/12): Redaction misses
   credentials embedded in args, flags and URLs.
+- [#13](https://github.com/BenedatLLC/k8stools/issues/13): RCA-oriented composite
+  tools: namespace health and workload report.
 
 ### Added
+- **`get_namespace_health` and `get_workload_report`** (issue #13), composite
+  tools for investigation.
+  - **`get_namespace_health`:** one compact entry per workload, unhealthy first:
+    - ready/desired and restarts;
+    - the last termination, with the exit code's fixed meaning beside Kubernetes'
+      recorded reason, noted when they disagree (137 without OOMKilled);
+    - the instance lifetime and the restart gap (the back-off), from container
+      status;
+    - memory limit against request;
+    - when the pod template last changed.
+
+    Workloads failing the same way are grouped.
+  - **`get_workload_report`:** one workload in one call:
+    - container images, resources and probes;
+    - each instance's state and last termination;
+    - events, deduplicated across its pods;
+    - current and previous log tails of its most troubled pod, with an optional
+      grep;
+    - the last template change, and the ConfigMaps and Secrets it uses.
+
+  Both are built from the other tools, so they replay from any capture, and they
+  state facts, not diagnoses. Output is bounded and empty fields are omitted.
+  They replace `get_pod_summaries` and `get_workload_history` in the `triage`
+  toolset, which is now `get_cluster_info`, `get_namespace_health`,
+  `get_workload_report`, `get_events` and `get_node_summaries`.
 - **Toolsets** (issue #20). `k8s-mcp-server --toolset triage|investigate|all`
   serves a named subset of the tools, adjustable with `--include TOOL` and
   `--exclude TOOL`; `k8s_tools.TOOLSETS` / `select_tools` do the same in Python.
   `investigate` leaves out the four tools another tool already covers
   (`get_pod_events`, `get_replicaset_summaries`, `get_logs_for_job`,
-  `get_logs_for_cronjob`), which stay in `all` and in the library. The default
-  is still `all`.
+  `get_logs_for_cronjob`), which stay in `all` and in the library. `triage` is
+  the composite tools plus cluster info, events and nodes. The default is still
+  `all`.
 - **`k8s-capture-state --redact-file FILE`** re-runs redaction over an existing
   capture and rewrites it in place, keeping its compression. Use it on captures
   taken with `--no-redact`, or before this release's rules: captures from 2.x can

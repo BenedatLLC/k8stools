@@ -71,6 +71,75 @@ An object with the following fields:
 - **`server_version`** (`Optional[str]`): Kubernetes version reported by the API server, e.g. "v1.31.2". None if the server could not be reached, or the capture did not record it.
 - **`captured_at`** (`Optional[datetime.datetime]`): For a capture, when it was taken; every age and timestamp the tools return is relative to that moment. None for a live cluster.
 
+### `get_namespace_health`
+
+```python
+get_namespace_health(namespace: str = 'default') -> NamespaceHealth
+```
+
+What is wrong in a namespace, and where, in one call: one entry per workload
+(Deployment, StatefulSet, DaemonSet, Job, and pods nothing owns), unhealthy
+first. Built from the other tools, so it answers the same way from a replayed
+capture. It states facts and fixed Kubernetes semantics, never a diagnosis.
+
+Restart cadence comes from container status, not event counts: event records lag
+what they count (see `get_events`), so an event-derived rate is an average over
+the record, not the current rhythm.
+
+#### Returns
+
+- **`namespace`** (`str`)
+- **`workloads`** (`list[WorkloadHealth]`): unhealthy first, then by name. Each has:
+  - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
+  - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
+  - **`restarts`** (`int`): container restarts across the workload's pods.
+  - **`healthy`** (`bool`): all desired pods ready, no container waiting, and (for a Job) no failed exit.
+  - **`last_termination`** (`Termination`, unhealthy workloads only): the most recent termination across its pods and containers:
+    - **`pod`**, **`container`**
+    - **`exit_code`** and **`exit_meaning`**: the code's fixed meaning, e.g. 137 is "killed by SIGKILL (128+9)".
+    - **`reason`**: Kubernetes' recorded reason (OOMKilled, Error, Completed, ...), shown beside the exit code; a note says when the two disagree (137 without OOMKilled).
+    - **`instance_lifetime`**: how long that instance ran.
+    - **`finished`**: time since it finished.
+    - **`restart_gap`**: the back-off from finishing to the next start, or, while the container is still waiting, the wait so far. Restarts are lifetime + gap apart.
+    - **`waiting`**: the current waiting reason, e.g. CrashLoopBackOff.
+  - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ.
+  - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
+  - **`notes`** (`list[str]`)
+- **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads with the same signature: exit code and meaning, reason, instance-lifetime band (under 10s, 10s-1m, 1-5m, 5-30m, over 30m) and memory shape. A shared signature is a fact worth checking for a common cause; it is not a conclusion.
+- **`notes`** (`list[str]`)
+
+Empty fields are left out of the result.
+
+### `get_workload_report`
+
+```python
+get_workload_report(name: str, namespace: str = 'default', kind: Optional[str] = None, log_lines: int = 20, grep: Optional[str] = None) -> WorkloadReport
+```
+
+Everything about one workload in one call: what an agent otherwise gathers from
+container statuses, events, logs, the pod spec and workload history. Built from
+those tools, so it answers the same way from a replayed capture.
+
+#### Parameters
+
+- **`name`**, **`namespace`**: the workload.
+- **`kind`**: Deployment, StatefulSet, DaemonSet or Job. Found by name if omitted; an error if the name is ambiguous.
+- **`log_lines`**: lines per log tail, at most 100. Lines longer than 300 characters are cut.
+- **`grep`**: keep only log lines matching this regular expression (case-insensitive; a plain substring if it isn't a valid regex), then take the last `log_lines`.
+
+#### Returns
+
+- **`workload`**, **`ready`**, **`desired`**
+- **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured").
+- **`instances`** (`list[Instance]`): every pod's containers now: `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
+- **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
+- **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that the text is the kubelet's message, not container output) is moved into the tail's `notes`.
+- **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
+- **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
+- **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers and logs come from, and an exit code / reason disagreement.
+
+Empty fields are left out of the result.
+
 ### `get_namespaces`
 
 ```python

@@ -25,6 +25,8 @@ of tools provided here:
 
 These are the tools we define:
 
+* get_namespace_health - what is wrong in a namespace, one line per workload
+* get_workload_report - everything about one workload in one call
 * get_namespaces - get a list of namespaces, like `kubectl get namespace`
 * get_node_summaries - get a list of nodes, like `kubectl get nodes -o wide`
 * get_pod_summaries - get a list of pods, like `kubectl get pods -o wide`

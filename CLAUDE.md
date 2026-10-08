@@ -7,6 +7,7 @@ Kubernetes monitoring tools for AI agents, exposed as direct Python functions or
 ```
 src/k8stools/
   k8s_tools.py   - Core tools: Kubernetes API wrappers with Pydantic return types
+  composites.py  - Logic of the composite tools (get_namespace_health, get_workload_report)
   mock_state.py  - MockState: loads a capture file and serves it to the tool queries
   capture.py     - `k8s-capture-state` CLI: snapshots a live cluster to a capture file
   mock_tools.py  - Mock versions of all tools; thin delegates to MockState
@@ -32,6 +33,7 @@ tests/
   test_workload_history.py   - get_workload_history: template diffs, revisions, config refs, no env values or Secret reads, replay
   test_toolsets.py           - Toolsets: named subsets, include/exclude, server flags
   test_notes.py              - Description budgets, notes on results and logs, notes in replay
+  test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -131,6 +133,29 @@ during CrashLoopBackOff, a restart shifting the window between two calls, and a
 reclaimed log file answering 200 with `unable to retrieve container logs`). Two are
 detected and noted in the log itself (below); all three are in README's
 "Previous-instance log semantics" and `docs/TOOL_REFERENCE.md`. Don't "fix" them in code.
+
+### Composite tools (#13)
+
+`get_namespace_health` and `get_workload_report` give in one call what an agent
+otherwise assembles from five or six. Rules that keep them trustworthy:
+
+- **Built only from the tool functions**, passed in as `api` (`k8s_tools`,
+  `mock_tools`, or a `MockState` in tests), so they answer identically live and
+  from any capture and need nothing in the capture format. Their models live in
+  `k8s_tools.py` with the others; the logic is in `composites.py`, imported when
+  a tool is called (importing it at load time made a cycle).
+- **Facts and fixed Kubernetes semantics only.** Exit-code meanings, the
+  exit-137-without-OOMKilled disagreement, what an event window is, that a
+  template's age isn't how long it's been healthy. No ranked causes, no "this
+  was an OOM". A shared failure signature is grouped, not explained.
+- **Restart cadence from container status, never event counts** (event records
+  lag): `instance_lifetime` is `ran_for`; `restart_gap` is finished-to-next-start,
+  or the wait so far.
+- **Bounded:** compact models (`_Compact` drops empty fields; the server sends a
+  result twice), at most 20 events and 100 log lines of 300 characters; tests
+  hold the namespace view and reports to budgets on the `--mock` fixture.
+- New data sources (HPA, endpoints, metrics: #14-#16) extend `WorkloadHealth`
+  and `WorkloadReport` with fields, rather than adding tools to `triage`.
 
 ### Descriptions and notes (#20)
 

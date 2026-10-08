@@ -147,7 +147,8 @@ def test_optional_duration_fields_still_accept_none(model):
         pytest.skip(f"{model.__name__} has no optional duration field")
     dumped = _build(model, FRACTIONAL, {n: None for n in optional}).model_dump(mode="json")
     for name in optional:
-        assert dumped[name] is None
+        # Absent counts too: the composite models (#13) leave empty fields out.
+        assert dumped.get(name) is None
 
 
 # --- end to end, over the actual tool surface -------------------------------
