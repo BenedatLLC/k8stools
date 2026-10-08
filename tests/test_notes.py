@@ -21,10 +21,13 @@ from k8stools.mock_state import CAPTURE_VERSION, MockState, encode_model
 UTC = datetime.timezone.utc
 NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 
-#: Per-tool and total budgets for descriptions, in characters. 2.4.0's were
-#: 61-4461 per tool and 47,946 in all, about 12,000 tokens on every turn.
+#: Description budgets, in characters. 2.4.0's were 61-4461 per tool and 47,946
+#: in all, about 12,000 tokens on every turn. The total grows with the tools, so
+#: it's held as an average; the triage toolset, which agents carry on every
+#: turn of a coordinator, has a budget of its own.
 DESCRIPTION_BUDGET = 700
-TOTAL_DESCRIPTION_BUDGET = 6000
+AVERAGE_DESCRIPTION_BUDGET = 300
+TRIAGE_DESCRIPTION_BUDGET = 2000
 
 
 # --- descriptions --------------------------------------------------------------
@@ -36,8 +39,13 @@ def test_each_description_is_within_budget(tool):
         f"docs/TOOL_REFERENCE.md or into the result's notes"
 
 
-def test_all_descriptions_together_are_within_budget():
-    assert sum(len(t.__doc__) for t in k8s_tools.TOOLS) <= TOTAL_DESCRIPTION_BUDGET
+def test_descriptions_average_within_budget():
+    total = sum(len(t.__doc__) for t in k8s_tools.TOOLS)
+    assert total / len(k8s_tools.TOOLS) <= AVERAGE_DESCRIPTION_BUDGET
+
+
+def test_the_triage_toolset_is_within_budget():
+    assert sum(len(t.__doc__) for t in k8s_tools.TOOLSETS["triage"]) <= TRIAGE_DESCRIPTION_BUDGET
 
 
 def test_every_tool_is_in_the_reference():

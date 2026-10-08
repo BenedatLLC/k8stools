@@ -186,6 +186,7 @@ def capture_state(namespaces: Optional[list[str]] = None,
         "configmaps": [],
         "statefulsets": [],
         "daemonsets": [],
+        "hpas": [],
         "workload_histories": [],
         "cronjobs": [],
         "jobs": [],
@@ -202,6 +203,7 @@ def capture_state(namespaces: Optional[list[str]] = None,
         state["statefulsets"] += _encode_all(redactor(statefulsets), captured_at)
         daemonsets = k8s_tools.get_daemonset_summaries(ns)
         state["daemonsets"] += _encode_all(redactor(daemonsets), captured_at)
+        state["hpas"] += _encode_all(redactor(k8s_tools.get_hpa_summaries(ns)), captured_at)
         # The tool's own result, not raw templates: replay serves it as is, and
         # env values never reach the file.
         for kind, workloads in (("Deployment", deployments), ("StatefulSet", statefulsets),

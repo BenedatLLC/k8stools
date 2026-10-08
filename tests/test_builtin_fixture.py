@@ -214,3 +214,24 @@ def test_every_workload_has_a_history_that_agrees_with_it(state):
                 assert ref.exists == (cm is not None), ref.name
                 if cm is not None:
                     assert ref.age == cm.age and ref.last_written <= ref.age
+
+
+def test_every_hpa_scales_a_workload_that_agrees_with_it(state):
+    """Its target exists with the replicas it reports, and a utilization
+    target has CPU requests to be a percentage of."""
+    deployments = {(d.namespace, d.name): d for d in state.get_deployment_summaries()}
+    hpas = state.get_hpa_summaries()
+    assert hpas
+    for h in hpas:
+        kind, _, name = h.scale_target.partition("/")
+        assert kind == "Deployment" and (h.namespace, name) in deployments, h.name
+        d = deployments[(h.namespace, name)]
+        assert h.current_replicas == d.total_replicas
+        assert (h.min_replicas or 1) <= h.current_replicas <= h.max_replicas
+        assert all(c.since <= h.age for c in h.conditions if c.since is not None)
+        if any(m.target and m.target.endswith("%") for m in h.metrics):
+            pods = [p for p in state.get_pod_summaries(h.namespace)
+                    if p.owner and p.owner.startswith(f"ReplicaSet/{name}-")]
+            assert pods and all(s.resource_requests.get("cpu")
+                                for p in pods
+                                for s in state.get_pod_container_statuses(p.name, p.namespace))

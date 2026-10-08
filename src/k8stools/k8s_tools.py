@@ -29,6 +29,7 @@ from kubernetes.client.models.v1_container_status import V1ContainerStatus
 K8S:Optional[client.CoreV1Api] = None
 APPS_V1_API:Optional[client.AppsV1Api] = None
 BATCH_V1_API:Optional[client.BatchV1Api] = None
+AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -159,10 +160,10 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
         If there is no selection and neither a kubeconfig nor in-cluster config
         can be loaded.
     """
-    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API
+    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API
     binding = _resolve_binding(kubeconfig, context)
     _BINDING = binding
-    K8S = APPS_V1_API = BATCH_V1_API = None
+    K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = None
     return binding.describe()
 
 
@@ -189,6 +190,10 @@ def _get_apps_v1_api_client() -> client.AppsV1Api:
 
 def _get_batch_v1_api_client() -> client.BatchV1Api:
     return client.BatchV1Api(_binding().api_client)
+
+
+def _get_autoscaling_v2_api_client() -> client.AutoscalingV2Api:
+    return client.AutoscalingV2Api(_binding().api_client)
 
 
 def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
@@ -306,6 +311,9 @@ NOTE_CONTAINER_RAN_FOR = (
 NOTE_CONTAINER_WAITING = (
     "Waiting with no running instance: its logs, with previous=False or True, are "
     "the last terminated instance's.")
+NOTE_HPA_AT_MAX = (
+    "At maxReplicas: it can't add replicas, whatever its metrics say. See the "
+    "ScalingLimited condition.")
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
@@ -2084,6 +2092,163 @@ def print_daemonset_summaries(namespace: Optional[str] = None) -> None:
               f"{selector:<28} {age:<12}")
 
 
+class HpaMetric(BaseModel):
+    """One metric an autoscaler scales on, with its target and current value."""
+    #: Resource, ContainerResource, Pods, Object or External.
+    type: str
+    #: e.g. "cpu", "memory (container app)", "requests_per_second on Ingress/main".
+    name: str
+    #: "80%" (average utilization of requests), "500m (average)" or "10k".
+    target: Optional[str] = None
+    #: In the target's terms; None when the HPA has no current reading.
+    current: Optional[str] = None
+
+
+class HpaCondition(BaseModel):
+    """An HPA condition: AbleToScale, ScalingActive or ScalingLimited."""
+    type: str
+    status: str
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    #: Time since its status last changed.
+    since: Optional[Duration] = None
+
+
+class HpaSummary(BaseModel):
+    """A HorizontalPodAutoscaler, like `kubectl get hpa` and `kubectl describe hpa`."""
+    name: str
+    namespace: str
+    #: "Kind/name", the same form as PodSummary.owner, e.g. "Deployment/cart".
+    scale_target: str
+    min_replicas: Optional[int] = None
+    max_replicas: int
+    current_replicas: int
+    desired_replicas: int
+    metrics: list[HpaMetric] = Field(default_factory=list)
+    conditions: list[HpaCondition] = Field(default_factory=list)
+    #: Time since it last changed the replica count.
+    last_scale: Optional[Duration] = None
+    age: Duration
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "HpaSummary":
+        self.notes = [NOTE_HPA_AT_MAX] if self.current_replicas >= self.max_replicas else []
+        return self
+
+
+def _hpa_target(target) -> Optional[str]:
+    if target is None:
+        return None
+    if getattr(target, "average_utilization", None) is not None:
+        return f"{target.average_utilization}%"
+    if getattr(target, "average_value", None) is not None:
+        return f"{target.average_value} (average)"
+    if getattr(target, "value", None) is not None:
+        return str(target.value)
+    return None
+
+
+def _hpa_current(reading, target) -> Optional[str]:
+    """A current reading in its target's own terms: utilization against a
+    utilization target, average value against an average-value target."""
+    if reading is None:
+        return None
+    if target is not None:
+        for field, shown in (("average_utilization", "{}%"), ("average_value", "{} (average)"),
+                             ("value", "{}")):
+            if getattr(target, field, None) is not None and getattr(reading, field, None) is not None:
+                return shown.format(getattr(reading, field))
+    return _hpa_target(reading)
+
+
+def _hpa_metric_key(metric) -> tuple[str, str]:
+    """(type, display name) for a metric spec or status entry."""
+    kind = metric.type
+    if kind == "Resource" and metric.resource:
+        return kind, metric.resource.name
+    if kind == "ContainerResource" and metric.container_resource:
+        return kind, f"{metric.container_resource.name} (container {metric.container_resource.container})"
+    if kind == "Pods" and metric.pods:
+        return kind, metric.pods.metric.name
+    if kind == "Object" and metric.object:
+        ref = metric.object.described_object
+        return kind, f"{metric.object.metric.name} on {ref.kind}/{ref.name}"
+    if kind == "External" and metric.external:
+        return kind, metric.external.metric.name
+    return kind, kind
+
+
+def _hpa_source(metric):
+    attr = {"Resource": "resource", "ContainerResource": "container_resource", "Pods": "pods",
+            "Object": "object", "External": "external"}.get(metric.type)
+    return getattr(metric, attr, None) if attr else None
+
+
+def get_hpa_summaries(namespace: Optional[str] = None) -> list[HpaSummary]:
+    """HorizontalPodAutoscalers (autoscaling/v2): scale target, min/max/current/
+    desired replicas, each metric's current value against its target,
+    conditions (AbleToScale, ScalingActive, ScalingLimited) with time since each
+    changed, and time since it last scaled. namespace: one, or all if omitted.
+    When it scaled: get_events(involved_kind="HorizontalPodAutoscaler")."""
+    global AUTOSCALING_V2_API
+    if AUTOSCALING_V2_API is None:
+        AUTOSCALING_V2_API = _get_autoscaling_v2_api_client()
+    logging.info(f"get_hpa_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            hpas = AUTOSCALING_V2_API.list_namespaced_horizontal_pod_autoscaler(namespace=namespace).items
+        else:
+            hpas = AUTOSCALING_V2_API.list_horizontal_pod_autoscaler_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching horizontal pod autoscalers: {e}") from e
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries: list[HpaSummary] = []
+    for hpa in hpas:
+        spec, status = hpa.spec, hpa.status
+        current = {}
+        for m in (getattr(status, "current_metrics", None) or []):
+            source = _hpa_source(m)
+            current[_hpa_metric_key(m)] = getattr(source, "current", None) if source else None
+        metrics = []
+        for m in (spec.metrics or []):
+            key = _hpa_metric_key(m)
+            source = _hpa_source(m)
+            target = getattr(source, "target", None) if source else None
+            metrics.append(HpaMetric(type=key[0], name=key[1], target=_hpa_target(target),
+                                     current=_hpa_current(current.get(key), target)))
+        conditions = [HpaCondition(
+            type=c.type, status=c.status, reason=c.reason, message=c.message,
+            since=now - c.last_transition_time if c.last_transition_time else None)
+            for c in (getattr(status, "conditions", None) or [])]
+        ref = spec.scale_target_ref
+        last_scale = getattr(status, "last_scale_time", None)
+        summaries.append(HpaSummary(
+            name=hpa.metadata.name, namespace=hpa.metadata.namespace,
+            scale_target=f"{ref.kind}/{ref.name}",
+            min_replicas=spec.min_replicas, max_replicas=spec.max_replicas,
+            current_replicas=getattr(status, "current_replicas", None) or 0,
+            desired_replicas=getattr(status, "desired_replicas", None) or 0,
+            metrics=metrics, conditions=conditions,
+            last_scale=now - last_scale if last_scale else None,
+            age=now - hpa.metadata.creation_timestamp if hpa.metadata.creation_timestamp
+            else datetime.timedelta(0)))
+    return summaries
+
+
+def print_hpa_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_hpa_summaries and prints the output to stdout, like `kubectl get hpa`."""
+    summaries = get_hpa_summaries(namespace)
+    print(f"{'NAME':<28} {'NAMESPACE':<16} {'REFERENCE':<32} {'TARGETS':<28} "
+          f"{'MIN':<4} {'MAX':<4} {'REPLICAS':<9} {'AGE':<10}")
+    for h in summaries:
+        targets = ", ".join(f"{m.current or '<unknown>'}/{m.target}" for m in h.metrics) or "<none>"
+        print(f"{h.name:<28} {h.namespace:<16} {h.scale_target:<32} {targets:<28} "
+              f"{h.min_replicas if h.min_replicas is not None else 1:<4} {h.max_replicas:<4} "
+              f"{h.current_replicas:<9} {_format_timedelta(h.age):<10}")
+
+
 class ContainerTemplateSummary(BaseModel):
     """A container as declared in a pod template (e.g. inside a CronJob or Job),
     with just the image and literal environment values that matter for RCA."""
@@ -2571,6 +2736,9 @@ class WorkloadHealth(_Compact):
     memory: Optional[str] = None
     #: Time since the pod template last changed (the current revision's age).
     template_changed: Optional[Duration] = None
+    #: Its HorizontalPodAutoscaler, in a line, e.g. "HPA cart: 3 replicas (min 1,
+    #: max 3), at max; cpu 92%/80%".
+    autoscaler: Optional[str] = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2654,6 +2822,8 @@ class WorkloadReport(_Compact):
     logs: list[LogTail] = Field(default_factory=list)
     last_change: Optional[LastChange] = None
     config: list[ConfigReference] = Field(default_factory=list)
+    #: Its HorizontalPodAutoscaler, if one scales it.
+    autoscaler: Optional[HpaSummary] = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2698,6 +2868,7 @@ TOOLS = [
     get_configmap,
     get_statefulset_summaries,
     get_daemonset_summaries,
+    get_hpa_summaries,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

@@ -121,6 +121,12 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
 get_replicaset_summaries.__doc__ = k8s_tools.get_replicaset_summaries.__doc__
 
 
+def get_hpa_summaries(namespace: Optional[str] = None) -> list[k8s_tools.HpaSummary]:
+    return _state().get_hpa_summaries(namespace)
+
+get_hpa_summaries.__doc__ = k8s_tools.get_hpa_summaries.__doc__
+
+
 def get_workload_history(name: str, namespace: str = "default",
                          kind: str = "Deployment") -> k8s_tools.WorkloadHistory:
     return _state().get_workload_history(name, namespace, kind)
@@ -241,6 +247,7 @@ TOOLS = [
     get_configmap,
     get_statefulset_summaries,
     get_daemonset_summaries,
+    get_hpa_summaries,
     get_cronjob_summaries,
     get_job_summaries,
     get_logs_for_job,

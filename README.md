@@ -78,6 +78,9 @@ rules:
 - apiGroups: [batch]
   resources: [jobs, cronjobs]
   verbs: [get, list]
+- apiGroups: [autoscaling]
+  resources: [horizontalpodautoscalers]
+  verbs: [get, list]
 ```
 
 `get_cluster_info` also reads the server version (`/version`), which every
@@ -113,6 +116,7 @@ These are the tools we define:
 * `get_configmap` - retrieve the full contents of a single ConfigMap
 * `get_statefulset_summaries` - get a list of StatefulSets, like `kubectl get statefulsets`
 * `get_daemonset_summaries` - get a list of DaemonSets, like `kubectl get daemonsets -o wide` (includes node selector and images)
+* `get_hpa_summaries` - get HorizontalPodAutoscalers (autoscaling/v2), like `kubectl get hpa` plus `describe`: scale target, min/max/current/desired replicas, each metric's current value against its target, and the AbleToScale / ScalingActive / ScalingLimited conditions
 * `get_cronjob_summaries` - get a list of CronJobs, like `kubectl get cronjobs`
 * `get_job_summaries` - get a list of Jobs, like `kubectl get jobs`
 * `get_logs_for_job` - retrieve logs from a Job's most-recent pod
@@ -135,6 +139,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_configmap`
 * `print_statefulset_summaries`
 * `print_daemonset_summaries`
+* `print_hpa_summaries`
 * `print_cronjob_summaries`
 * `print_job_summaries`
 * `print_pvc_summaries`
@@ -464,7 +469,7 @@ Everything the tools can read, so that every tool answers on replay:
 |---|---|
 | Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
 | Cluster-wide | namespaces, nodes |
-| Per namespace | deployments, replica sets, services, statefulsets, daemonsets, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
+| Per namespace | deployments, replica sets, services, statefulsets, daemonsets, HPAs, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
 

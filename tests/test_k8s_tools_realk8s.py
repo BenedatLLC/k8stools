@@ -907,3 +907,15 @@ def test_workload_report_for_the_least_healthy_workload():
         assert not any(l.startswith(k8s_tools.LOG_NOTE_PREFIX) for l in tail.lines)
     if kind != "Job":
         assert report.last_change is not None
+
+
+def test_hpa_summaries():
+    """Issue #14: every HPA names a target, with replicas within its bounds."""
+    hpas = k8s_tools.get_hpa_summaries()
+    if not hpas:
+        pytest.skip("No HorizontalPodAutoscalers found in the cluster.")
+    for h in hpas:
+        assert "/" in h.scale_target
+        assert h.max_replicas >= (h.min_replicas or 1)
+        for c in h.conditions:
+            assert c.type and c.status in ("True", "False", "Unknown")

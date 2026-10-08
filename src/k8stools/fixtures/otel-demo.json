@@ -537,13 +537,15 @@
           "last_state": null,
           "volume_mounts": [],
           "resource_requests": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           },
           "resource_limits": {
             "memory": "160Mi"
           },
           "allocated_resources": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           }
         }
       ],
@@ -563,7 +565,8 @@
                 "memory": "160Mi"
               },
               "requests": {
-                "memory": "160Mi"
+                "memory": "160Mi",
+                "cpu": "200m"
               }
             }
           }
@@ -610,13 +613,15 @@
           "last_state": null,
           "volume_mounts": [],
           "resource_requests": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           },
           "resource_limits": {
             "memory": "160Mi"
           },
           "allocated_resources": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           }
         }
       ],
@@ -636,7 +641,8 @@
                 "memory": "160Mi"
               },
               "requests": {
-                "memory": "160Mi"
+                "memory": "160Mi",
+                "cpu": "200m"
               }
             }
           }
@@ -683,13 +689,15 @@
           "last_state": null,
           "volume_mounts": [],
           "resource_requests": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           },
           "resource_limits": {
             "memory": "160Mi"
           },
           "allocated_resources": {
-            "memory": "160Mi"
+            "memory": "160Mi",
+            "cpu": "200m"
           }
         }
       ],
@@ -709,7 +717,8 @@
                 "memory": "160Mi"
               },
               "requests": {
-                "memory": "160Mi"
+                "memory": "160Mi",
+                "cpu": "200m"
               }
             }
           }
@@ -996,6 +1005,50 @@
         "otel/opentelemetry-collector-contrib:0.142.0"
       ],
       "age_seconds": 691200.0
+    }
+  ],
+  "hpas": [
+    {
+      "name": "test-deployment",
+      "namespace": "default",
+      "scale_target": "Deployment/test-deployment",
+      "min_replicas": 1,
+      "max_replicas": 3,
+      "current_replicas": 3,
+      "desired_replicas": 3,
+      "metrics": [
+        {
+          "type": "Resource",
+          "name": "cpu",
+          "target": "80%",
+          "current": "92%"
+        }
+      ],
+      "conditions": [
+        {
+          "type": "AbleToScale",
+          "status": "True",
+          "reason": "ReadyForNewScale",
+          "message": "recommended size matches current size",
+          "since_seconds": 5400.0
+        },
+        {
+          "type": "ScalingActive",
+          "status": "True",
+          "reason": "ValidMetricFound",
+          "message": "the HPA was able to successfully calculate a replica count from cpu resource utilization (percentage of request)",
+          "since_seconds": 7180.0
+        },
+        {
+          "type": "ScalingLimited",
+          "status": "True",
+          "reason": "TooManyReplicas",
+          "message": "the desired replica count is more than the maximum replica count",
+          "since_seconds": 5400.0
+        }
+      ],
+      "last_scale_seconds": 5400.0,
+      "age_seconds": 7195.0
     }
   ],
   "workload_histories": [
