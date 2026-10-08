@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Six models have a
+them when they matter instead of carrying them on every turn. Seven models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -24,6 +24,7 @@ notes existed) give the same notes; captures don't store them.
 | `ContainerStatus` | `last_state` has `ran_for` | last_state.ran_for is how long that instance ran; restarts are further apart, by the back-off between its finished_at and the next start. |
 | `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
 | `HpaSummary` | at `max_replicas` | At maxReplicas: it can't add replicas, whatever its metrics say. See the ScalingLimited condition. |
+| `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
 
 `get_workload_history` returns its caveats in the result's `limits` list.
 
@@ -109,9 +110,12 @@ the record, not the current rhythm.
     - **`finished`**: time since it finished.
     - **`restart_gap`**: the back-off from finishing to the next start, or, while the container is still waiting, the wait so far. Restarts are lifetime + gap apart.
     - **`waiting`**: the current waiting reason, e.g. CrashLoopBackOff.
+  - **`autoscaler`** (`str`): its HPA in a line, e.g. "HPA cart: 3 replicas (min 1, max 3), at max; cpu 92%/80%".
+  - **`services`** (`list[str]`): Services sending traffic to its pods, e.g. "Service/ad: 0 ready, 1 not ready". Linked through their endpoints, which name the pods they selected, ready or not.
   - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ.
   - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
   - **`notes`** (`list[str]`)
+- **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
 - **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", or "Deployment/accounting 1/1, 762 restarts" when it has restarted.
 - **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
@@ -144,6 +148,8 @@ those tools, so it answers the same way from a replayed capture.
 - **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that the text is the kubelet's message, not container output) is moved into the tail's `notes`.
 - **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
 - **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
+- **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
+- **`services`** (`list[EndpointSummary]`): Services sending traffic to its pods, with each backend's state.
 - **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers and logs come from, and an exit code / reason disagreement.
 
 Empty fields are left out of the result.
@@ -495,6 +501,43 @@ A list of ServiceSummary objects, each providing a summary of a service's status
 - **`selector`** (`dict[str, str]`): The label selector the service uses to choose backing pods. Empty for services without a selector (e.g. ExternalName, or manually managed Endpoints).
 - **`labels`** (`dict[str, str]`): Labels on the service object.
 - **`annotations`** (`dict[str, str]`): Annotations on the service object.
+- **`ready_endpoints`**, **`not_ready_endpoints`** (`Optional[int]`): its ready and not-ready backends, from `get_endpoint_summaries`. 0 for a Service whose selector matches no pods. None when unknown: an ExternalName Service, EndpointSlices not readable with the server's permissions, or a capture taken before 3.0.0.
+
+
+### `get_endpoint_summaries`
+
+```python
+get_endpoint_summaries(namespace: Optional[str] = None) -> list[EndpointSummary]
+```
+
+Each Service's backends, from its EndpointSlices (`discovery.k8s.io/v1`, the
+current API; core `v1 Endpoints` is deprecated and has no per-address state).
+Answers "does this Service have anywhere to send traffic?", which the selector in
+`get_service_summaries` can't on its own.
+
+Slices are grouped by their `kubernetes.io/service-name` label (a slice without
+one is listed under its own name), and a pod listed in two slices, as for a
+dual-stack Service with one slice per IP family, is counted once.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+list of EndpointSummary, each with:
+
+- **`service`**, **`namespace`** (`str`)
+- **`ports`** (`list[PortInfo]`): the endpoint ports, the pods' target ports rather than the Service's own.
+- **`addresses`** (`list[EndpointAddress]`): one per backend:
+  - **`ip`**: its first address.
+  - **`ready`**: ready to receive traffic. An unset condition means ready, as the API defines.
+  - **`serving`**: serving even if terminating; unset takes `ready`'s value.
+  - **`terminating`**
+  - **`pod`**: the backing pod's name, when the endpoint targets a pod.
+  - **`node`**
+- **`ready`**, **`not_ready`**, **`terminating`** (`int`): counts. A terminating endpoint counts as terminating, not as not ready.
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 
 ### `get_configmap_summaries`
 

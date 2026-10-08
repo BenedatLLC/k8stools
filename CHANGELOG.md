@@ -12,8 +12,23 @@ dates are release-tag dates.
   tools: namespace health and workload report.
 - [#14](https://github.com/BenedatLLC/k8stools/issues/14): Add get_hpa_summaries
   (HorizontalPodAutoscaler, autoscaling/v2).
+- [#15](https://github.com/BenedatLLC/k8stools/issues/15): Service backends:
+  get_endpoint_summaries (EndpointSlice) and ready counts on ServiceSummary.
 
 ### Added
+- **`get_endpoint_summaries`** (issue #15): each Service's backends, from its
+  EndpointSlices. Each address has its ready, serving and terminating state, pod
+  and node, and the Service gets ready, not-ready and terminating counts. Unset
+  conditions follow the API's defaults, and a pod in two slices (dual-stack) is
+  counted once. `print_endpoint_summaries` is its companion.
+  - **`ServiceSummary`** gains `ready_endpoints` and `not_ready_endpoints`, so
+    "does this Service have backends?" is one call. They're None when unknown:
+    ExternalName, EndpointSlices not readable, or older captures. They are not 0.
+  - **Composites:** `get_namespace_health` lists Services with no ready
+    endpoints, and names the Services in front of each unhealthy workload;
+    `get_workload_report` includes them with each backend's state.
+  - **Captures** store endpoints; older captures replay none. The `--mock`
+    fixture's `ad` Service has its one not-ready backend.
 - **`get_hpa_summaries`** (issue #14): HorizontalPodAutoscalers from
   `autoscaling/v2`, with:
   - the scale target as `"Kind/name"`, which joins with `owner` and
@@ -73,8 +88,9 @@ dates are release-tag dates.
   hold the credentials below in full.
 
 ### Changed
-- **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling). The
-  README's role includes it.
+- **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling) **and
+  `endpointslices`** (discovery.k8s.io). The README's role includes both.
+  `get_service_summaries` works without the latter, with unknown counts.
 - **Tool descriptions are a few lines each** (issue #20): what the tool answers,
   its parameters, and at most one warning. Together they went from 47,946
   characters to about 5,000, which is roughly 11,000 fewer tokens on every turn

@@ -919,3 +919,19 @@ def test_hpa_summaries():
         assert h.max_replicas >= (h.min_replicas or 1)
         for c in h.conditions:
             assert c.type and c.status in ("True", "False", "Unknown")
+
+
+def test_endpoint_summaries_agree_with_services():
+    """Issue #15: Services carry their endpoints' counts."""
+    endpoints = {(e.namespace, e.service): e for e in k8s_tools.get_endpoint_summaries("default")}
+    if not endpoints:
+        pytest.skip("No EndpointSlices in the default namespace.")
+    pods = {p.name: p for p in k8s_tools.get_pod_summaries("default")}
+    for svc in k8s_tools.get_service_summaries("default"):
+        e = endpoints.get((svc.namespace, svc.name))
+        if svc.type == "ExternalName" or e is None:
+            continue
+        assert (svc.ready_endpoints, svc.not_ready_endpoints) == (e.ready, e.not_ready)
+        for a in e.addresses:
+            if a.pod in pods:
+                assert a.ip == pods[a.pod].ip
