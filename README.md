@@ -178,6 +178,7 @@ usage: k8s-mcp-server [-h] [--transport {streamable-http,stdio}] [--host HOST] [
                       [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug]
                       [--kubeconfig PATH] [--context NAME] [--mock] [--state-file FILE]
                       [--state-time {advancing,frozen}] [--no-redact]
+                      [--toolset {triage,investigate,all}] [--include TOOL] [--exclude TOOL]
 
 Run the MCP server.
 
@@ -195,11 +196,22 @@ options:
                         kubeconfig's current-context]. A kubeconfig or context that is given but
                         cannot be loaded stops the server rather than falling back to another
                         cluster.
-  --mock                Run mock versions of the tools that don't need a cluster
-  --state-file FILE     Serve a captured cluster snapshot from FILE (implies --mock)
+  --mock                If specified, just run mock versions of the tools that don't need a
+                        cluster
+  --state-file FILE     Serve a captured cluster snapshot from FILE (implies --mock). Captures are
+                        written by k8s-capture-state.
   --state-time {advancing,frozen}
-                        Replay clock for a captured snapshot [default: advancing]
-  --no-redact           Disable secret redaction of tool output (on by default)
+                        Replay clock for a captured snapshot [default: advancing]. 'frozen' pins
+                        every age at its captured value, so repeated runs are identical - what an
+                        automated suite wants.
+  --no-redact           Disable secret redaction of tool output (redaction is on by default; can
+                        also be disabled with K8STOOLS_REDACT=0)
+  --toolset {triage,investigate,all}
+                        Which tools to serve [default: all]. 'triage' is the few needed to find
+                        where to look, 'investigate' is every tool but those another tool covers,
+                        'all' is everything.
+  --include TOOL        Also serve TOOL (repeatable)
+  --exclude TOOL        Don't serve TOOL (repeatable)
 ```
 
 #### Selecting a cluster
@@ -223,6 +235,34 @@ WARNING:root:Bound to cluster: context 'prod-eu' at https://prod-eu.example:6443
 
 and the `get_cluster_info` tool reports it to an agent, so an agent can check which
 cluster it is talking to without leaving MCP.
+
+#### Choosing which tools to serve
+
+Every tool's description is sent to the model on every turn, and agents choose
+less reliably among many similar tools. `--toolset` serves a named subset:
+
+| Toolset | Tools | Use it for |
+|---|---|---|
+| `triage` | `get_cluster_info`, `get_node_summaries`, `get_pod_summaries`, `get_events`, `get_workload_history` | finding where to look |
+| `investigate` | every tool except those another tool already covers | a full investigation |
+| `all` (default) | every tool | compatibility; the default until 3.0.0 |
+
+`investigate` leaves out `get_pod_events` (use `get_events(involved_name=...)`),
+`get_replicaset_summaries` (use `get_workload_history`), and `get_logs_for_job` /
+`get_logs_for_cronjob` (use the pod log tool; `PodSummary.owner` names each pod's
+Job). They stay available in `all` and in Python.
+
+Adjust a toolset with `--include TOOL` and `--exclude TOOL`, both repeatable:
+
+```sh
+k8s-mcp-server --toolset triage --include get_pod_spec
+```
+
+A misspelled toolset or tool name stops the server at startup.
+
+In Python, `k8s_tools.TOOLSETS["triage"]` (and `mock_tools.TOOLSETS`) hold the same
+sets, and `k8s_tools.select_tools(TOOLS, toolset, include, exclude)` builds an
+adjusted one. Wrap them for redaction as above.
 
 A few rules keep a server from quietly answering from the wrong cluster:
 

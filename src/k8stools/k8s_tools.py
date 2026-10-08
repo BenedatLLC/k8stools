@@ -3449,3 +3449,65 @@ TOOLS = [
     get_pvc_summaries,
     get_events,
 ]
+
+
+# ---------------------------------------------------------------------------
+# Toolsets (issue #20)
+# ---------------------------------------------------------------------------
+#
+# Every tool's description is standing context on every turn of every agent
+# that has it, and agents choose less reliably among similar tools. A toolset
+# names the subset an agent needs. These are names rather than functions so
+# that `mock_tools` and callers composing tools in Python select the same sets.
+
+#: Tools another tool already covers. They stay in the library and in "all",
+#: and leave the smaller toolsets.
+OVERLAPPING_TOOLS = (
+    "get_pod_events",            # get_events(involved_name=...)
+    "get_replicaset_summaries",  # get_workload_history
+    "get_logs_for_job",          # get_logs_for_pod_and_container + PodSummary.owner
+    "get_logs_for_cronjob",      # likewise
+)
+
+#: Tool names in each toolset. "investigate" is every tool but the overlapping
+#: ones; "triage" is the few an agent needs to find where to look.
+TOOLSET_NAMES: dict[str, tuple[str, ...]] = {
+    "triage": (
+        "get_cluster_info",
+        "get_node_summaries",
+        "get_pod_summaries",
+        "get_events",
+        "get_workload_history",
+    ),
+    "investigate": tuple(fn.__name__ for fn in TOOLS
+                         if fn.__name__ not in OVERLAPPING_TOOLS),
+    "all": tuple(fn.__name__ for fn in TOOLS),
+}
+
+#: The toolset k8s-mcp-server serves unless told otherwise.
+DEFAULT_TOOLSET = "all"
+
+
+def select_tools(tools: list, toolset: str = DEFAULT_TOOLSET,
+                 include: tuple[str, ...] = (), exclude: tuple[str, ...] = ()) -> list:
+    """The functions in ``tools`` that make up ``toolset``, plus ``include`` and
+    minus ``exclude`` (tool names), in ``tools``' order.
+
+    ``tools`` is ``k8s_tools.TOOLS`` or ``mock_tools.TOOLS``. Unknown toolset or
+    tool names raise ``ValueError``, so a misspelled name in a server's
+    configuration fails at startup rather than silently serving a different set.
+    """
+    if toolset not in TOOLSET_NAMES:
+        raise ValueError(f"Unknown toolset '{toolset}': expected one of "
+                         f"{', '.join(TOOLSET_NAMES)}.")
+    known = {fn.__name__ for fn in tools}
+    unknown = [n for n in (*include, *exclude) if n not in known]
+    if unknown:
+        raise ValueError(f"Unknown tool name(s): {', '.join(unknown)}.")
+    chosen = (set(TOOLSET_NAMES[toolset]) | set(include)) - set(exclude)
+    return [fn for fn in tools if fn.__name__ in chosen]
+
+
+#: The functions in each toolset, for composing tools in Python. Wrap them with
+#: `redaction.wrap_with_redaction` before handing them to an agent.
+TOOLSETS: dict[str, list] = {name: select_tools(TOOLS, name) for name in TOOLSET_NAMES}

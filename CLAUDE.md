@@ -30,6 +30,7 @@ tests/
   test_workloads.py          - get_daemonset_summaries and PodSummary.owner, incl. capture replay
   test_builtin_fixture.py    - The built-in fixture describes a cluster that could exist (owners, images, ages, log windows, histories)
   test_workload_history.py   - get_workload_history: template diffs, revisions, config refs, no env values or Secret reads, replay
+  test_toolsets.py           - Toolsets: named subsets, include/exclude, server flags
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_version.py            - Asserts pyproject and package __version__ agree
@@ -104,6 +105,11 @@ declared as `Duration` grows on replay (a 60s run read back as 1d+60s a day in).
 Use snake_case field names. Include `pod_name`/`namespace` in container-level models for context.
 
 All tools are collected in the `TOOLS` list in `k8s_tools.py` for agent/MCP registration.
+A new tool lands in the `all` and `investigate` toolsets automatically
+(`TOOLSET_NAMES`); decide whether it belongs in `triage` too, and if it duplicates
+what another tool already answers, add it to `OVERLAPPING_TOOLS` instead of
+`investigate`. Every tool's description is context on every turn, so keep the
+set small.
 
 The log readers decode the response themselves and pass `_preload_content=False`.
 The log endpoint is the only call whose body is a bare scalar rather than a model,
@@ -209,6 +215,9 @@ K8STOOLS_CONTEXT=prod-eu k8s-mcp-server
 
 # Disable secret redaction (on by default)
 k8s-mcp-server --no-redact
+
+# Serve a subset of the tools: triage | investigate | all (default)
+k8s-mcp-server --toolset triage --include get_pod_spec
 ```
 
 ## Mock state capture & replay

@@ -10,6 +10,13 @@ dates are release-tag dates.
   credentials embedded in args, flags and URLs.
 
 ### Added
+- **Toolsets** (issue #20). `k8s-mcp-server --toolset triage|investigate|all`
+  serves a named subset of the tools, adjustable with `--include TOOL` and
+  `--exclude TOOL`; `k8s_tools.TOOLSETS` / `select_tools` do the same in Python.
+  `investigate` leaves out the four tools another tool already covers
+  (`get_pod_events`, `get_replicaset_summaries`, `get_logs_for_job`,
+  `get_logs_for_cronjob`), which stay in `all` and in the library. The default
+  is still `all`.
 - **`k8s-capture-state --redact-file FILE`** re-runs redaction over an existing
   capture and rewrites it in place, keeping its compression. Use it on captures
   taken with `--no-redact`, or before this release's rules: captures from 2.x can

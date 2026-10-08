@@ -61,6 +61,15 @@ def main():
     parser.add_argument('--no-redact', action='store_true', default=False,
                         help="Disable secret redaction of tool output (redaction is on by default; "
                              "can also be disabled with K8STOOLS_REDACT=0)")
+    from .k8s_tools import DEFAULT_TOOLSET, TOOLSET_NAMES, select_tools
+    parser.add_argument('--toolset', choices=list(TOOLSET_NAMES), default=DEFAULT_TOOLSET,
+                        help="Which tools to serve [default: %(default)s]. 'triage' is the "
+                             "few needed to find where to look, 'investigate' is every tool "
+                             "but those another tool covers, 'all' is everything.")
+    parser.add_argument('--include', metavar='TOOL', action='append', default=[],
+                        help="Also serve TOOL (repeatable)")
+    parser.add_argument('--exclude', metavar='TOOL', action='append', default=[],
+                        help="Don't serve TOOL (repeatable)")
 
     args = parser.parse_args()
 
@@ -110,15 +119,21 @@ def main():
             logging.warning(f"No cluster configuration could be loaded; tool calls will "
                             f"fail until one can: {e}")
 
+    try:
+        selected = select_tools(TOOLS, args.toolset, tuple(args.include), tuple(args.exclude))
+    except ValueError as e:
+        parser.error(str(e))
+    logging.info(f"Toolset '{args.toolset}': {', '.join(fn.__name__ for fn in selected)}")
+
     # Apply secret redaction at the output boundary (default-on, opt-out). See redaction.py.
     redact = redaction_enabled(no_redact_flag=args.no_redact)
     if redact:
         logging.info("Secret redaction of tool output is ENABLED (use --no-redact or "
                      "K8STOOLS_REDACT=0 to disable)")
-        fns = [wrap_with_redaction(fn) for fn in TOOLS]
+        fns = [wrap_with_redaction(fn) for fn in selected]
     else:
         logging.warning("Secret redaction of tool output is DISABLED")
-        fns = list(TOOLS)
+        fns = list(selected)
     wrapped_tools = [get_tool_for_function(fn) for fn in fns]
 
     mcp = MCPServer(

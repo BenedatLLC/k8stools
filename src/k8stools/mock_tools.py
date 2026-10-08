@@ -231,3 +231,7 @@ TOOLS = [
     get_pvc_summaries,
     get_events,
 ]
+
+#: The mock versions of `k8s_tools.TOOLSETS`, selected by the same names.
+TOOLSETS: dict[str, list] = {name: k8s_tools.select_tools(TOOLS, name)
+                             for name in k8s_tools.TOOLSET_NAMES}
