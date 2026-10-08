@@ -77,10 +77,17 @@ An object with the following fields:
 get_namespace_health(namespace: str = 'default') -> NamespaceHealth
 ```
 
-What is wrong in a namespace, and where, in one call: one entry per workload
-(Deployment, StatefulSet, DaemonSet, Job, and pods nothing owns), unhealthy
-first. Built from the other tools, so it answers the same way from a replayed
-capture. It states facts and fixed Kubernetes semantics, never a diagnosis.
+What is wrong in a namespace, and where, in one call: a full entry for each
+unhealthy workload (Deployment, StatefulSet, DaemonSet, Job, or a pod nothing
+owns), and one line for each healthy one. Built from the other tools, so it
+answers the same way from a replayed capture. It states facts and fixed
+Kubernetes semantics, never a diagnosis.
+
+Pods are linked to workloads by their controlling owner (`PodSummary.owner`).
+Captures taken before 2.3.0 recorded no owners, so a pod without one is matched
+by its generated name instead (`<replicaset>-<5 chars>`, `<statefulset>-<n>`,
+`<job>-<5 chars>`, `<daemonset>-<5 chars>`), and a note says so. A workload none
+of whose pods can be found reports `restarts` as unknown (absent), not 0.
 
 Restart cadence comes from container status, not event counts: event records lag
 what they count (see `get_events`), so an event-derived rate is an average over
@@ -89,12 +96,11 @@ the record, not the current rhythm.
 #### Returns
 
 - **`namespace`** (`str`)
-- **`workloads`** (`list[WorkloadHealth]`): unhealthy first, then by name. Each has:
+- **`workloads`** (`list[WorkloadHealth]`): the unhealthy workloads, by name. A workload is healthy when all desired pods are ready, no container is waiting, and (for a Job) no exit failed. Each has:
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
   - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
-  - **`restarts`** (`int`): container restarts across the workload's pods.
-  - **`healthy`** (`bool`): all desired pods ready, no container waiting, and (for a Job) no failed exit.
-  - **`last_termination`** (`Termination`, unhealthy workloads only): the most recent termination across its pods and containers:
+  - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
+  - **`last_termination`** (`Termination`): the most recent termination across its pods and containers:
     - **`pod`**, **`container`**
     - **`exit_code`** and **`exit_meaning`**: the code's fixed meaning, e.g. 137 is "killed by SIGKILL (128+9)".
     - **`reason`**: Kubernetes' recorded reason (OOMKilled, Error, Completed, ...), shown beside the exit code; a note says when the two disagree (137 without OOMKilled).
@@ -105,7 +111,8 @@ the record, not the current rhythm.
   - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ.
   - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
   - **`notes`** (`list[str]`)
-- **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads with the same signature: exit code and meaning, reason, instance-lifetime band (under 10s, 10s-1m, 1-5m, 5-30m, over 30m) and memory shape. A shared signature is a fact worth checking for a common cause; it is not a conclusion.
+- **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", or "Deployment/accounting 1/1, 762 restarts" when it has restarted.
+- **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
 
 Empty fields are left out of the result.

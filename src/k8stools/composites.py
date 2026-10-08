@@ -98,22 +98,58 @@ def _workloads(api, namespace: str) -> list[tuple[str, str, int, int]]:
     return out
 
 
-def _pods_by_workload(api, namespace: str) -> tuple[dict[tuple[str, str], list], list]:
-    """Pods grouped by their workload; and pods no workload owns."""
+#: Generated pod-name suffixes: a ReplicaSet's, Job's or DaemonSet's pods are
+#: "<name>-<5 chars>"; a StatefulSet's are "<name>-<ordinal>".
+_RANDOM_SUFFIX = r"-[a-z0-9]{5}"
+_ORDINAL_SUFFIX = r"-\d+"
+
+NOTE_MATCHED_BY_NAME = (
+    "Some pods were matched to their workloads by name (\"<replicaset>-<5 chars>\", "
+    "\"<statefulset>-<n>\"), because they carry no owner: a capture taken before "
+    "k8stools 2.3.0 recorded none.")
+
+
+def _match_by_name(pod_name: str, rs_owner: dict[str, str],
+                   workloads: list[tuple[str, str, int, int]]) -> Optional[tuple[str, str]]:
+    """The workload a pod's generated name points to, for a pod with no owner."""
+    for rs, deployment in rs_owner.items():
+        if deployment and re.fullmatch(re.escape(rs) + _RANDOM_SUFFIX, pod_name):
+            return ("Deployment", deployment)
+    for kind, suffix in (("StatefulSet", _ORDINAL_SUFFIX), ("Job", _RANDOM_SUFFIX),
+                         ("DaemonSet", _RANDOM_SUFFIX)):
+        for k, name, _, _ in workloads:
+            if k == kind and re.fullmatch(re.escape(name) + suffix, pod_name):
+                return (kind, name)
+    return None
+
+
+def _pods_by_workload(api, namespace: str, workloads: list[tuple[str, str, int, int]]
+                      ) -> tuple[dict[tuple[str, str], list], list, bool]:
+    """Pods grouped by their workload; pods no workload owns; and whether any
+    pod was matched by name.
+
+    A pod's controlling owner (`PodSummary.owner`) links it. Captures taken
+    before 2.3.0 have no owners, so a pod without one is matched by its
+    generated name instead - otherwise every pod of an older capture would look
+    ownerless and every workload would read zero restarts, which is wrong, not
+    unknown.
+    """
     rs_owner = {r.name: r.owner_deployment for r in api.get_replicaset_summaries(namespace)}
     grouped: dict[tuple[str, str], list] = {}
-    standalone = []
+    standalone, by_name = [], False
     for pod in api.get_pod_summaries(namespace):
         kind, _, name = (pod.owner or "").partition("/")
         if kind == "ReplicaSet" and rs_owner.get(name):
             key = ("Deployment", rs_owner[name])
         elif kind in _KINDS:
             key = (kind, name)
+        elif pod.owner is None and (key := _match_by_name(pod.name, rs_owner, workloads)):
+            by_name = True
         else:
             standalone.append(pod)
             continue
         grouped.setdefault(key, []).append(pod)
-    return grouped, standalone
+    return grouped, standalone, by_name
 
 
 def _termination(pod: str, status, now: datetime.datetime) -> Optional[Termination]:
@@ -173,22 +209,23 @@ def _template_changed(api, kind: str, name: str, namespace: str) -> Optional[dat
     return current[0].age if current else None
 
 
-def _lifetime_bucket(t: Optional[Termination]) -> str:
-    if t is None or t.instance_lifetime is None:
-        return "lifetime unknown"
-    s = t.instance_lifetime.total_seconds()
-    for limit, label in ((10, "under 10s"), (60, "10s-1m"), (300, "1-5m"), (1800, "5-30m")):
-        if s < limit:
-            return f"lifetime {label}"
-    return "lifetime over 30m"
+def _lifetimes(terminations: list[Termination]) -> str:
+    """The range of instance lifetimes in a group, e.g. "lifetimes 2s-20s"."""
+    known = sorted(t.instance_lifetime for t in terminations if t.instance_lifetime is not None)
+    if not known:
+        return "lifetimes unknown"
+    low, high = _human(known[0]), _human(known[-1])
+    return f"lifetime {low}" if low == high else f"lifetimes {low}-{high}"
 
 
 # --- get_namespace_health -------------------------------------------------------------
 
 def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     now = _now()
-    grouped, standalone = _pods_by_workload(api, namespace)
+    workloads = _workloads(api, namespace)
+    grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads)
     entries: list[WorkloadHealth] = []
+    healthy_lines: list[str] = []
 
     def assess(label, kind, name, ready, desired, pods):
         terminations, first_pod, waiting = [], [], False
@@ -202,38 +239,55 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                     terminations.append(t)
         last = _latest(terminations)
         failed_job = kind == "Job" and last is not None and last.exit_code not in (0, None)
-        healthy = ready >= desired and not waiting and not failed_job
+        restarts = sum(p.restarts for p in pods) if pods or not desired else None
+        if ready >= desired and not waiting and not failed_job:
+            healthy_lines.append(f"{label} {ready}/{desired}"
+                                 + (f", {restarts} restarts" if restarts else ""))
+            return
         w = WorkloadHealth(
-            workload=label, ready=ready, desired=desired,
-            restarts=sum(p.restarts for p in pods), healthy=healthy,
-            last_termination=None if healthy else last,
-            memory=_memory_shape(first_pod),
+            workload=label, ready=ready, desired=desired, restarts=restarts,
+            last_termination=last, memory=_memory_shape(first_pod),
             template_changed=_template_changed(api, kind, name, namespace) if kind else None)
-        if last and not healthy:
+        if restarts is None:
+            w.notes.append("None of its pods could be found, so its restarts and "
+                           "terminations are unknown.")
+        if last:
             w.notes.extend(last.notes)
             last.notes = []
         entries.append(w)
 
-    for kind, name, ready, desired in _workloads(api, namespace):
+    for kind, name, ready, desired in workloads:
         assess(f"{kind}/{name}", kind, name, ready, desired, grouped.get((kind, name), []))
     for pod in standalone:
         assess(f"Pod/{pod.name}", None, pod.name, pod.ready_containers,
                pod.total_containers, [pod])
 
-    entries.sort(key=lambda w: (w.healthy, w.workload))
-    groups: dict[str, list[str]] = {}
+    entries.sort(key=lambda w: w.workload)
+    healthy_lines.sort()
+    # Grouped by what a termination reliably repeats: exit code, reason and memory
+    # shape. Not by lifetime: one workload's instances live 7s, 20s and 2m on
+    # successive restarts, so fixed bands split the same failure arbitrarily. The
+    # lifetimes are shown instead.
+    groups: dict[tuple, list[WorkloadHealth]] = {}
     for w in entries:
         t = w.last_termination
-        if w.healthy or t is None:
+        if t is None:
             continue
-        signature = (f"exit {t.exit_code} ({t.exit_meaning}), reason {t.reason}, "
-                     f"{_lifetime_bucket(t)}, memory {w.memory or 'unknown'}")
-        groups.setdefault(signature, []).append(w.workload)
+        groups.setdefault((t.exit_code, t.exit_meaning, t.reason, w.memory), []).append(w)
+    failures = []
+    for (code, meaning, reason, memory), members in groups.items():
+        if len(members) > 1:
+            failures.append(FailureGroup(
+                signature=(f"exit {code} ({meaning}), reason {reason}, memory "
+                           f"{memory or 'unknown'}, "
+                           f"{_lifetimes([m.last_termination for m in members])}"),
+                workloads=[m.workload for m in members]))
     result = NamespaceHealth(
-        namespace=namespace, workloads=entries,
-        common_failures=[FailureGroup(signature=s, workloads=ws)
-                         for s, ws in groups.items() if len(ws) > 1])
-    if any(not w.healthy for w in entries):
+        namespace=namespace, workloads=entries, healthy=healthy_lines,
+        common_failures=failures)
+    if by_name:
+        result.notes.append(NOTE_MATCHED_BY_NAME)
+    if any(w.last_termination for w in entries):
         result.notes.append(
             "instance_lifetime is how long the last instance ran; restart_gap is the "
             "back-off before the next start (or the wait so far). Restarts are "
@@ -377,12 +431,16 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     if kind is not None and kind not in _KINDS:
         raise K8sApiError(f"Unsupported kind '{kind}': expected one of {', '.join(_KINDS)}.")
     kind = kind or _find_kind(api, name, namespace)
-    matches = [(r, d) for k, n, r, d in _workloads(api, namespace) if (k, n) == (kind, name)]
+    workloads = _workloads(api, namespace)
+    matches = [(r, d) for k, n, r, d in workloads if (k, n) == (kind, name)]
     if not matches:
         raise K8sApiError(f"{kind} '{name}' not found in namespace '{namespace}'.")
     ready, desired = matches[0]
-    pods = _pods_by_workload(api, namespace)[0].get((kind, name), [])
+    grouped, _, by_name = _pods_by_workload(api, namespace, workloads)
+    pods = grouped.get((kind, name), [])
     report = WorkloadReport(workload=f"{kind}/{name}", ready=ready, desired=desired)
+    if by_name and pods and all(p.owner is None for p in pods):
+        report.notes.append(NOTE_MATCHED_BY_NAME)
 
     statuses_by_pod = {p.name: api.get_pod_container_statuses(p.name, namespace) for p in pods}
     for pod in pods:

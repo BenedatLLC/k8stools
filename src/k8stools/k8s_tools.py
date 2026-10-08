@@ -2559,12 +2559,13 @@ class Termination(_Compact):
 
 
 class WorkloadHealth(_Compact):
-    """One workload's health in one line."""
+    """One unhealthy workload's health."""
     workload: str
     ready: int
     desired: int
-    restarts: int = 0
-    healthy: bool = True
+    #: None when none of its pods could be found (see notes), rather than 0.
+    restarts: Optional[int] = None
+    healthy: bool = False
     last_termination: Optional[Termination] = None
     #: e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit".
     memory: Optional[str] = None
@@ -2581,8 +2582,10 @@ class FailureGroup(_Compact):
 
 class NamespaceHealth(_Compact):
     namespace: str
-    #: Unhealthy workloads first, then the rest by name.
+    #: Unhealthy workloads, in full, by name.
     workloads: list[WorkloadHealth] = Field(default_factory=list)
+    #: Healthy workloads, one line each: "Deployment/cart 3/3", with restarts if any.
+    healthy: list[str] = Field(default_factory=list)
     #: Two or more unhealthy workloads with the same failure signature.
     common_failures: list[FailureGroup] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -2655,12 +2658,12 @@ class WorkloadReport(_Compact):
 
 
 def get_namespace_health(namespace: str = "default") -> NamespaceHealth:
-    """What is wrong in a namespace, and where: one line per workload
-    (Deployment, StatefulSet, DaemonSet, Job, and pods nothing owns), unhealthy
-    first, with ready/desired, restarts, the last termination (exit code and its
-    meaning beside Kubernetes' recorded reason), instance lifetime and restart
-    gap, memory limit vs request, and when the pod template last changed.
-    Workloads failing the same way are grouped. Facts only, no diagnosis."""
+    """What is wrong in a namespace, and where. Each unhealthy workload
+    (Deployment, StatefulSet, DaemonSet, Job, or a pod nothing owns) in full:
+    ready/desired, restarts, the last termination (exit code and its meaning
+    beside Kubernetes' recorded reason), instance lifetime and restart gap,
+    memory limit vs request, when the pod template last changed. Healthy ones
+    in a line each. Workloads failing the same way are grouped. Facts only."""
     from .composites import namespace_health
     return namespace_health(sys.modules[__name__], namespace)
 

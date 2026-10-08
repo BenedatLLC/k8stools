@@ -874,10 +874,14 @@ def test_namespace_health_agrees_with_the_raw_tools():
     namespace = "default"
     health = k8s_tools.get_namespace_health(namespace)
     deployments = {f"Deployment/{d.name}": d for d in k8s_tools.get_deployment_summaries(namespace)}
-    names = [w.workload for w in health.workloads]
+    names = [w.workload for w in health.workloads] + [h.split(" ")[0] for h in health.healthy]
     assert set(deployments) <= set(names)
-    healthy = [w.healthy for w in health.workloads]
-    assert healthy == sorted(healthy)  # unhealthy (False) first
+    assert not any(w.healthy for w in health.workloads)  # full entries are the unhealthy
+    for line in health.healthy:
+        workload, ratio = line.split(" ")[:2]
+        if workload in deployments:
+            d = deployments[workload]
+            assert ratio.rstrip(",") == f"{d.ready_replicas}/{d.total_replicas}"
     for w in health.workloads:
         if w.workload in deployments:
             d = deployments[w.workload]
@@ -890,12 +894,13 @@ def test_namespace_health_agrees_with_the_raw_tools():
 
 def test_workload_report_for_the_least_healthy_workload():
     health = k8s_tools.get_namespace_health("default")
-    candidates = [w for w in health.workloads if not w.workload.startswith("Pod/")]
+    candidates = [w.workload for w in health.workloads if not w.workload.startswith("Pod/")] \
+        + [h.split(" ")[0] for h in health.healthy if not h.startswith("Pod/")]
     if not candidates:
         pytest.skip("No workloads in the default namespace.")
-    kind, _, name = candidates[0].workload.partition("/")
+    kind, _, name = candidates[0].partition("/")
     report = k8s_tools.get_workload_report(name, "default", kind, log_lines=5)
-    assert report.workload == candidates[0].workload
+    assert report.workload == candidates[0]
     assert report.instances and report.containers
     for tail in report.logs:
         assert len(tail.lines) <= 5

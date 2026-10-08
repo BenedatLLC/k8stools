@@ -148,11 +148,20 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   exit-137-without-OOMKilled disagreement, what an event window is, that a
   template's age isn't how long it's been healthy. No ranked causes, no "this
   was an OOM". A shared failure signature is grouped, not explained.
+- **Older captures must not give wrong answers.** Pods link to workloads by
+  `PodSummary.owner`, which captures before 2.3.0 lack, so an owner-less pod is
+  matched by its generated name, with `NOTE_MATCHED_BY_NAME`. Without that,
+  every workload of k8srca's 2.2.0 captures read 0 restarts. A workload whose
+  pods can't be found reports `restarts` as None (unknown), never 0.
+  `test_the_mock_fixture_without_owners_gives_the_same_picture` guards this.
+- **Group by what repeats.** Common failures share exit code, reason and memory
+  shape; lifetimes are shown, not matched (one workload's instances lived 2s,
+  7s, 20s on successive restarts).
 - **Restart cadence from container status, never event counts** (event records
   lag): `instance_lifetime` is `ran_for`; `restart_gap` is finished-to-next-start,
   or the wait so far.
-- **Bounded:** compact models (`_Compact` drops empty fields; the server sends a
-  result twice), at most 20 events and 100 log lines of 300 characters; tests
+- **Bounded:** healthy workloads are a one-line string each; compact models
+  (`_Compact` drops empty fields; the server sends a result twice), at most 20 events and 100 log lines of 300 characters; tests
   hold the namespace view and reports to budgets on the `--mock` fixture.
 - New data sources (HPA, endpoints, metrics: #14-#16) extend `WorkloadHealth`
   and `WorkloadReport` with fields, rather than adding tools to `triage`.

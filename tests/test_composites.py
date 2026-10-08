@@ -20,7 +20,8 @@ UTC = datetime.timezone.utc
 NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 
 #: Size budgets (characters of JSON), part of the contract (#13).
-NAMESPACE_BUDGET_PER_WORKLOAD = 450
+NAMESPACE_BUDGET_PER_WORKLOAD = 450   # an unhealthy workload, in full
+HEALTHY_LINE_BUDGET = 60              # a healthy one, in a line
 REPORT_BUDGET = 8000
 
 
@@ -115,10 +116,10 @@ def two_alike():
 
 # --- get_namespace_health --------------------------------------------------------------
 
-def test_unhealthy_workloads_come_first_with_their_last_termination(two_alike):
+def test_unhealthy_workloads_in_full_and_healthy_ones_in_a_line(two_alike):
     h = namespace_health(two_alike, "default")
-    assert [w.workload for w in h.workloads] == [
-        "Deployment/ad", "Deployment/fraud", "Deployment/cart", "Pod/debug"]
+    assert [w.workload for w in h.workloads] == ["Deployment/ad", "Deployment/fraud"]
+    assert h.healthy == ["Deployment/cart 1/1", "Pod/debug 1/1"]
     ad = h.workloads[0]
     assert (ad.healthy, ad.ready, ad.desired, ad.restarts) == (False, 0, 1, 40)
     t = ad.last_termination
@@ -133,16 +134,94 @@ def test_workloads_failing_the_same_way_are_grouped(two_alike):
     """The common cause agents missed: two workloads with one signature."""
     [group] = namespace_health(two_alike, "default").common_failures
     assert group.workloads == ["Deployment/ad", "Deployment/fraud"]
-    assert "exit 137" in group.signature and "under 10s" in group.signature
-    assert "limit 300Mi = request" in group.signature
+    assert group.signature == ("exit 137 (killed by SIGKILL (128+9)), reason Error, memory "
+                               "limit 300Mi = request, lifetimes 2s-7s")
 
 
-def test_healthy_workloads_are_compact(two_alike):
-    cart = [w for w in namespace_health(two_alike, "default").workloads
-            if w.workload == "Deployment/cart"][0]
-    dumped = cart.model_dump(mode="json")
-    assert "last_termination" not in dumped and "notes" not in dumped
-    assert dumped["healthy"] is True
+def test_lifetimes_are_shown_not_required_to_match():
+    """On a real cluster ad's last instance lived 20s and fraud-detection's 2s,
+    on either side of a 10s band, though the failure is the same."""
+    state = _state(
+        deployments=[_deployment("ad", 0, 1), _deployment("fraud", 0, 1), _deployment("db", 0, 1)],
+        replicasets=[_replicaset("ad-1", "ad"), _replicaset("fraud-1", "fraud"),
+                     _replicaset("db-1", "db")],
+        pods=[_pod("ad-1-a", "ReplicaSet/ad-1", _crashing("ad-1-a", "ad", lifetime=20), 40),
+              _pod("fraud-1-a", "ReplicaSet/fraud-1", _crashing("fraud-1-a", "fraud", lifetime=2), 50),
+              _pod("db-1-a", "ReplicaSet/db-1",
+                   _crashing("db-1-a", "db", reason="OOMKilled", lifetime=5), 9)])
+    [group] = namespace_health(state, "default").common_failures
+    assert group.workloads == ["Deployment/ad", "Deployment/fraud"]  # not db: OOMKilled
+    assert group.signature.endswith("lifetimes 2s-20s")
+
+
+def test_a_healthy_workload_line_shows_its_restarts():
+    """Healthy now, but a restart count is worth seeing (e.g. after a node restart)."""
+    state = _state(deployments=[_deployment("cart", 1, 1)], replicasets=[_replicaset("cart-1", "cart")],
+                   pods=[_pod("cart-1-a", "ReplicaSet/cart-1",
+                              _status("cart-1-a", "cart", ContainerStateRunning(started_at=_ago(days=1)),
+                                      restarts=762, ready=True), restarts=762, ready=1)])
+    assert namespace_health(state, "default").healthy == ["Deployment/cart 1/1, 762 restarts"]
+
+
+def _without_owners(records):
+    """As a capture taken before 2.3.0 recorded pods: no owner key at all."""
+    for pod in records:
+        pod["summary"].pop("owner", None)
+    return records
+
+
+def test_pods_without_owners_are_matched_to_workloads_by_name():
+    """k8srca's scenario captures predate PodSummary.owner (2.3.0). Unmatched,
+    every pod looked ownerless and Deployment/ad read 0 restarts: wrong, not
+    unknown (#13)."""
+    def pods(): return [
+        _pod("ad-5547bd5bd9-v65gj", "ReplicaSet/ad-5547bd5bd9",
+             _crashing("ad-5547bd5bd9-v65gj", "ad"), 3200),
+        _pod("db-0", "StatefulSet/db",
+             _crashing("db-0", "db", reason="OOMKilled", lifetime=600), 3),
+        _pod("nightly-28999999-t4xk9", "Job/nightly-28999999",
+             _crashing("nightly-28999999-t4xk9", "nightly", code=1, reason="Error"), 0)]
+    keys = dict(
+        deployments=[_deployment("ad", 0, 1)],
+        replicasets=[_replicaset("ad-5547bd5bd9", "ad")],
+        statefulsets=[{"name": "db", "namespace": "default", "total_replicas": 1,
+                       "ready_replicas": 0, "current_replicas": 1,
+                       "update_strategy": "RollingUpdate", "age_seconds": 86400.0}],
+        jobs=[{"name": "nightly-28999999", "namespace": "default", "active": 0, "succeeded": 0,
+               "failed": 1, "conditions": ["Failed"], "age_seconds": 600.0, "containers": []}])
+    with_owners = namespace_health(_state(pods=pods(), **keys), "default")
+    old = namespace_health(_state(pods=_without_owners(pods()), **keys), "default")
+    assert [w.workload for w in old.workloads] == [w.workload for w in with_owners.workloads] == [
+        "Deployment/ad", "Job/nightly-28999999", "StatefulSet/db"]
+    ad = old.workloads[0]
+    assert ad.restarts == 3200 and ad.last_termination.exit_code == 137
+    assert composites.NOTE_MATCHED_BY_NAME in old.notes
+    assert composites.NOTE_MATCHED_BY_NAME not in with_owners.notes
+    report = workload_report(_state(pods=_without_owners(pods()), **keys), "ad", "default")
+    assert report.instances and report.logs is not None
+    assert composites.NOTE_MATCHED_BY_NAME in report.notes
+
+
+def test_a_workload_whose_pods_cant_be_found_reads_unknown_not_zero():
+    state = _state(deployments=[_deployment("ad", 0, 1)], replicasets=[_replicaset("ad-1", "ad")],
+                   pods=_without_owners([_pod("something-else", None,
+                                               _crashing("something-else", "x"), 5)]))
+    [ad] = [w for w in namespace_health(state, "default").workloads if w.workload == "Deployment/ad"]
+    assert ad.restarts is None and "restarts" not in ad.model_dump(mode="json")
+    assert any("could be found" in n for n in ad.notes)
+
+
+def test_the_mock_fixture_without_owners_gives_the_same_picture():
+    """The --mock fixture is internally consistent, so stripping owners (as a
+    pre-2.3.0 capture) must change nothing but the note."""
+    from k8stools.mock_state import BUILTIN_STATE_FILE
+    data = json.loads(BUILTIN_STATE_FILE.read_text())
+    with_owners = namespace_health(MockState(json.loads(json.dumps(data)), frozen=True), "default")
+    _without_owners(data["pods"])
+    old = namespace_health(MockState(data, frozen=True), "default")
+    assert old.workloads == with_owners.workloads
+    assert old.healthy == with_owners.healthy
+    assert set(old.notes) == set(with_owners.notes) | {composites.NOTE_MATCHED_BY_NAME}
 
 
 def test_restart_gap_of_a_running_container_is_the_back_off():
@@ -158,16 +237,18 @@ def test_restart_gap_of_a_running_container_is_the_back_off():
 def test_namespace_health_is_bounded():
     h = namespace_health(MockState.from_builtin(frozen=True), "default")
     size = len(json.dumps(h.model_dump(mode="json")))
-    assert size <= NAMESPACE_BUDGET_PER_WORKLOAD * len(h.workloads)
+    assert size <= NAMESPACE_BUDGET_PER_WORKLOAD * len(h.workloads) + \
+        HEALTHY_LINE_BUDGET * len(h.healthy) + 400
 
 
 def test_namespace_health_on_the_mock_fixture():
     h = mock_tools.get_namespace_health("default")
-    first = h.workloads[0]
-    assert first.workload == "Deployment/ad" and not first.healthy
-    assert first.last_termination.reason == "OOMKilled"
-    assert first.template_changed == datetime.timedelta(hours=7, minutes=34)
-    assert all(w.healthy for w in h.workloads[1:])
+    [ad] = h.workloads
+    assert ad.workload == "Deployment/ad" and not ad.healthy
+    assert ad.last_termination.reason == "OOMKilled"
+    assert ad.template_changed == datetime.timedelta(hours=7, minutes=34)
+    assert h.healthy == ["DaemonSet/otel-collector-agent 1/1", "Deployment/test-deployment 3/3",
+                         "Job/cleanup-28999999 1/1", "Pod/test-pod-123 2/2", "StatefulSet/postgres 1/1"]
     assert h.common_failures == []  # only one workload is failing
 
 
@@ -258,9 +339,8 @@ def test_config_references_come_through():
 # --- serialization and registration -------------------------------------------------
 
 def test_empty_fields_are_left_out():
-    dumped = composites.WorkloadHealth(workload="Deployment/x", ready=1, desired=1).model_dump(mode="json")
-    assert dumped == {"workload": "Deployment/x", "ready": 1, "desired": 1, "restarts": 0,
-                      "healthy": True}
+    dumped = composites.WorkloadHealth(workload="Deployment/x", ready=0, desired=1).model_dump(mode="json")
+    assert dumped == {"workload": "Deployment/x", "ready": 0, "desired": 1, "healthy": False}
 
 
 def test_registered_with_short_descriptions():

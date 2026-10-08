@@ -95,7 +95,7 @@ and `[k8stools] note:` lines at the top of a log (see
 
 These are the tools we define:
 
-* `get_namespace_health` - what is wrong in a namespace, and where: one line per workload, unhealthy first, with the last termination (exit code and its meaning beside Kubernetes' reason), instance lifetime and restart gap, memory limit vs request, and when the template last changed; workloads failing the same way are grouped
+* `get_namespace_health` - what is wrong in a namespace, and where: a full entry per unhealthy workload and one line per healthy one, with the last termination (exit code and its meaning beside Kubernetes' reason), instance lifetime and restart gap, memory limit vs request, and when the template last changed; workloads failing the same way are grouped
 * `get_workload_report` - everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails; the last template change; the ConfigMaps and Secrets it uses
 * `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
 * `get_namespaces` - get a list of namespaces, like `kubectl get namespace`

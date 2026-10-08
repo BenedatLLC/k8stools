@@ -14,7 +14,8 @@ dates are release-tag dates.
 ### Added
 - **`get_namespace_health` and `get_workload_report`** (issue #13), composite
   tools for investigation.
-  - **`get_namespace_health`:** one compact entry per workload, unhealthy first:
+  - **`get_namespace_health`:** a full entry per unhealthy workload, and one line
+    per healthy one:
     - ready/desired and restarts;
     - the last termination, with the exit code's fixed meaning beside Kubernetes'
       recorded reason, noted when they disagree (137 without OOMKilled);
@@ -23,7 +24,8 @@ dates are release-tag dates.
     - memory limit against request;
     - when the pod template last changed.
 
-    Workloads failing the same way are grouped.
+    Unhealthy workloads with the same exit code, reason and memory shape are
+    grouped, with their instance lifetimes shown.
   - **`get_workload_report`:** one workload in one call:
     - container images, resources and probes;
     - each instance's state and last termination;
@@ -33,7 +35,9 @@ dates are release-tag dates.
     - the last template change, and the ConfigMaps and Secrets it uses.
 
   Both are built from the other tools, so they replay from any capture, and they
-  state facts, not diagnoses. Output is bounded and empty fields are omitted.
+  state facts, not diagnoses. On captures from before 2.3.0, which have no pod
+  owners, pods are matched to their workloads by their generated names, and the
+  result says so. Output is bounded and empty fields are omitted.
   They replace `get_pod_summaries` and `get_workload_history` in the `triage`
   toolset, which is now `get_cluster_info`, `get_namespace_health`,
   `get_workload_report`, `get_events` and `get_node_summaries`.
