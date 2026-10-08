@@ -76,16 +76,17 @@ def test_values_are_whole_second_durations(serve):
     assert node.conditions_since["Ready"].microseconds == 0
 
 
-def test_docstring_warns_that_a_restart_need_not_reset_ready():
+def test_a_node_with_a_ready_time_says_it_is_not_uptime(serve):
     """On benben, a minikube stop/start (Rebooted event, every container
     restarted) left Ready's lastTransitionTime at the node's creation, 167 days
     earlier. Read naively, "Ready for 167 days" supports exactly the "broken
     since it was deployed" misreading issue #9 set out to prevent, so the tool
     description has to say so and point at what does date a node's start."""
-    doc = k8s_tools.get_node_summaries.__doc__
-    assert "conditions_since" in doc
-    assert "does not reset it" in doc
-    assert '"Rebooted"' in doc and "kube-proxy" in doc
+    [node] = serve(_node(_condition("Ready", "True", _ago(days=167))))
+    assert node.notes == [k8s_tools.NOTE_NODE_READY]
+    assert "isn't uptime" in node.notes[0] and "Rebooted" in node.notes[0]
+    [no_times] = serve(_node(_condition("Ready", "True")))
+    assert no_times.notes == []
 
 
 # --- capture and replay --------------------------------------------------------

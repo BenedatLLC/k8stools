@@ -23,6 +23,26 @@ dates are release-tag dates.
   hold the credentials below in full.
 
 ### Changed
+- **Tool descriptions are a few lines each** (issue #20): what the tool answers,
+  its parameters, and at most one warning. Together they went from 47,946
+  characters to about 5,000, which is roughly 11,000 fewer tokens on every turn
+  of an agent that has all the tools. The field-by-field reference moved to
+  [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md).
+- **Warnings come back with the results they apply to** (issue #20), rather than
+  in descriptions:
+  - Nodes, pods, container statuses, events and DaemonSets have a `notes` list,
+    empty unless one applies. It covers the Ready time not being uptime, event
+    counts that lag and BackOff counts that aren't restarts, `last_restart`,
+    `ran_for` vs the restart cadence, a waiting container's logs, and an empty
+    node selector.
+  - Logs can begin with `[k8stools] note:` lines, which are not container output:
+    for a waiting container whose `previous=False` and `previous=True` logs are
+    the same, and when the text is the kubelet's error rather than a log. Callers
+    that parse logs should skip lines starting with `k8s_tools.LOG_NOTE_PREFIX`.
+  - `get_workload_history`'s `limits` also says how a ConfigMap write reaches a
+    running pod.
+
+  Captures don't store notes; replay derives them, including for older captures.
 - **Redaction catches credentials embedded in longer strings** (issue #12).
   Previously these went through unless the value had a known token shape or sat
   under a sensitive name. Only the credential is replaced:

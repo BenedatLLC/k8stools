@@ -118,27 +118,29 @@ def test_an_event_with_no_times_or_count_stays_unknown(serve):
     assert (e.count, e.first_seen, e.last_seen) == (None, None, None)
 
 
-def test_docstrings_warn_that_backoff_counts_are_not_restarts():
+def test_a_backoff_event_says_its_count_is_not_restarts(serve):
     """BackOff is emitted repeatedly while waiting (2561 BackOff vs 579 Created
     for one pod on benben), so reading it as restarts overstates the rate ~4x.
-    The docstring is the MCP tool description, so the warning has to be there."""
-    for tool in (k8s_tools.get_pod_events, k8s_tools.get_events):
-        assert '"BackOff"' in tool.__doc__ and '"Created"' in tool.__doc__
-        assert "first_seen" in tool.__doc__ and "count" in tool.__doc__
+    Since #20 the warning travels with the BackOff event, not the description."""
+    backoff = _only(serve(_event("BackOff", count=2561, first=_ago(days=2), last=_ago(minutes=1))))
+    assert k8s_tools.NOTE_EVENT_BACKOFF in backoff.notes
+    created = _only(serve(_event("Created", count=579, first=_ago(days=2), last=_ago(minutes=2))))
+    assert k8s_tools.NOTE_EVENT_BACKOFF not in created.notes
 
 
-def test_docstrings_warn_that_records_lag_behind_what_they_count():
+def test_a_repeated_event_says_its_record_can_lag(serve):
     """client-go counts an occurrence before its spam filter decides whether to
     write it, and the filter budgets writes per object and event type (burst 25,
     then one per 5 minutes). On a real crash loop a Created record's last_seen
     read 29 minutes while the container had restarted 46s earlier, then its
-    count jumped 595 -> 601. The docstring has to send agents to the container
-    status for the time of the last restart."""
-    for tool in (k8s_tools.get_pod_events, k8s_tools.get_events):
-        doc = tool.__doc__
-        assert "lag" in doc and "every 5 minutes" in doc
-        assert "last_state.finished_at" in doc and "PodSummary.last_restart" in doc
-        assert "don't compare counts across" in doc
+    count jumped 595 -> 601. And first_seen is where the record starts, which
+    agents read as when the failure began."""
+    repeated = _only(serve(_event(count=579, first=_ago(days=2), last=_ago(minutes=2))))
+    assert repeated.notes == [k8s_tools.NOTE_EVENT_COUNT]
+    note = k8s_tools.NOTE_EVENT_COUNT
+    assert "5 minutes" in note and "lag" in note and "not necessarily when the problem did" in note
+    once = _only(serve(_event(event_time=_ago(minutes=10))))
+    assert once.notes == []
 
 
 # --- capture and replay --------------------------------------------------------

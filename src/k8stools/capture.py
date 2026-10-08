@@ -304,7 +304,7 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
         for status in statuses:
             stats.containers += 1
             if include_logs:
-                logs = _safe(k8s_tools.get_logs_for_pod_and_container, summary.name,
+                logs = _safe(k8s_tools._read_pod_log, summary.name,
                              namespace, status.container_name, tail=max_log_lines,
                              default=None)
                 if logs is not None:
@@ -313,7 +313,7 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
             if include_previous_logs and status.restart_count > 0:
                 # A missing previous instance is expected - it may have been
                 # garbage-collected - so this is non-fatal, but it is counted.
-                previous = _safe(k8s_tools.get_logs_for_pod_and_container, summary.name,
+                previous = _safe(k8s_tools._read_pod_log, summary.name,
                                  namespace, status.container_name, tail=max_log_lines,
                                  previous=True, default=None)
                 if previous is not None:
