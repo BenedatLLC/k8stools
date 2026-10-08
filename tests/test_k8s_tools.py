@@ -296,22 +296,49 @@ class MockAppsV1Api:
         return SimpleNamespace(items=[deployment1, deployment2])
 
 
+class MockDiscoveryV1Api:
+    """EndpointSlices for the services above: get_service_summaries counts each
+    Service's backends, and without this the call went to whatever cluster the
+    kubeconfig named - or failed outright in CI, where there is none."""
+
+    def _slices(self):
+        def endpoint(ip, pod, ready):
+            return SimpleNamespace(addresses=[ip], node_name="worker-1",
+                                   conditions=SimpleNamespace(ready=ready, serving=ready, terminating=False),
+                                   target_ref=SimpleNamespace(kind="Pod", name=pod))
+        return [SimpleNamespace(
+            metadata=SimpleNamespace(name="nginx-service-abc", namespace="default",
+                                     labels={"kubernetes.io/service-name": "nginx-service"}),
+            ports=[SimpleNamespace(port=80, protocol="TCP")],
+            endpoints=[endpoint("10.244.0.10", "nginx-1", True), endpoint("10.244.0.11", "nginx-2", True),
+                       endpoint("10.244.0.12", "nginx-3", False)])]
+
+    def list_endpoint_slice_for_all_namespaces(self):
+        return SimpleNamespace(items=self._slices())
+
+    def list_namespaced_endpoint_slice(self, namespace):
+        return SimpleNamespace(items=[s for s in self._slices() if s.metadata.namespace == namespace])
+
+
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown_mock():
-    """Set up mock K8S client before tests and clean up after."""
+    """Set up mock K8S clients before tests and clean up after."""
     # Store original values
     original_k8s = k8s_tools.K8S
     original_apps_v1 = k8s_tools.APPS_V1_API
-    
+    original_discovery_v1 = k8s_tools.DISCOVERY_V1_API
+
     # Set up mocks
     k8s_tools.K8S = MockK8S()
     k8s_tools.APPS_V1_API = MockAppsV1Api()
-    
+    k8s_tools.DISCOVERY_V1_API = MockDiscoveryV1Api()
+
     yield
-    
+
     # Clean up - reset to original values
     k8s_tools.K8S = original_k8s
     k8s_tools.APPS_V1_API = original_apps_v1
+    k8s_tools.DISCOVERY_V1_API = original_discovery_v1
 
 # Note: We no longer set the global state at module level
 # k8s_tools.K8S = MockK8S()  # Removed this line
@@ -508,6 +535,12 @@ def test_service_summaries():
     assert service3.external_ip is None
     assert len(service3.ports) == 0
     assert isinstance(service3.age, datetime.timedelta)
+
+    # Endpoint counts from the EndpointSlices: none for app-service's selector,
+    # and unknown for an ExternalName Service, which has no endpoints.
+    counts = {s.name: (s.ready_endpoints, s.not_ready_endpoints) for s in services}
+    assert counts == {"nginx-service": (2, 1), "app-service": (0, 0),
+                      "external-service": (None, None)}
     
     # Test namespace-specific services
     default_services = k8s_tools.get_service_summaries("default")

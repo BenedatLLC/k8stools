@@ -1816,7 +1816,7 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
     try:
         endpoint_counts = {(e.namespace, e.service): (e.ready, e.not_ready)
                            for e in get_endpoint_summaries(namespace)}
-    except K8sApiError as e:
+    except (K8sApiError, K8sConfigError) as e:
         logging.warning(f"get_service_summaries: endpoint counts unavailable: {e}")
         endpoint_counts = None
 
@@ -2113,7 +2113,7 @@ def get_ingress_summaries(namespace: Optional[str] = None) -> list[IngressSummar
     try:
         ready: Optional[dict[tuple[str, str], int]] = {
             (e.namespace, e.service): e.ready for e in get_endpoint_summaries(namespace)}
-    except K8sApiError as e:
+    except (K8sApiError, K8sConfigError) as e:
         logging.warning(f"get_ingress_summaries: backend readiness unavailable: {e}")
         ready = None
 
