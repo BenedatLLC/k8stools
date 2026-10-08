@@ -223,7 +223,47 @@ def capture_state(namespaces: Optional[list[str]] = None,
         state["pods"] += _capture_pods(ns, captured_at, include_logs, max_log_lines,
                                        include_previous_logs, stats, redactor)
     state["metrics"] = _capture_metrics(target_namespaces, captured_at, redactor)
+    state["custom_resources"] = _capture_custom_resources(namespaces, captured_at, redactor)
     return state
+
+
+#: Instances captured per custom resource type: operators such as Argo can
+#: create thousands, and these are health summaries, not an inventory.
+MAX_CUSTOM_RESOURCES_PER_TYPE = 500
+
+
+def _capture_custom_resources(namespaces: Optional[list[str]], captured_at: datetime.datetime,
+                              redactor: "_Redactor") -> dict[str, Any]:
+    """CRDs and each type's instances' health.
+
+    Read access to custom resources is granted per API group, so a role often
+    covers only some: a type it can't read is recorded with the reason, and
+    replay raises it as a live call would, rather than failing the capture.
+    """
+    try:
+        definitions = k8s_tools.get_custom_resource_definitions()
+    except k8s_tools.K8sApiError as e:
+        logging.warning(f"Custom resources not captured: {e}")
+        return {"available": False, "reason": str(e)}
+    instances = []
+    for crd in definitions:
+        record: dict[str, Any] = {"group": crd.group, "plural": crd.plural,
+                                  "version": crd.storage_version}
+        try:
+            if crd.scope == "Namespaced" and namespaces:
+                items = [r for ns in namespaces for r in k8s_tools.get_custom_resource_status(
+                    crd.group, crd.plural, crd.storage_version, ns)]
+            else:
+                items = k8s_tools.get_custom_resource_status(crd.group, crd.plural,
+                                                             crd.storage_version)
+        except k8s_tools.K8sApiError as e:
+            instances.append(record | {"available": False, "reason": str(e)})
+            continue
+        record |= {"available": True, "truncated": len(items) > MAX_CUSTOM_RESOURCES_PER_TYPE,
+                   "items": _encode_all(redactor(items[:MAX_CUSTOM_RESOURCES_PER_TYPE]), captured_at)}
+        instances.append(record)
+    return {"available": True, "definitions": _encode_all(definitions, captured_at),
+            "instances": instances}
 
 
 def _capture_metrics(namespaces: list[str], captured_at: datetime.datetime,

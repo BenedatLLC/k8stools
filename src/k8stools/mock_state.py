@@ -717,6 +717,38 @@ class MockState:
                 for r in self._metrics().get("nodes", [])]
 
     @_pinned_query
+    def get_custom_resource_definitions(self) -> list[k8s_tools.CrdSummary]:
+        """Captures from before custom resources were captured replay none."""
+        record = self._data.get("custom_resources")
+        if record is None:
+            return []
+        if not record.get("available"):
+            raise k8s_tools.K8sApiError(record.get("reason") or "Custom resources were not readable.")
+        return [decode_model(k8s_tools.CrdSummary, r, self._clock)
+                for r in record.get("definitions", [])]
+
+    @_pinned_query
+    def get_custom_resource_status(self, group: str, plural: str, version: Optional[str] = None,
+                                   namespace: Optional[str] = None
+                                   ) -> list[k8s_tools.CustomResourceStatus]:
+        """The captured instances; the error a live call gave; or, for a type the
+        capture didn't have, the live tool's not-found."""
+        record = self._data.get("custom_resources")
+        if record is None:
+            raise k8s_tools.K8sApiError(
+                "This capture predates custom resources (recorded from k8stools 3.0.0).")
+        if not record.get("available"):
+            raise k8s_tools.K8sApiError(record.get("reason") or "Custom resources were not readable.")
+        for entry in record.get("instances", []):
+            if (entry.get("group"), entry.get("plural")) == (group, plural):
+                if not entry.get("available"):
+                    raise k8s_tools.K8sApiError(entry.get("reason") or f"{plural}.{group} was not readable.")
+                items = [decode_model(k8s_tools.CustomResourceStatus, r, self._clock)
+                         for r in entry.get("items", [])]
+                return [r for r in items if namespace is None or r.namespace == namespace]
+        raise k8s_tools.K8sApiError(f"No custom resource '{plural}.{group}' in this cluster.")
+
+    @_pinned_query
     def get_ingress_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
         """Captures from before Ingresses were captured replay none."""
         return self._decode_all("ingresses", k8s_tools.IngressSummary, namespace)

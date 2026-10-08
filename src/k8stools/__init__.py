@@ -49,6 +49,8 @@ These are the tools we define:
 * get_node_metrics - node CPU and memory use against allocatable
 * get_cronjob_summaries - get a list of CronJobs, like `kubectl get cronjobs`
 * get_job_summaries - get a list of Jobs, like `kubectl get jobs`
+* get_custom_resource_definitions - the custom kinds the cluster serves
+* get_custom_resource_status - custom resources' conditions and generation
 * get_logs_for_job - retrieve logs from a Job's most-recent pod
 * get_logs_for_cronjob - retrieve logs from a CronJob's most-recent run
 * get_pvc_summaries - get a list of PersistentVolumeClaims, like `kubectl get pvc`
@@ -77,6 +79,8 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_node_metrics
 * print_cronjob_summaries
 * print_job_summaries
+* print_custom_resource_definitions
+* print_custom_resource_status
 * print_pvc_summaries
 * print_events
 

@@ -1708,5 +1708,78 @@
         "window_seconds": 15.0
       }
     ]
+  },
+  "custom_resources": {
+    "available": true,
+    "definitions": [
+      {
+        "name": "certificates.cert-manager.io",
+        "group": "cert-manager.io",
+        "kind": "Certificate",
+        "plural": "certificates",
+        "scope": "Namespaced",
+        "versions": [
+          "v1"
+        ],
+        "storage_version": "v1",
+        "short_names": [
+          "cert",
+          "certs"
+        ],
+        "age_seconds": 691300.0
+      }
+    ],
+    "instances": [
+      {
+        "group": "cert-manager.io",
+        "plural": "certificates",
+        "version": "v1",
+        "available": true,
+        "truncated": false,
+        "items": [
+          {
+            "kind": "Certificate",
+            "name": "shop-tls",
+            "namespace": "default",
+            "age_seconds": 7190.0,
+            "generation": 1,
+            "observed_generation": 1,
+            "conditions": [
+              {
+                "type": "Ready",
+                "status": "False",
+                "reason": "DoesNotExist",
+                "message": "Issuing certificate as Secret does not exist",
+                "since_seconds": 7188.0
+              },
+              {
+                "type": "Issuing",
+                "status": "True",
+                "reason": "DoesNotExist",
+                "message": "Issuing certificate as Secret does not exist",
+                "since_seconds": 7188.0
+              }
+            ]
+          },
+          {
+            "kind": "Certificate",
+            "name": "postgres-tls",
+            "namespace": "default",
+            "age_seconds": 259200.0,
+            "generation": 2,
+            "observed_generation": 2,
+            "conditions": [
+              {
+                "type": "Ready",
+                "status": "True",
+                "reason": "Ready",
+                "message": "Certificate is up to date and has not expired",
+                "since_seconds": 259000.0
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

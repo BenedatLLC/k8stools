@@ -321,6 +321,10 @@ class _FakeCluster:
                      "get_pvc_summaries", "get_pod_summaries"):
             monkeypatch.setattr(k8s_tools, name, lambda ns=None: [])
         monkeypatch.setattr(k8s_tools, "get_events", lambda **kw: [])
+        # Cluster-wide steps that would otherwise reach a real cluster from a test.
+        monkeypatch.setattr(k8s_tools, "get_container_metrics", lambda ns=None: [])
+        monkeypatch.setattr(k8s_tools, "get_node_metrics", lambda: [])
+        monkeypatch.setattr(k8s_tools, "get_custom_resource_definitions", lambda: [])
         monkeypatch.setattr(k8s_tools, "get_configmap_summaries", lambda ns=None: [
             k8s_tools.ConfigMapSummary(name="app-config", namespace="default",
                                        key_count=2, data_size=100,

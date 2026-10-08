@@ -292,3 +292,14 @@ def test_ingress_backends_agree_with_services(state):
                 assert svc is not None, r.service
                 assert any(str(p.port) == r.port for p in svc.ports), r
                 assert r.backend_ready == svc.ready_endpoints
+
+
+def test_custom_resources_agree_with_their_definitions(state):
+    crds = {(d.group, d.plural): d for d in state.get_custom_resource_definitions()}
+    assert crds
+    for (group, plural), crd in crds.items():
+        for r in state.get_custom_resource_status(group, plural):
+            assert r.kind == crd.kind
+            assert (r.namespace is not None) == (crd.scope == "Namespaced")
+            assert r.age <= crd.age
+            assert all(c.since <= r.age for c in r.conditions if c.since is not None)

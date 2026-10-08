@@ -133,6 +133,19 @@ def get_node_metrics() -> list[k8s_tools.NodeUsage]:
 get_node_metrics.__doc__ = k8s_tools.get_node_metrics.__doc__
 
 
+def get_custom_resource_definitions() -> list[k8s_tools.CrdSummary]:
+    return _state().get_custom_resource_definitions()
+
+get_custom_resource_definitions.__doc__ = k8s_tools.get_custom_resource_definitions.__doc__
+
+
+def get_custom_resource_status(group: str, plural: str, version: Optional[str] = None,
+                               namespace: Optional[str] = None) -> list[k8s_tools.CustomResourceStatus]:
+    return _state().get_custom_resource_status(group, plural, version, namespace)
+
+get_custom_resource_status.__doc__ = k8s_tools.get_custom_resource_status.__doc__
+
+
 def get_ingress_summaries(namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
     return _state().get_ingress_summaries(namespace)
 
@@ -278,6 +291,8 @@ TOOLS = [
     get_node_metrics,
     get_cronjob_summaries,
     get_job_summaries,
+    get_custom_resource_definitions,
+    get_custom_resource_status,
     get_logs_for_job,
     get_logs_for_cronjob,
     get_pvc_summaries,

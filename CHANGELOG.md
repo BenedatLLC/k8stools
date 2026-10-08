@@ -18,8 +18,29 @@ dates are release-tag dates.
   resource usage (metrics.k8s.io), alongside limits.
 - [#17](https://github.com/BenedatLLC/k8stools/issues/17): Add
   get_ingress_summaries, with backend resolution.
+- [#18](https://github.com/BenedatLLC/k8stools/issues/18): Custom resources: list
+  CRDs and instance conditions (not raw objects).
 
 ### Added
+- **`get_custom_resource_definitions` and `get_custom_resource_status`** (issue
+  #18).
+  - **Definitions:** the custom kinds the cluster serves.
+  - **Status:** each instance's `status.conditions` with the time since each
+    changed, and whether its controller has acted on the latest spec
+    (`observed_generation` against `generation`, read per condition when the
+    status doesn't have it).
+  - **Deliberately narrower than a raw reader:** no spec and no other status.
+    Raw custom resources can be huge, some keep credentials in spec, and
+    reading them generally needs wildcard permissions.
+  - **Captures** store each type's instances (up to 500), or, where the
+    capture's role can't read a type, the reason, which replay raises as live.
+    Custom-resource access is granted per group, so this doesn't fail the
+    capture.
+  - **`--mock`:** the fixture has cert-manager's `Certificate` CRD. `shop-tls`
+    isn't Ready because its Secret doesn't exist; it's the Secret the `shop`
+    Ingress serves TLS from.
+  - `print_custom_resource_definitions` and `print_custom_resource_status` are
+    their companions.
 - **`get_ingress_summaries`** (issue #17): Ingresses with their class, and each
   host/path rule's backend resolved against the namespace's Services.
   `backend_problem` says when the Service or port doesn't exist, the most common
