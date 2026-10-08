@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## Unreleased
+## 3.0.0 — unreleased
 
 ### Documentation
 - **The README says plainly where redaction applies.** The functions in `TOOLS`
