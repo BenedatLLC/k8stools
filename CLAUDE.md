@@ -300,6 +300,32 @@ The exceptions:
   in the API. With the exemption kept, this whole change is redaction-neutral on
   that cluster: same 6 redactions, same paths, same values as before it.
 
+**Context rules (#12)** catch a credential embedded in a longer string by what
+surrounds it — URL userinfo, a sensitive `--flag=`/`--flag value`/`-Dprop=`,
+`Password=`/`password=` connection strings, query parameters including presigned
+URL signatures, and `["--token", "x"]` in an argv list — replacing only the
+credential. Two principles keep them from over-reaching, and both were driven by
+measurement rather than reasoning:
+
+- **A reference is not a secret.** Nothing is redacted that only *locates* one:
+  `$(VAR)`/`${VAR}`/`$VAR` (uppercase, so `$Password123` still counts),
+  templates, file paths, booleans, masks, and names ending in a location word
+  (`--password-file`, `--secret-name`). This applies to the name rule as well.
+- **Running text is fuzzy.** A `--flag value` pair inside one string (logs,
+  `sh -c`, `--help` output) needs a credential-like value: a digit, a symbol, or
+  16+ characters. Measured on benben's logs, prose and help text otherwise gave
+  `--tls-sni-cert-key multiple times` and `--kubelet-client-key string`. Argv
+  lists and `name=value` settings don't need it.
+
+The measurement that set them: an unredacted benben capture went from 6
+redactions (3 not secrets: two `topology_key`, one `"true"` label) to 6, all
+secrets (the OTel demo database password in three formats, plus the three env
+vars). Re-measure the same way when changing any rule: capture with
+`--no-redact` into the scratchpad, diff old and new `redact_object` leaf by
+leaf, read every hit, then delete the capture. `k8s-capture-state --redact-file`
+re-applies the current rules to an existing capture; the capture also redacts pod
+labels, so the whole-file pass and capture-time redaction agree.
+
 `bytes` values are decoded, redacted, and re-encoded rather than falling through
 to the scalar branch — no tool returns bytes now that the log readers decode at the
 API boundary, but that branch is what let container logs nearly escape this pass.

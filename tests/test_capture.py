@@ -508,3 +508,66 @@ def test_capture_survives_an_unreadable_cluster_record(monkeypatch):
     state = capture_state(redact=False)
     assert state["cluster"] is None
     assert _reload(state).get_cluster_info().context is None
+
+
+# --- re-redacting an existing capture (issue #12) ------------------------------
+
+def _old_capture(path, gzipped=False):
+    import gzip as _gzip
+    state = {"version": CAPTURE_VERSION, "captured_at": "2026-09-13T01:37:32+00:00",
+             "redacted": False,
+             "pods": [{"summary": {"name": "p", "namespace": "default"},
+                       "spec": {"containers": [{"name": "c", "env": [
+                           {"name": "DATABASE_URL",
+                            "value": "postgres://app:hunter2@db/app"}],
+                           "args": ["--token", "ghp_abcdefghij0123456789"]}]}}]}
+    data = json.dumps(state, indent=2).encode()
+    path.write_bytes(_gzip.compress(data) if gzipped else data)
+
+
+@pytest.mark.parametrize("gzipped", [False, True])
+def test_redact_file_rewrites_an_existing_capture_in_place(tmp_path, gzipped):
+    from k8stools.capture import redact_capture_file
+    from k8stools.mock_state import read_capture
+    path = tmp_path / "old.json"
+    _old_capture(path, gzipped)
+    assert redact_capture_file(path) == 2
+    state, still_gzipped = read_capture(path)
+    assert still_gzipped == gzipped
+    assert state["redacted"] is True
+    container = state["pods"][0]["spec"]["containers"][0]
+    assert container["env"][0]["value"] == "postgres://app:[REDACTED]@db/app"
+    assert container["args"] == ["--token", "[REDACTED]"]
+    assert state["captured_at"] == "2026-09-13T01:37:32+00:00"
+    assert redact_capture_file(path) == 0          # idempotent
+
+
+def test_redact_file_cli_needs_no_cluster(tmp_path, monkeypatch, capsys):
+    import sys as _sys
+    from k8stools import capture
+    path = tmp_path / "old.json"
+    _old_capture(path)
+    monkeypatch.setattr(k8s_tools, "configure", lambda *a, **k: pytest.fail("must not bind"))
+    monkeypatch.setattr(_sys, "argv", ["k8s-capture-state", "--redact-file", str(path)])
+    assert capture.main() == 0
+    assert "Redacted 2 value(s)" in capsys.readouterr().out
+    monkeypatch.setattr(_sys, "argv", ["k8s-capture-state", "--redact-file", str(tmp_path / "nope")])
+    assert capture.main() == 1
+
+
+def test_pod_labels_are_redacted_at_capture_time(monkeypatch):
+    """Labels are served on replay, so they get the same pass as tool output -
+    which is also what --redact-file applies to a whole file."""
+    import k8stools.capture as capture
+    monkeypatch.setattr(capture, "_pod_labels",
+                        lambda ns: {"p": {"app": "x", "auth-token": "ghp_abcdefghij0123456789"}})
+    monkeypatch.setattr(k8s_tools, "get_pod_summaries", lambda ns=None: [
+        k8s_tools.PodSummary(name="p", namespace="default", total_containers=1,
+                             ready_containers=1, restarts=0, last_restart=None,
+                             age=datetime.timedelta(days=1))])
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda *a, **k: [])
+    monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda *a, **k: {})
+    stats = CaptureStats()
+    records = capture._capture_pods("default", datetime.datetime.now(datetime.timezone.utc),
+                                    False, 0, False, stats, _Redactor(True, stats))
+    assert records[0]["labels"] == {"app": "x", "auth-token": "[REDACTED]"}

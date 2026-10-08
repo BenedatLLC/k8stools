@@ -41,7 +41,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from . import k8s_tools
-from .mock_state import CAPTURE_VERSION, encode_model
+from .mock_state import CAPTURE_VERSION, CaptureFormatError, encode_model, read_capture
 from .redaction import redact_object, redaction_enabled
 
 
@@ -292,7 +292,9 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
                                   namespace, default=[]))
         record: dict[str, Any] = {
             "summary": encode_model(summary, captured_at),
-            "labels": labels_by_pod.get(summary.name, {}),
+            # Labels aren't a tool's output, but they're served on replay, so
+            # they get the same pass (and --redact-file then agrees with this).
+            "labels": redactor(labels_by_pod.get(summary.name, {})),
             "container_statuses": _encode_all(statuses, captured_at),
             "spec": redactor(_safe(k8s_tools.get_pod_spec, summary.name, namespace,
                                    default={})),
@@ -335,8 +337,10 @@ def _safe(fn, *args, default=None, **kwargs):
         return default
 
 
-def write_state(state: dict[str, Any], output: Path) -> None:
-    """Write a capture, gzipping it when the filename ends in ``.gz``.
+def write_state(state: dict[str, Any], output: Path,
+                gzipped: Optional[bool] = None) -> None:
+    """Write a capture, gzipping it when the filename ends in ``.gz`` (or as
+    ``gzipped`` says, when given).
 
     Indented rather than compact on purpose. A capture checked into git is
     re-captured and re-committed over time, and git stores blobs zlib-compressed
@@ -348,12 +352,35 @@ def write_state(state: dict[str, Any], output: Path) -> None:
     when the file travels on its own - attached to an issue, or simply too large
     to keep expanded in a working tree.
     """
-    if output.suffix == ".gz":
+    if gzipped if gzipped is not None else output.suffix == ".gz":
         with gzip.open(output, "wt", encoding="utf-8") as f:
             json.dump(state, f, indent=2, sort_keys=False)
     else:
         with open(output, "w") as f:
             json.dump(state, f, indent=2, sort_keys=False)
+
+
+#: Top-level capture keys that describe the file rather than the cluster.
+_CAPTURE_METADATA_KEYS = ("version", "captured_at", "redacted")
+
+
+def redact_capture_file(path: Path) -> int:
+    """Re-run redaction over an existing capture, in place; returns the count.
+
+    For captures written before a redaction rule existed (issue #12 added
+    credentials embedded in args, URLs and connection strings) or with
+    ``--no-redact``. Every value in a capture came from a tool result, so the same
+    pass applies; the file keeps its compression, and its ``redacted`` flag is set.
+    """
+    state, gzipped = read_capture(path)
+    count = 0
+    for key, value in state.items():
+        if key not in _CAPTURE_METADATA_KEYS:
+            state[key], n = redact_object(value)
+            count += n
+    state["redacted"] = True
+    write_state(state, path, gzipped=gzipped)
+    return count
 
 
 def main() -> int:
@@ -386,12 +413,26 @@ def main() -> int:
     parser.add_argument('--no-redact', action='store_true', default=False,
                         help="Disable secret redaction of captured values (redaction is on "
                              "by default; can also be disabled with K8STOOLS_REDACT=0)")
+    parser.add_argument('--redact-file', metavar='FILE', default=None,
+                        help="Instead of capturing, re-run redaction over an existing "
+                             "capture FILE and rewrite it in place (keeping its "
+                             "compression). Use on captures taken with --no-redact, or "
+                             "before a newer k8stools added redaction rules.")
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='INFO', help="Log level [default: INFO]")
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level),
                         format="%(levelname)s: %(message)s")
+
+    if args.redact_file:
+        try:
+            count = redact_capture_file(Path(args.redact_file))
+        except CaptureFormatError as e:
+            print(f"Redaction failed: {e}", file=sys.stderr)
+            return 1
+        print(f"Redacted {count} value(s) in {args.redact_file}.")
+        return 0
 
     redact = redaction_enabled(no_redact_flag=args.no_redact)
     if redact:

@@ -25,7 +25,7 @@ field; it replaces the matched value with the visible marker ``[REDACTED]`` so a
 agent can distinguish "absent" from "hidden", and the number of redactions is
 logged for auditability.
 
-Two independent signals trigger a redaction:
+Three independent signals trigger a redaction:
 
 1. **Value shape** — the string looks like a credential regardless of where it
    sits: AWS access keys (``AKIA...``), bearer/JWT tokens (``eyJ...``), or PEM
@@ -50,13 +50,39 @@ Two independent signals trigger a redaction:
    nothing. The exemption does not apply to env-var names, where a variable a user
    named ``KEY`` plausibly does hold one.
 
+   The same exemption covers schema fields that compound ``key``, in both the
+   API's camelCase and the client's snake_case (which ``get_pod_spec`` returns):
+   an affinity term's ``topologyKey`` and its label-key lists, and k8stools' own
+   ``binary_data_keys``. ``topology_key`` was 2 of 6 redactions on a real cluster.
+
+3. **Context** (issue #12) — a credential embedded in a longer string, found by
+   what surrounds it: URL userinfo (``postgres://user:PASSWORD@host``), a
+   sensitive flag or setting (``--password=x``, ``--token x``, ``-Dapi.key=x``,
+   ``Password=x;``, ``password=x``, ``?access_token=x&``, a presigned URL's
+   ``X-Amz-Signature``/``sig``), and in an argv list a sensitive flag followed by
+   its value (``["--token", "x"]``). Only the credential is replaced. In running
+   text (``sh -c "..."``, logs, help output) a ``--flag value`` pair counts only
+   when the value looks like a credential — a digit or symbol, or 16+ characters —
+   because prose and ``--help`` output put words and type names after flags.
+
+No rule redacts a value that cannot be a credential: a reference to one
+(``$(DB_PASSWORD)``, ``${token}``, ``$API_KEY``, a template), a file path
+(``--tls-key /etc/certs/tls.key``), a boolean, a mask, or a Go flag type name. Nor
+a setting whose name says it *locates* a secret (``--password-file``,
+``--secret-name``, ``--token-url``). As with ``secretKeyRef.key``, hiding where a
+secret comes from protects nothing.
+
+A secret with nothing naming it — a bare positional argument — can't be told from
+any other value, and is not redacted.
+
 A string value that is itself a JSON object or array — config-as-JSON under a
 single ConfigMap key is a common pattern — is parsed and redacted entry by entry
 rather than treated as one opaque blob, then re-serialized (which normalizes its
-whitespace). Both rules apply inside, so an incidental token match no longer
+whitespace). All three rules apply inside, so an incidental token match no longer
 blacks out a whole config file and a ``{"password": ...}`` buried in one no longer
-escapes the name rule. Inside such a blob the ``key`` exemption is lifted: those
-names are the author's, not Kubernetes schema.
+escapes the name rule. The ``key`` exemption holds inside such a blob too: lifting
+it, measured on a real cluster, added only Grafana dashboards' structural
+``tags[].key`` fields and no secrets.
 
 Expect occasional false positives on high-entropy-but-non-secret values. The
 visible marker and the opt-out make that tolerable. This is a defense-in-depth
@@ -94,9 +120,20 @@ _WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|[0-9]+")
 #: Field names that are structural Kubernetes schema, never a secret. In the
 #: Kubernetes API a field named exactly `key` always identifies a map entry, a
 #: taint, a label selector or an item in a projected volume - never a credential.
-#: Real secrets are named in compounds (`apiKey`, `SECRET_KEY_BASE`). Matched
+#: Real secrets are named in compounds (`apiKey`, `SECRET_KEY_BASE`). The others
+#: are schema fields that compound `key` too, in both spellings, since
+#: `get_pod_spec` returns the client's snake_case: an affinity term's
+#: `topologyKey` ("kubernetes.io/hostname") and its label-key lists, and
+#: k8stools' own `binary_data_keys` (a ConfigMap's binary entry names). Measured
+#: on a real cluster, `topology_key` alone was 2 of 6 redactions. Matched
 #: case-sensitively; see `_field_name_is_sensitive`.
-_STRUCTURAL_FIELD_NAMES = frozenset({"key"})
+_STRUCTURAL_FIELD_NAMES = frozenset({
+    "key",
+    "topologyKey", "topology_key",
+    "matchLabelKeys", "match_label_keys",
+    "mismatchLabelKeys", "mismatch_label_keys",
+    "binary_data_keys",
+})
 
 
 def _name_words(name: str) -> list[str]:
@@ -156,6 +193,164 @@ _CONTAINMENT_SHAPE_RES = (
 )
 
 
+#: Credentials embedded in a longer value, found by their context rather than
+#: their shape (issue #12). Only the credential is replaced; the scheme, user,
+#: host, flag name and the rest of the string stay readable.
+#:
+#: ``scheme://user:PASSWORD@host`` - the password stops at "/" so that a port and
+#: path followed by an "@" (``https://registry:443/@scope/pkg``) is not mistaken
+#: for userinfo.
+_URL_CREDENTIAL_RE = re.compile(
+    r"(?P<prefix>\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)(?P<value>[^\s@/]+)(?=@)")
+
+#: Where a ``name=value`` setting starts: command-line flags (``--password=x``,
+#: ``-Dapi.key=x``), connection strings (``Password=x;``, libpq ``password=x``),
+#: query strings (``?access_token=x&``), properties (``db.password=x``).
+_NAME_EQUALS_RE = re.compile(r"(?<![\w.-])(?P<name>(?:--?)?[A-Za-z_][\w.-]*)[ \t]*=[ \t]*")
+
+#: Where a ``--flag value`` pair starts inside one string (``sh -c "app --token
+#: abc"``). Consecutive list items (``["--token", "abc"]``) are handled in
+#: :func:`_redact`.
+_FLAG_SPACE_RE = re.compile(r"(?<![\w.-])(?P<name>--?[A-Za-z][\w.-]*)[ \t]+(?=[^\s-])")
+
+#: A setting's value: quoted, or up to whitespace or a separator.
+_SETTING_VALUE_RE = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'|<[^<>\n]*>|[^\s;&\"',<][^\s;&\"']*")
+
+#: A list item that is a flag on its own, its value being the next item.
+_BARE_FLAG_RE = re.compile(r"--?[A-Za-z][\w.-]*")
+
+#: Short names that mean "password" only in connection strings (ADO.NET ``Pwd=``,
+#: ``Pass=``). ``PWD`` is also the shell's working directory, so these count only
+#: inside ``;``-separated settings.
+_CONNECTION_STRING_ALIASES = frozenset({"pwd", "pass"})
+
+#: Setting names whose value is a bearer credential although no sensitive word
+#: names it: a presigned URL's signature (S3 ``X-Amz-Signature``, Azure SAS
+#: ``sig``). Applied only to ``name=value`` settings, not to env-var or field names.
+_SETTING_ONLY_WORDS = frozenset({"signature", "sig"})
+
+#: A name whose last word says the value *locates* a secret rather than being
+#: one: ``--password-file``, ``--secret-name``, ``--token-url``, ``--api-key-env``.
+#: As with ``secretKeyRef.key``, a reference to a secret is not a secret, and
+#: hiding it only hides where the secret comes from.
+_REFERENCE_SUFFIXES = frozenset({
+    "file", "files", "path", "dir", "directory", "name", "ref", "env", "mount",
+    "url", "uri", "endpoint", "type", "ttl", "timeout",
+})
+
+#: Values that cannot be a credential: references to one, masks, booleans, and
+#: the type names Go's flag help prints after a flag. References are matched
+#: case-sensitively - ``$(DB_PASSWORD)``, ``${token}``, ``$API_KEY``, ``%TOKEN%``,
+#: ``{{ .Values.x }}`` - so that a password that merely starts with "$"
+#: (``$Password123``) is still treated as one.
+_REFERENCE_VALUE_RE = re.compile(
+    r"\$\([\w.-]+\)|\$\{[^}]+\}|\$[A-Z_][A-Z0-9_]*|%[A-Z_][A-Z0-9_]*%|\{\{.*\}\}|"
+    r"\*+|<[^>]*>|\[REDACTED\]")
+_PLACEHOLDER_WORD_RE = re.compile(
+    r"true|false|yes|no|on|off|none|null|"
+    # Go flag help: "--client-key string   Path to a client key file"
+    r"string|strings|stringArray|stringSlice|stringToString|int|int32|int64|uint|"
+    r"float|float64|bool|duration|bytes|ip|ipNet",
+    re.IGNORECASE)
+
+#: In ``--flag value`` inside running text, a value must look like a credential
+#: - a digit or a symbol, or 16+ characters - because prose and help text put
+#: words and type names there ("use --tls-sni-cert-key multiple times",
+#: "--tls-sni-cert-key namedCertKey"). Argv lists and ``name=value`` settings
+#: don't need this.
+_CREDENTIAL_LIKE_RE = re.compile(r".{16,}|.*[0-9\W_].*", re.DOTALL)
+
+#: A file path, which locates a secret (``--tls-key /etc/certs/tls.key``) rather
+#: than being one: absolute, relative or home-relative, under a common root or
+#: ending in a file extension. Base64 can start with "/", hence the extra test.
+_PATH_VALUE_RE = re.compile(r"(?:/|\./|~/)[\w.@-]+(?:/[\w.@-]+)*/?")
+_PATH_ROOTS = frozenset({"etc", "var", "run", "home", "tmp", "opt", "usr", "srv",
+                         "mnt", "certs", "secrets", "config", "conf", "data", "app"})
+
+
+def _option_name_is_sensitive(name: str) -> bool:
+    """Whether a flag / setting name marks its value sensitive.
+
+    The field-name rule (whole words, the exact ``key`` exemption), with
+    additions for option names: a Java ``-D`` system property is judged by the
+    property name (``-Dapi.key`` is ``api.key``), signature words count, and a
+    name ending in a reference word (``--password-file``) is not sensitive.
+    """
+    bare = name.lstrip("-")
+    if name.startswith("-D") and not name.startswith("--"):
+        bare = name[2:]
+    words = _name_words(bare)
+    if not words or words[-1] in _REFERENCE_SUFFIXES:
+        return False
+    # Numbered keys are structural too: "-l key1=value1,key2=value2".
+    if [w for w in words if not w.isdigit()] == ["key"] and bare.islower():
+        return False
+    return _field_name_is_sensitive(bare) or any(w in _SETTING_ONLY_WORDS for w in words)
+
+
+def _is_placeholder(value: str) -> bool:
+    """A value that cannot be the credential: empty, a variable or template
+    reference, a boolean, a mask, or a file path."""
+    bare = value.strip("\"'")
+    if not bare or _REFERENCE_VALUE_RE.fullmatch(bare) or _PLACEHOLDER_WORD_RE.fullmatch(bare):
+        return True
+    if _PATH_VALUE_RE.fullmatch(bare):
+        segments = bare.lstrip("./~").split("/")
+        return segments[0] in _PATH_ROOTS or re.search(r"\.\w{1,5}$", bare) is not None
+    return False
+
+
+def _redact_embedded(value: str) -> tuple[str, int]:
+    """Redact credentials embedded in a longer string by their context (#12).
+
+    Each setting is examined where it starts, independently: a quoted value
+    belonging to one flag (``sh -c '...'``, ``JAVA_OPTS="-Dpassword=x"``) must
+    not hide the settings inside it.
+    """
+    spans: list[tuple[int, int]] = []
+
+    def consider(name: str, value_start: int, connection_alias_ok: bool,
+                 in_running_text: bool = False) -> None:
+        m = _SETTING_VALUE_RE.match(value, value_start)
+        if not m:
+            return
+        if not (connection_alias_ok or _option_name_is_sensitive(name)):
+            return
+        if _is_placeholder(m.group(0)) or m.group(0).startswith(("'", '"')) and \
+                m.group(0).strip("\"'").startswith("-"):
+            return
+        if in_running_text and not _CREDENTIAL_LIKE_RE.fullmatch(m.group(0).strip("\"'")):
+            return
+        spans.append((m.start(), m.end()))
+
+    for m in _URL_CREDENTIAL_RE.finditer(value):
+        if not _is_placeholder(m.group("value")):
+            spans.append((m.start("value"), m.end("value")))
+    for m in _NAME_EQUALS_RE.finditer(value):
+        name = m.group("name")
+        end = _SETTING_VALUE_RE.match(value, m.end())
+        alias = name.lower() in _CONNECTION_STRING_ALIASES and (
+            (end is not None and value[end.end():end.end() + 1] == ";")
+            or value[:m.start()].rstrip().endswith(";"))
+        consider(name, m.end(), alias)
+    for m in _FLAG_SPACE_RE.finditer(value):
+        consider(m.group("name"), m.end(), False, in_running_text=True)
+
+    if not spans:
+        return value, 0
+    # Merge overlaps (a URL credential inside a flag value), then substitute from
+    # the right so earlier offsets stay valid.
+    merged: list[list[int]] = []
+    for start, stop in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], stop)
+        else:
+            merged.append([start, stop])
+    for start, stop in reversed(merged):
+        value = value[:start] + REDACTED + value[stop:]
+    return value, len(merged)
+
+
 def _value_is_secret_shaped(s: str) -> bool:
     """Whether ``s`` matches any value-shape pattern, anywhere in the string."""
     return any(
@@ -206,6 +401,11 @@ def _redact_string(value: str, key_is_sensitive: bool) -> tuple[str, int]:
     if value == REDACTED:
         return value, 0
     if key_is_sensitive:
+        # A sensitive name doesn't make a boolean, a variable reference or a file
+        # path a credential (`gcp-auth-skip-secret: "true"`, `password:
+        # $(DB_PASSWORD)`, `tls_key: /etc/certs/tls.key`).
+        if _is_placeholder(value):
+            return value, 0
         return REDACTED, 1
 
     # Before treating the string as opaque text, see whether it is structured. A
@@ -222,7 +422,8 @@ def _redact_string(value: str, key_is_sensitive: bool) -> tuple[str, int]:
     for rx in _TOKEN_SHAPE_RES:
         value, n = rx.subn(REDACTED, value)
         count += n
-    return value, count
+    value, n = _redact_embedded(value)
+    return value, count + n
 
 
 def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
@@ -280,8 +481,17 @@ def _redact(value: Any, key_is_sensitive: bool = False) -> tuple[Any, int]:
 
     if isinstance(value, list):
         count = 0
+        previous = None
         for i, item in enumerate(value):
-            new_value, c = _redact(item)
+            # ["--token", "abc"]: a flag item marks the next item, as in an
+            # argv (container command/args, and get_workload_history's diffs).
+            follows_flag = (
+                isinstance(previous, str) and isinstance(item, str)
+                and _BARE_FLAG_RE.fullmatch(previous) is not None
+                and _option_name_is_sensitive(previous)
+                and not item.startswith("-") and not _is_placeholder(item))
+            previous = item
+            new_value, c = _redact(item, key_is_sensitive=follows_flag)
             if c:
                 value[i] = new_value
             count += c

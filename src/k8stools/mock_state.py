@@ -306,6 +306,35 @@ def _decode_submodel(candidates: list[type[BaseModel]], value: dict[str, Any],
     return decode_model(candidates[0], value, clock)
 
 
+def read_capture(path: Path) -> tuple[dict[str, Any], bool]:
+    """Read a capture file: ``(data, was_gzipped)``.
+
+    Gzip is detected by content (the magic bytes), not by file name, so a capture
+    still loads after being renamed or downloaded without its extension.
+    """
+    path = Path(path)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError as e:
+        raise CaptureFormatError(f"Capture file not found: {path}") from e
+    gzipped = raw[:2] == b"\x1f\x8b"
+    if gzipped:
+        try:
+            raw = gzip.decompress(raw)
+        except (OSError, EOFError, zlib.error) as e:
+            # BadGzipFile is an OSError, but a truncated or header-corrupt
+            # file raises EOFError instead.
+            raise CaptureFormatError(
+                f"Capture file {path} looks gzipped but could not be "
+                f"decompressed: {e}") from e
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise CaptureFormatError(f"Capture file {path} is not valid JSON: {e}") from e
+    return data, gzipped
+
+
 # ---------------------------------------------------------------------------
 # MockState
 # ---------------------------------------------------------------------------
@@ -365,26 +394,7 @@ class MockState:
         gzip magic bytes), not by file name, so a capture still loads after being
         renamed or downloaded without its extension.
         """
-        path = Path(path)
-        try:
-            with open(path, "rb") as f:
-                raw = f.read()
-        except FileNotFoundError as e:
-            raise CaptureFormatError(f"Capture file not found: {path}") from e
-        if raw[:2] == b"\x1f\x8b":
-            try:
-                raw = gzip.decompress(raw)
-            except (OSError, EOFError, zlib.error) as e:
-                # BadGzipFile is an OSError, but a truncated or header-corrupt
-                # file raises EOFError instead.
-                raise CaptureFormatError(
-                    f"Capture file {path} looks gzipped but could not be "
-                    f"decompressed: {e}") from e
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            raise CaptureFormatError(f"Capture file {path} is not valid JSON: {e}") from e
-        return cls(data, frozen=frozen)
+        return cls(read_capture(path)[0], frozen=frozen)
 
     @classmethod
     def from_builtin(cls, frozen: bool = False) -> "MockState":

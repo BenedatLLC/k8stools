@@ -1,6 +1,7 @@
 """Tests for the secret-redaction pass (k8stools.redaction)."""
 
 import inspect
+import json
 from typing import Optional
 
 import pytest
@@ -368,3 +369,140 @@ def test_a_json_array_blob_is_also_recursed():
     assert redacted[0]["token"] == REDACTED
     assert redacted[1]["port"] == 80
     assert count == 1
+
+
+# --- credentials embedded in longer values (issue #12) -------------------------
+#
+# Neither token-shaped nor under a sensitive name, these are found by their
+# context: URL userinfo, a sensitive flag or setting name. Only the credential
+# goes; the rest stays readable. The negatives matter as much: each rule was
+# measured against an unredacted capture of a real 38-pod cluster, where it
+# added 3 redactions (one database password, in three formats) and no false
+# positives. Several negatives below are the false positives that measurement
+# found in earlier drafts.
+
+def _r(value):
+    return redact_object(value)[0]
+
+
+@pytest.mark.parametrize("given,expected", [
+    # The issue's table
+    (["--db-url=postgres://admin:hunter2@db/x"], ["--db-url=postgres://admin:[REDACTED]@db/x"]),
+    (["--password=hunter2"], ["--password=[REDACTED]"]),
+    (["--token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"], ["--token", "[REDACTED]"]),
+    (["-Dapi.key=AKIAIOSFODNN7EXAMPLE"], ["-Dapi.key=[REDACTED]"]),
+    # URL credentials: the password only
+    ("postgres://otelu:otelp@postgresql/otel?sslmode=disable",
+     "postgres://otelu:[REDACTED]@postgresql/otel?sslmode=disable"),
+    ("redis://:s3cret@cache:6379/0", "redis://:[REDACTED]@cache:6379/0"),
+    # Flags and system properties
+    (["-Dfoo.secret=abc", "-DsecretKey=x"], ["-Dfoo.secret=[REDACTED]", "-DsecretKey=[REDACTED]"]),
+    ('app --password "two words" --x', "app --password [REDACTED] --x"),
+    ("sh -c 'app --token abc123 --verbose'", "sh -c 'app --token [REDACTED] --verbose'"),
+    ('JAVA_OPTS="-Xmx1g -Dpassword=hunter2 -Dx=1"', 'JAVA_OPTS="-Xmx1g -Dpassword=[REDACTED] -Dx=1"'),
+    # Connection strings
+    ("Host=postgresql;Username=otelu;Password=otelp;Database=otel",
+     "Host=postgresql;Username=otelu;Password=[REDACTED];Database=otel"),
+    ("Server=db;Uid=sa;Pwd=Hunter2;", "Server=db;Uid=sa;Pwd=[REDACTED];"),
+    ("host=postgresql user=otelu password=otelp dbname=otel",
+     "host=postgresql user=otelu password=[REDACTED] dbname=otel"),
+    # Query strings, including presigned URLs' signatures
+    ("https://api.example.com/v1?access_token=abc123&page=2",
+     "https://api.example.com/v1?access_token=[REDACTED]&page=2"),
+    ("https://b.s3.amazonaws.com/o?X-Amz-Date=20261007&X-Amz-Signature=deadbeef",
+     "https://b.s3.amazonaws.com/o?X-Amz-Date=20261007&X-Amz-Signature=[REDACTED]"),
+    ("https://acct.blob.core.windows.net/c/f?sv=2022&sig=AbC%2Fd&se=2026",
+     "https://acct.blob.core.windows.net/c/f?sv=2022&sig=[REDACTED]&se=2026"),
+    # Properties files in ConfigMaps
+    ("spring.datasource.password=hunter2\nspring.datasource.url=jdbc:x",
+     "spring.datasource.password=[REDACTED]\nspring.datasource.url=jdbc:x"),
+])
+def test_embedded_credentials_are_redacted_in_place(given, expected):
+    assert _r(given) == expected
+
+
+@pytest.mark.parametrize("value", [
+    # The issue's negatives
+    ["--log-level=debug"], "VALKEY_ADDR=valkey-cart:6379", "http://user@host/x",
+    ["--keyspace=foo"],
+    # A reference to a secret is not a secret
+    ["--password-file=/etc/pw", "--secret-name", "db", "--api-key-env", "API_KEY"],
+    "postgres://u:$(DB_PASSWORD)@db/x", ["--token", "$(TOKEN)"], "password=${DB_PASSWORD}",
+    ["--tls-key", "/etc/certs/tls.key"], ["--key=/etc/tls.key"],
+    # Not a credential
+    ["--use-token=true"], "PWD=/home/app", "export PATH=/usr/bin",
+    "https://registry.npmjs.org:443/@babel/core", "--token -v", 'msg="token refreshed" level=info',
+    "password=****", "password=<your password>",
+    # False positives found on a real cluster's logs (etcd config, metrics-server --help)
+    "client-cert=, client-key=, trusted-ca = /var/lib/minikube/certs/etcd/ca.crt",
+    "      --kubelet-client-key string                Path to a client key file for TLS.",
+    "      --tls-sni-cert-key namedCertKey          A pair of x509 certificate and private key",
+    "use the --tls-sni-cert-key multiple times.",
+    "Selector (label query) to filter on (e.g. -l key1=value1,key2=value2).",
+])
+def test_things_that_look_like_settings_but_hold_no_credential(value):
+    _, count = redact_object(value)
+    assert count == 0, _r(value)
+
+
+def test_running_text_needs_a_credential_like_value_but_argv_does_not():
+    """Prose puts words after flags ("use --tls-sni-cert-key multiple times"),
+    so in running text the value must have a digit or symbol, or be long. An
+    argv list is unambiguous, so it doesn't."""
+    assert _r("app --password letmein") == "app --password letmein"
+    assert _r(["app", "--password", "letmein"]) == ["app", "--password", "[REDACTED]"]
+    assert _r("app --password=letmein") == "app --password=[REDACTED]"
+
+
+def test_rotated_args_in_a_workload_history_diff_are_redacted_on_both_sides():
+    """get_workload_history renders changed args as a JSON string, so a rotated
+    credential appears twice; redaction looks inside the JSON."""
+    from k8stools.k8s_tools import TemplateChange
+    change = TemplateChange(field="containers[app].args", change="changed",
+                            before='["--token","ghp_abcdefghij0123456789"]',
+                            after='["--token","ghp_klmnopqrst9876543210"]')
+    redacted, count = redact_object(change)
+    assert count == 2
+    assert json.loads(redacted.before) == json.loads(redacted.after) == ["--token", "[REDACTED]"]
+
+
+def test_a_secret_in_a_positional_argument_is_a_documented_limit():
+    """Nothing names it, so it can't be told from any other argument."""
+    assert _r(["app", "hunter2"]) == ["app", "hunter2"]
+
+
+# --- false positives the #12 measurement found in the existing rules -----------
+#
+# On a real 38-pod cluster the name rule made 6 redactions, 3 of them not
+# secrets. These pin each one, and the limits of the fixes.
+
+def test_affinity_topology_keys_are_not_redacted_in_either_spelling():
+    """get_pod_spec returns the client's snake_case, where the exact-`key`
+    exemption never saw `topology_key` (2 of the 6)."""
+    for name in ("topology_key", "topologyKey"):
+        assert _r({name: "kubernetes.io/hostname"}) == {name: "kubernetes.io/hostname"}
+    term = {"match_label_keys": ["pod-template-hash"],
+            "mismatchLabelKeys": ["app.kubernetes.io/instance"]}
+    assert redact_object(term)[1] == 0
+
+
+def test_configmap_binary_entry_names_are_not_redacted():
+    assert _r({"name": "x", "binary_data_keys": ["logo.png"]})["binary_data_keys"] == ["logo.png"]
+
+
+def test_a_sensitive_name_does_not_make_a_boolean_or_reference_a_secret():
+    """`gcp-auth-skip-secret: "true"` was the third."""
+    for value in ("true", "False", "$(DB_PASSWORD)", "${token}", "$API_KEY",
+                  "/etc/certs/tls.key", "{{ .Values.password }}", ""):
+        assert _r({"password": value}) == {"password": value}, value
+
+
+def test_a_password_that_starts_with_a_dollar_is_still_a_password():
+    """References are recognised case-sensitively, like env var names."""
+    for value in ("$Password123", "$ecret", "$2b$12$abcdefghijklmnopqrstuv"):
+        assert _r({"password": value}) == {"password": REDACTED}, value
+
+
+def test_compound_key_names_chosen_by_users_still_match():
+    for name in ("api_key", "apiKey", "secret_key", "ssh_key", "SECRET_KEY_BASE"):
+        assert _r({name: "abc123"}) == {name: REDACTED}, name

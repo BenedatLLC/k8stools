@@ -5,6 +5,44 @@ dates are release-tag dates.
 
 ## 3.0.0 — unreleased
 
+### Added
+- **`k8s-capture-state --redact-file FILE`** re-runs redaction over an existing
+  capture and rewrites it in place, keeping its compression. Use it on captures
+  taken with `--no-redact`, or before this release's rules: captures from 2.x can
+  hold the credentials below in full.
+
+### Changed
+- **Redaction catches credentials embedded in longer strings** (issue #12).
+  Previously these went through unless the value had a known token shape or sat
+  under a sensitive name. Only the credential is replaced:
+  - URL userinfo: `postgres://user:[REDACTED]@host`;
+  - sensitive flags and system properties: `--password=`, `--token x`,
+    `-Dapi.key=`, and `["--token", "x"]` in an argv list;
+  - connection strings: `Password=…;`, libpq `password=…`;
+  - query strings: `access_token=`, and presigned URLs' `X-Amz-Signature` / `sig`;
+  - properties files: `db.password=…`.
+
+  This also applies to the old and new values of changed args in
+  `get_workload_history`. On a real cluster it found the same database password
+  in three formats that 2.x returned in full.
+- **Nothing that only locates a secret is redacted, under any rule.** That covers:
+  - variable references (`$(DB_PASSWORD)`, `${token}`, `$API_KEY`) and templates;
+  - file paths (`--tls-key /etc/certs/tls.key`);
+  - booleans and masks;
+  - flags named for a location (`--password-file`, `--secret-name`).
+
+  Under the name rule this un-redacts, for example, a `skip-secret: "true"` label.
+- Captures redact pod labels, as they do tool output.
+
+### Fixed
+- **Affinity `topology_key` values were redacted.** `get_pod_spec` returns
+  snake_case, which the exact-`key` exemption missed, so `"kubernetes.io/hostname"`
+  came back `[REDACTED]`. The same was true of label-key lists, and of
+  `get_configmap`'s `binary_data_keys`, which hid binary entry names. These
+  schema fields are now exempt in both spellings. On the same cluster, 3 of the
+  6 redactions 2.x made were these false positives; now all 6 redactions are
+  real credentials.
+
 ### Documentation
 - **The README says plainly where redaction applies.** The functions in `TOOLS`
   return raw values; only `k8s-mcp-server` and `k8s-capture-state` redact. The

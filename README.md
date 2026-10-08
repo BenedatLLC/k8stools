@@ -356,8 +356,11 @@ k8s-mcp-server --state-file incident-1234.json
 usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [-o FILE]
                          [--kubeconfig PATH] [--context NAME] [--no-logs]
                          [--max-log-lines MAX_LOG_LINES] [--no-previous-logs]
-                         [--no-redact]
+                         [--no-redact] [--redact-file FILE]
                          [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+
+Snapshot a Kubernetes cluster to a JSON file replayable by the k8stools MCP
+server (--state-file) or MockState.
 
 options:
   -h, --help            show this help message and exit
@@ -366,19 +369,29 @@ options:
                         [default: all]. Namespaces and nodes are always
                         captured in full.
   -o FILE, --output FILE
-                        Output file [default: k8s-state-<timestamp>.json]
+                        Output file [default: k8s-state-<timestamp>.json]. A
+                        name ending in .gz is written gzipped; captures are
+                        read back compressed or not either way.
   --kubeconfig PATH     Kubeconfig file to capture from [default: KUBECONFIG,
                         then ~/.kube/config]
   --context NAME        Kubeconfig context to capture from [default:
                         K8STOOLS_CONTEXT, then the kubeconfig's current-
                         context]
-  --no-logs             Skip container logs
+  --no-logs             Skip container logs entirely, including previous-
+                        instance logs, for a structure-only snapshot
   --max-log-lines MAX_LOG_LINES
                         Log lines to capture per container [default: 1000]
-  --no-previous-logs    Skip the previous-instance logs of restarted containers
+  --no-previous-logs    Skip the previous-instance logs of restarted
+                        containers. These usually carry the diagnosis for a
+                        crash loop, so dropping them is rarely what you want.
   --no-redact           Disable secret redaction of captured values (redaction
                         is on by default; can also be disabled with
                         K8STOOLS_REDACT=0)
+  --redact-file FILE    Instead of capturing, re-run redaction over an
+                        existing capture FILE and rewrite it in place (keeping
+                        its compression). Use on captures taken with --no-
+                        redact, or before a newer k8stools added redaction
+                        rules.
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Log level [default: INFO]
 ```
@@ -551,6 +564,17 @@ cluster it came from. Redaction is one-way: replaying a redacted capture with
 `--no-redact` restores nothing, so a scenario that genuinely needs real values has
 to be re-captured.
 
+A capture taken with `--no-redact`, or by an older k8stools before a redaction
+rule existed, can be redacted afterwards. This rewrites the file in place, keeping
+its compression; running it again finds nothing more:
+
+```sh
+k8s-capture-state --redact-file incident-1234.json
+```
+
+Captures taken before 3.0.0 may hold credentials embedded in args, URLs and
+connection strings (see below). Re-redact any you've committed or shared.
+
 ## Secret redaction
 Some read-only resources can carry secret-shaped values even though they are not
 Kubernetes `Secret` objects — `ConfigMap` data and the `env` blocks in a pod spec
@@ -560,7 +584,7 @@ straight into the model's context.
 
 To prevent that, the MCP server applies a redaction pass to every tool's output.
 It is **on by default** and can be disabled with `--no-redact` or by setting
-`K8STOOLS_REDACT=0`. Redaction matches two ways, replacing each match with a
+`K8STOOLS_REDACT=0`. Redaction matches three ways, replacing each match with a
 visible `[REDACTED]` marker so the agent can tell "hidden" from "absent". We never
 provide a reader for Kubernetes `Secret` objects.
 
@@ -579,7 +603,35 @@ provide a reader for Kubernetes `Secret` objects.
    The value lives in the `Secret` object and is resolved by the kubelet, never
    appearing in tool output, so redacting the pointer hides which key feeds an env
    var and protects nothing. The exemption does not apply to env-var names, where
-   a variable someone named `KEY` plausibly does hold one.
+   a variable someone named `KEY` plausibly does hold one. Schema fields that
+   compound `key` are exempt too, in both spellings: an affinity term's
+   `topologyKey` / `topology_key` and label-key lists, and `get_configmap`'s
+   `binary_data_keys`.
+3. **By context** — a credential inside a longer string, found by what surrounds
+   it, with only the credential replaced:
+
+   | Where | Example |
+   |---|---|
+   | URL userinfo | `postgres://otelu:[REDACTED]@postgresql/otel` |
+   | Sensitive flags and system properties | `--password=[REDACTED]`, `--token [REDACTED]`, `-Dapi.key=[REDACTED]` |
+   | Argv lists | `["--token", "[REDACTED]"]` |
+   | Connection strings | `Password=[REDACTED];`, `password=[REDACTED] dbname=otel` |
+   | Query strings and presigned URLs | `?access_token=[REDACTED]&`, `X-Amz-Signature=[REDACTED]`, `sig=[REDACTED]` |
+   | Properties files | `spring.datasource.password=[REDACTED]` |
+
+   In running text (`sh -c "..."`, logs, `--help` output), a `--flag value` pair
+   counts only when the value looks like a credential (a digit or symbol, or 16+
+   characters), because prose and help text put words and type names after flags.
+
+**Nothing that only locates a secret is redacted.** Like `secretKeyRef.key`, these
+are references, and hiding them hides where a secret comes from and protects
+nothing: `$(DB_PASSWORD)`, `${token}`, `$API_KEY`, templates, file paths
+(`--tls-key /etc/certs/tls.key`), and flags named for a location
+(`--password-file`, `--secret-name`, `--token-url`). Booleans and masks
+(`skip-secret: "true"`, `password=****`) are left alone too.
+
+On a real 38-pod cluster, these rules redact 6 values, all real credentials,
+where the 2.x rules redacted 6 of which 3 were not secrets.
 
 ### Where redaction applies
 
@@ -592,7 +644,6 @@ provide a reader for Kubernetes `Secret` objects.
 
 `wrap_with_redaction` keeps each function's name, signature and docstring, so a
 framework that builds tool schemas from them (pydantic-ai, MCP) sees the same tool.
-Redaction catches known token shapes and values under sensitive names. It cannot
-catch everything: a credential embedded in a longer string, such as a connection
-URL or a `--password=` flag, can get through (see
-[#12](https://github.com/BenedatLLC/k8stools/issues/12)).
+Redaction cannot catch everything. A secret with nothing naming it, such as a bare
+positional argument (`app hunter2`), can't be told apart from any other value; nor
+can an unusual format none of the rules above recognise.
