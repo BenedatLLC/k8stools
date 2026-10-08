@@ -87,6 +87,9 @@ rules:
 - apiGroups: [metrics.k8s.io]
   resources: [pods, nodes]
   verbs: [get, list]
+- apiGroups: [networking.k8s.io]
+  resources: [ingresses]
+  verbs: [get, list]
 ```
 
 `get_cluster_info` also reads the server version (`/version`), which every
@@ -119,6 +122,7 @@ These are the tools we define:
 * `get_workload_history` - what changed in a Deployment, StatefulSet or DaemonSet, and when: each retained revision of its pod template compared with the one before (images, resources, probes, command/args, env var *names*, volumes, scheduling), plus the ConfigMaps and Secrets it references. It states what history cannot show.
 * `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
 * `get_endpoint_summaries` - each Service's backends, from its EndpointSlices: every address's ready / serving / terminating state, pod and node, with counts. `get_service_summaries` also reports each Service's ready and not-ready endpoint counts
+* `get_ingress_summaries` - get Ingresses, like `kubectl get ingress` plus `describe`: class, each host/path rule with its backend Service and port resolved (flagged when the Service or port doesn't exist, with its ready endpoints otherwise), TLS hosts and Secret names, load-balancer addresses
 * `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
 * `get_configmap` - retrieve the full contents of a single ConfigMap
 * `get_statefulset_summaries` - get a list of StatefulSets, like `kubectl get statefulsets`
@@ -145,6 +149,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * `print_workload_history`
 * `print_service_summaries`
 * `print_endpoint_summaries`
+* `print_ingress_summaries`
 * `print_configmap_summaries`
 * `print_configmap`
 * `print_statefulset_summaries`
@@ -481,7 +486,7 @@ Everything the tools can read, so that every tool answers on replay:
 |---|---|
 | Cluster | context name, API server URL and version, so `get_cluster_info` answers on replay (not the kubeconfig path, which names a file on the capturing machine) |
 | Cluster-wide | namespaces, nodes, and resource usage (one metrics-server sample of containers and nodes, or why metrics weren't available) |
-| Per namespace | deployments, replica sets, services and their endpoints, statefulsets, daemonsets, HPAs, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
+| Per namespace | deployments, replica sets, services and their endpoints, ingresses, statefulsets, daemonsets, HPAs, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
 | Per pod | summary, labels, container statuses, spec, and per-container logs |
 

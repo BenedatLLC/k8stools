@@ -39,6 +39,7 @@ These are the tools we define:
 * get_workload_history - a workload's pod-template revisions, compared, and the config it references
 * get_service_summaries - get a list of services, like `kubectl get services`
 * get_endpoint_summaries - each Service's backends, from its EndpointSlices
+* get_ingress_summaries - get Ingresses, with each rule's backend resolved
 * get_configmap_summaries - get a list of ConfigMaps, like `kubectl get configmaps`
 * get_configmap - retrieve the full contents of a single ConfigMap
 * get_statefulset_summaries - get a list of StatefulSets, like `kubectl get statefulsets`
@@ -66,6 +67,7 @@ We also define a set of associated "print_" functions that are helpful in debugg
 * print_workload_history
 * print_service_summaries
 * print_endpoint_summaries
+* print_ingress_summaries
 * print_configmap_summaries
 * print_configmap
 * print_statefulset_summaries

@@ -954,3 +954,13 @@ def test_container_and_node_metrics():
             assert u.memory_percent_of_limit == round(100 * u.memory_bytes / u.memory_limit_bytes, 1)
     for n in nodes:
         assert n.cpu_millicores > 0 and n.memory_percent is not None
+
+
+def test_ingress_summaries():
+    """Issue #17: every rule names a backend, resolved or with its problem."""
+    ingresses = k8s_tools.get_ingress_summaries()
+    if not ingresses:
+        pytest.skip("No Ingresses found in the cluster.")
+    for ing in ingresses:
+        for r in ing.rules:
+            assert r.service or r.resource

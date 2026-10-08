@@ -32,6 +32,7 @@ APPS_V1_API:Optional[client.AppsV1Api] = None
 BATCH_V1_API:Optional[client.BatchV1Api] = None
 AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
 DISCOVERY_V1_API:Optional[client.DiscoveryV1Api] = None
+NETWORKING_V1_API:Optional[client.NetworkingV1Api] = None
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -168,10 +169,12 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
         If there is no selection and neither a kubeconfig nor in-cluster config
         can be loaded.
     """
-    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API, DISCOVERY_V1_API
+    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API, DISCOVERY_V1_API, \
+        NETWORKING_V1_API
     binding = _resolve_binding(kubeconfig, context)
     _BINDING = binding
     K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = DISCOVERY_V1_API = None
+    NETWORKING_V1_API = None
     return binding.describe()
 
 
@@ -206,6 +209,10 @@ def _get_autoscaling_v2_api_client() -> client.AutoscalingV2Api:
 
 def _get_discovery_v1_api_client() -> client.DiscoveryV1Api:
     return client.DiscoveryV1Api(_binding().api_client)
+
+
+def _get_networking_v1_api_client() -> client.NetworkingV1Api:
+    return client.NetworkingV1Api(_binding().api_client)
 
 
 def _to_whole_seconds(td: datetime.timedelta) -> datetime.timedelta:
@@ -338,6 +345,12 @@ NOTE_WORKING_SET = (
     "Memory is the working set: memory in use plus recently used file cache, which "
     "the kernel reclaims before an OOM kill. Near the limit is common; it isn't "
     "proof a kill is coming.")
+NOTE_INGRESS_BACKEND = (
+    "A backend doesn't resolve: see the rule's backend_problem. Requests matching "
+    "that rule can't reach a pod.")
+NOTE_INGRESS_NO_READY = (
+    "A backend Service has no ready endpoints (backend_ready 0): requests matching "
+    "that rule can't reach a pod.")
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
@@ -1977,6 +1990,168 @@ def print_endpoint_summaries(namespace: Optional[str] = None) -> None:
               f"{e.terminating:<12} {shown}")
 
 
+class IngressRule(BaseModel):
+    """One Ingress routing rule (or the default backend), resolved against the
+    namespace's Services."""
+    #: None means any host.
+    host: Optional[str] = None
+    path: Optional[str] = None
+    path_type: Optional[str] = None
+    #: The backend Service and port (a number or a port name, as written).
+    service: Optional[str] = None
+    port: Optional[str] = None
+    #: A resource backend, "Kind/name", instead of a Service.
+    resource: Optional[str] = None
+    #: Why the backend doesn't resolve, e.g. "Service 'legacy' not found" or
+    #: "Service 'ad' has no port 9555". None when it resolves, or for a resource backend.
+    backend_problem: Optional[str] = None
+    #: Ready endpoints of the backend Service; None when unknown.
+    backend_ready: Optional[int] = None
+
+
+class IngressTLS(BaseModel):
+    hosts: list[str] = Field(default_factory=list)
+    #: The Secret holding the certificate, by name only: its contents are never read.
+    secret_name: Optional[str] = None
+
+
+class IngressSummary(BaseModel):
+    """An Ingress, like `kubectl get ingress` and `describe`, with each rule's
+    backend resolved."""
+    name: str
+    namespace: str
+    #: spec.ingressClassName, or the older kubernetes.io/ingress.class annotation.
+    ingress_class: Optional[str] = None
+    rules: list[IngressRule] = Field(default_factory=list)
+    default_backend: Optional[IngressRule] = None
+    tls: list[IngressTLS] = Field(default_factory=list)
+    #: Load-balancer addresses (IPs or hostnames).
+    load_balancer: list[str] = Field(default_factory=list)
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    age: Duration
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "IngressSummary":
+        backends = self.rules + ([self.default_backend] if self.default_backend else [])
+        notes = []
+        if any(r.backend_problem for r in backends):
+            notes.append(NOTE_INGRESS_BACKEND)
+        if any(r.backend_ready == 0 and not r.backend_problem for r in backends):
+            notes.append(NOTE_INGRESS_NO_READY)
+        self.notes = notes
+        return self
+
+
+def _ingress_backend(backend, services: dict[str, Any], ready: Optional[dict[str, int]],
+                     **where) -> IngressRule:
+    """A rule for one backend, resolved against the namespace's Services."""
+    rule = IngressRule(**where)
+    if backend is None:
+        return rule
+    if backend.resource is not None:
+        rule.resource = f"{backend.resource.kind}/{backend.resource.name}"
+        return rule
+    svc_backend = backend.service
+    if svc_backend is None:
+        return rule
+    rule.service = svc_backend.name
+    port = svc_backend.port
+    if port is not None:
+        rule.port = str(port.number) if port.number is not None else port.name
+    service = services.get(svc_backend.name)
+    if service is None:
+        rule.backend_problem = f"Service '{svc_backend.name}' not found"
+        return rule
+    ports = service.spec.ports or [] if service.spec else []
+    if port is not None and not any(
+            (port.number is not None and p.port == port.number) or
+            (port.name is not None and p.name == port.name) for p in ports):
+        rule.backend_problem = f"Service '{svc_backend.name}' has no port {rule.port}"
+        return rule
+    if ready is not None and service.spec.type != "ExternalName":
+        rule.backend_ready = ready.get(svc_backend.name, 0)
+    return rule
+
+
+def get_ingress_summaries(namespace: Optional[str] = None) -> list[IngressSummary]:
+    """Ingresses (networking.k8s.io/v1): class, each host/path rule and its
+    backend Service and port, resolved - backend_problem when the Service or
+    port doesn't exist, backend_ready with its ready endpoints - plus TLS hosts
+    and Secret names (never contents), load-balancer addresses, age.
+    namespace: one, or all if omitted."""
+    global K8S, NETWORKING_V1_API
+    if NETWORKING_V1_API is None:
+        NETWORKING_V1_API = _get_networking_v1_api_client()
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_ingress_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            ingresses = NETWORKING_V1_API.list_namespaced_ingress(namespace=namespace).items
+            services = K8S.list_namespaced_service(namespace=namespace).items
+        else:
+            ingresses = NETWORKING_V1_API.list_ingress_for_all_namespaces().items
+            services = K8S.list_service_for_all_namespaces().items
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching ingresses: {e}") from e
+    by_namespace: dict[str, dict[str, Any]] = {}
+    for svc in services:
+        by_namespace.setdefault(svc.metadata.namespace, {})[svc.metadata.name] = svc
+    try:
+        ready: Optional[dict[tuple[str, str], int]] = {
+            (e.namespace, e.service): e.ready for e in get_endpoint_summaries(namespace)}
+    except K8sApiError as e:
+        logging.warning(f"get_ingress_summaries: backend readiness unavailable: {e}")
+        ready = None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    summaries = []
+    for ing in ingresses:
+        ns = ing.metadata.namespace
+        services_here = by_namespace.get(ns, {})
+        ready_here = None if ready is None else {svc: n for (n_ns, svc), n in ready.items() if n_ns == ns}
+        spec = ing.spec
+        rules = []
+        for r in (spec.rules or []) if spec else []:
+            for p in (r.http.paths or []) if r.http else []:
+                rules.append(_ingress_backend(p.backend, services_here, ready_here, host=r.host,
+                                              path=p.path, path_type=p.path_type))
+        default = _ingress_backend(spec.default_backend, services_here, ready_here) \
+            if spec and spec.default_backend else None
+        annotations = dict(ing.metadata.annotations or {})
+        lb = []
+        status_lb = ing.status.load_balancer if ing.status else None
+        for entry in (status_lb.ingress or []) if status_lb else []:
+            lb.append(entry.ip or entry.hostname)
+        summaries.append(IngressSummary(
+            name=ing.metadata.name, namespace=ns,
+            ingress_class=(spec.ingress_class_name if spec else None)
+            or annotations.get("kubernetes.io/ingress.class"),
+            rules=rules, default_backend=default,
+            tls=[IngressTLS(hosts=list(t.hosts or []), secret_name=t.secret_name)
+                 for t in (spec.tls or [])] if spec else [],
+            load_balancer=[a for a in lb if a],
+            labels=dict(ing.metadata.labels or {}), annotations=annotations,
+            age=now - ing.metadata.creation_timestamp if ing.metadata.creation_timestamp
+            else datetime.timedelta(0)))
+    return summaries
+
+
+def print_ingress_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_ingress_summaries and prints the output to stdout, like `kubectl
+    get ingress`, with one line per rule."""
+    print(f"{'NAME':<24} {'CLASS':<10} {'HOST':<28} {'PATH':<16} {'BACKEND':<28} {'READY':<6} PROBLEM")
+    for ing in get_ingress_summaries(namespace):
+        backends = ing.rules + ([ing.default_backend] if ing.default_backend else [])
+        for r in backends:
+            backend = f"{r.service}:{r.port}" if r.service else (r.resource or "-")
+            print(f"{ing.name:<24} {ing.ingress_class or '-':<10} {r.host or '*':<28} "
+                  f"{r.path or '(default)':<16} {backend:<28} "
+                  f"{r.backend_ready if r.backend_ready is not None else '-':<6} {r.backend_problem or ''}")
+
+
 
 
 class ConfigMapSummary(BaseModel):
@@ -3178,6 +3353,9 @@ class NamespaceHealth(_Compact):
     common_failures: list[FailureGroup] = Field(default_factory=list)
     #: Services with no ready endpoints, e.g. "Service/ad: 0 ready, 1 not ready".
     services_without_ready_endpoints: list[str] = Field(default_factory=list)
+    #: Ingress rules that can't reach a pod, e.g. "Ingress/shop: shop.example.com/old
+    #: -> legacy:80: Service 'legacy' not found".
+    ingress_problems: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -3250,6 +3428,9 @@ class WorkloadReport(_Compact):
     services: list[EndpointSummary] = Field(default_factory=list)
     #: Its containers' current usage against requests and limits.
     usage: list[ContainerUsage] = Field(default_factory=list)
+    #: Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/
+    #: -> test-service:80 (3 ready)".
+    ingresses: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -3291,6 +3472,7 @@ TOOLS = [
     get_workload_history,
     get_service_summaries,
     get_endpoint_summaries,
+    get_ingress_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,

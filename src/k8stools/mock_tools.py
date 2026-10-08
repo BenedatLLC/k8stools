@@ -133,6 +133,12 @@ def get_node_metrics() -> list[k8s_tools.NodeUsage]:
 get_node_metrics.__doc__ = k8s_tools.get_node_metrics.__doc__
 
 
+def get_ingress_summaries(namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
+    return _state().get_ingress_summaries(namespace)
+
+get_ingress_summaries.__doc__ = k8s_tools.get_ingress_summaries.__doc__
+
+
 def get_endpoint_summaries(namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
     return _state().get_endpoint_summaries(namespace)
 
@@ -262,6 +268,7 @@ TOOLS = [
     get_workload_history,
     get_service_summaries,
     get_endpoint_summaries,
+    get_ingress_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,

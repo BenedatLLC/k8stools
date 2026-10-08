@@ -16,8 +16,22 @@ dates are release-tag dates.
   get_endpoint_summaries (EndpointSlice) and ready counts on ServiceSummary.
 - [#16](https://github.com/BenedatLLC/k8stools/issues/16): Container and node
   resource usage (metrics.k8s.io), alongside limits.
+- [#17](https://github.com/BenedatLLC/k8stools/issues/17): Add
+  get_ingress_summaries, with backend resolution.
 
 ### Added
+- **`get_ingress_summaries`** (issue #17): Ingresses with their class, and each
+  host/path rule's backend resolved against the namespace's Services.
+  `backend_problem` says when the Service or port doesn't exist, the most common
+  Ingress mistake; `backend_ready` gives the backend's ready endpoints. It also
+  reports the default backend, TLS hosts with the Secret's name (never its
+  contents), and load-balancer addresses. `print_ingress_summaries` is its
+  companion.
+  - **Composites:** `get_namespace_health` lists rules that can't reach a pod,
+    and `get_workload_report` the rules routing to the workload.
+  - **Captures** store Ingresses; older captures replay none. The `--mock`
+    fixture's `shop` Ingress has a working rule, a rule to `ad` (0 ready) and
+    a rule to a missing Service.
 - **`get_container_metrics` and `get_node_metrics`** (issue #16): current CPU
   and memory use from metrics-server.
   - **Per container,** because limits apply per container, beside its requests
@@ -117,6 +131,7 @@ dates are release-tag dates.
 - **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling) **and
   `endpointslices`** (discovery.k8s.io). The README's role includes both.
   `get_service_summaries` works without the latter, with unknown counts.
+- **A capture needs `list` on `ingresses`** (networking.k8s.io).
 - **A capture needs `list` on `metrics.k8s.io` pods and nodes** where
   metrics-server runs. A cluster without metrics-server captures fine; a
   permission error fails the capture.

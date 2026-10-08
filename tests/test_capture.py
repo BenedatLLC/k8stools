@@ -316,7 +316,7 @@ class _FakeCluster:
         for name in ("get_deployment_summaries", "get_replicaset_summaries",
                      "get_service_summaries", "get_statefulset_summaries",
                      "get_daemonset_summaries", "get_hpa_summaries",
-                     "get_endpoint_summaries",
+                     "get_endpoint_summaries", "get_ingress_summaries",
                      "get_cronjob_summaries", "get_job_summaries",
                      "get_pvc_summaries", "get_pod_summaries"):
             monkeypatch.setattr(k8s_tools, name, lambda ns=None: [])
