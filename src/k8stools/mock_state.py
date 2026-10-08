@@ -717,6 +717,11 @@ class MockState:
                 for r in self._metrics().get("nodes", [])]
 
     @_pinned_query
+    def get_ingress_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
+        """Captures from before Ingresses were captured replay none."""
+        return self._decode_all("ingresses", k8s_tools.IngressSummary, namespace)
+
+    @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
         """Captures from before endpoints were captured replay none."""
         return self._decode_all("endpoints", k8s_tools.EndpointSummary, namespace)

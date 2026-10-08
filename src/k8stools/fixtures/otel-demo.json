@@ -1049,6 +1049,62 @@
       "terminating": 0
     }
   ],
+  "ingresses": [
+    {
+      "name": "shop",
+      "namespace": "default",
+      "ingress_class": "nginx",
+      "rules": [
+        {
+          "host": "shop.example.com",
+          "path": "/",
+          "path_type": "Prefix",
+          "service": "test-service",
+          "port": "80",
+          "resource": null,
+          "backend_problem": null,
+          "backend_ready": 3
+        },
+        {
+          "host": "shop.example.com",
+          "path": "/ads",
+          "path_type": "Prefix",
+          "service": "ad",
+          "port": "8080",
+          "resource": null,
+          "backend_problem": null,
+          "backend_ready": 0
+        },
+        {
+          "host": "shop.example.com",
+          "path": "/old",
+          "path_type": "Prefix",
+          "service": "legacy",
+          "port": "80",
+          "resource": null,
+          "backend_problem": "Service 'legacy' not found",
+          "backend_ready": null
+        }
+      ],
+      "default_backend": null,
+      "tls": [
+        {
+          "hosts": [
+            "shop.example.com"
+          ],
+          "secret_name": "shop-tls"
+        }
+      ],
+      "load_balancer": [
+        "192.168.49.2"
+      ],
+      "labels": {},
+      "annotations": {
+        "nginx.ingress.kubernetes.io/ssl-redirect": "true"
+      },
+      "age_seconds": 7190.0
+    }
+  ],
   "configmaps": [
     {
       "name": "app-config",

@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Eight models have a
+them when they matter instead of carrying them on every turn. Nine models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -25,6 +25,8 @@ notes existed) give the same notes; captures don't store them.
 | `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
 | `HpaSummary` | at `max_replicas` | At maxReplicas: it can't add replicas, whatever its metrics say. See the ScalingLimited condition. |
 | `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
+| `IngressSummary` | a backend doesn't resolve | A backend doesn't resolve: see the rule's backend_problem. Requests matching that rule can't reach a pod. |
+| `IngressSummary` | a backend Service has no ready endpoints | A backend Service has no ready endpoints (backend_ready 0): requests matching that rule can't reach a pod. |
 | `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
 | `ContainerUsage` | the last instance was OOM-killed, or ended abnormally and the current one started within 10 minutes | "The last instance ended OOMKilled 6m ago; this sample is from the current one, started 58s ago." followed by: A sample averages a short window: a spike that ends in an OOM kill usually never appears in one. |
 | `ContainerUsage` | memory at 90% or more of its limit | Memory is the working set: memory in use plus recently used file cache, which the kernel reclaims before an OOM kill. Near the limit is common; it isn't proof a kill is coming. |
@@ -120,6 +122,7 @@ the record, not the current rhythm.
   - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
   - **`notes`** (`list[str]`)
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
+- **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
 - **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
 - **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
@@ -155,6 +158,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
 - **`services`** (`list[EndpointSummary]`): Services sending traffic to its pods, with each backend's state.
 - **`usage`** (`list[ContainerUsage]`): its containers' current usage, as from `get_container_metrics`. When metrics aren't available, `notes` says why.
+- **`ingresses`** (`list[str]`): Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/ -> test-service:80 (3 ready)".
 - **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers and logs come from, and an exit code / reason disagreement.
 
 Empty fields are left out of the result.
@@ -542,6 +546,41 @@ list of EndpointSummary, each with:
   - **`pod`**: the backing pod's name, when the endpoint targets a pod.
   - **`node`**
 - **`ready`**, **`not_ready`**, **`terminating`** (`int`): counts. A terminating endpoint counts as terminating, not as not ready.
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+### `get_ingress_summaries`
+
+```python
+get_ingress_summaries(namespace: Optional[str] = None) -> list[IngressSummary]
+```
+
+Ingresses (`networking.k8s.io/v1`), like `kubectl get ingress` and `describe`,
+with each rule's backend resolved against the namespace's Services. A rule whose
+Service or port doesn't exist is the most common Ingress mistake, and this shows
+it directly instead of leaving it to be inferred from 503s. Gateway API routes
+(`HTTPRoute`) aren't covered.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+list of IngressSummary, each with:
+
+- **`name`**, **`namespace`**
+- **`ingress_class`** (`Optional[str]`): `spec.ingressClassName`, or the older `kubernetes.io/ingress.class` annotation.
+- **`rules`** (`list[IngressRule]`): one per host and path:
+  - **`host`**: None means any host.
+  - **`path`**, **`path_type`**
+  - **`service`**, **`port`**: the backend Service, and its port as written, a number or a port name.
+  - **`resource`**: a resource backend, as "Kind/name", instead of a Service.
+  - **`backend_problem`**: why the backend doesn't resolve, e.g. "Service 'legacy' not found" or "Service 'ad' has no port 9555"; None when it resolves.
+  - **`backend_ready`**: the backend Service's ready endpoints, from `get_endpoint_summaries`; None when unknown.
+- **`default_backend`** (`Optional[IngressRule]`): the backend for requests no rule matches, resolved the same way.
+- **`tls`** (`list[IngressTLS]`): `hosts`, and `secret_name`: the certificate's Secret by name only; its contents are never read.
+- **`load_balancer`** (`list[str]`): load-balancer IPs or hostnames.
+- **`labels`**, **`annotations`**, **`age`**
 - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 
 ### `get_configmap_summaries`

@@ -31,6 +31,7 @@ import signal
 from typing import Any, Optional
 
 from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
+                        IngressSummary,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         LastChange, LOG_NOTE_PREFIX, LogTail, NamespaceHealth, Termination,
@@ -248,6 +249,27 @@ def _usage_line(u: ContainerUsage) -> str:
     return f"{u.container}: {memory}, cpu {u.cpu}"
 
 
+def _ingress_lines(ingresses: list[IngressSummary], services: Optional[set[str]] = None,
+                   problems_only: bool = False) -> list[str]:
+    """One line per rule: "Ingress/shop: host/path -> service:port (3 ready)", with
+    its problem; only rules routing to `services`, or only rules that can't
+    reach a pod."""
+    lines = []
+    for ing in ingresses:
+        for r in ing.rules + ([ing.default_backend] if ing.default_backend else []):
+            if services is not None and r.service not in services:
+                continue
+            broken = r.backend_problem or r.backend_ready == 0
+            if problems_only and not broken:
+                continue
+            where = f"{r.host or '*'}{r.path or ''}" if (r.host or r.path) else "(default)"
+            target = f"{r.service}:{r.port}" if r.service else (r.resource or "-")
+            state = (f": {r.backend_problem}" if r.backend_problem
+                     else f" ({r.backend_ready} ready)" if r.backend_ready is not None else "")
+            lines.append(f"Ingress/{ing.name}: {where} -> {target}{state}")
+    return lines
+
+
 def _autoscaler_line(h: HpaSummary) -> str:
     at_max = h.current_replicas >= h.max_replicas
     line = (f"HPA {h.name}: {h.current_replicas} replicas (min "
@@ -354,7 +376,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     result = NamespaceHealth(
         namespace=namespace, workloads=entries, healthy=healthy_lines,
         common_failures=failures,
-        services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready])
+        services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready],
+        ingress_problems=_ingress_lines(api.get_ingress_summaries(namespace), problems_only=True))
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
     if usage_unavailable:
@@ -571,6 +594,8 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         report.config = history.config
     report.autoscaler = _autoscalers(api, namespace).get(f"{kind}/{name}")
     report.services = _services_for(api.get_endpoint_summaries(namespace), {p.name for p in pods})
+    report.ingresses = _ingress_lines(api.get_ingress_summaries(namespace),
+                                      services={e.service for e in report.services})
     usage, usage_unavailable = _usage(api, namespace)
     if usage_unavailable:
         report.notes.append(f"Usage unavailable: {usage_unavailable}")

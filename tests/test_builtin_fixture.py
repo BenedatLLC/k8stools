@@ -277,3 +277,18 @@ def test_usage_readings_agree_with_the_containers_they_measure(state):
     [node] = state.get_node_metrics()
     [n] = state.get_node_summaries()
     assert node.memory_allocatable_bytes == k8s_tools._bytes(n.allocatable["memory"])
+
+
+def test_ingress_backends_agree_with_services(state):
+    """A rule flagged missing points at no Service; any other names a Service
+    and port that exist, with that Service's ready endpoints."""
+    services = {(s.namespace, s.name): s for s in state.get_service_summaries()}
+    for ing in state.get_ingress_summaries():
+        for r in ing.rules + ([ing.default_backend] if ing.default_backend else []):
+            svc = services.get((ing.namespace, r.service))
+            if r.backend_problem:
+                assert svc is None or not any(str(p.port) == r.port for p in svc.ports)
+            else:
+                assert svc is not None, r.service
+                assert any(str(p.port) == r.port for p in svc.ports), r
+                assert r.backend_ready == svc.ready_endpoints
