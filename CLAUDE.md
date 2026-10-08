@@ -39,9 +39,14 @@ tests/
 
 `CHANGELOG.md` records user-visible changes per release, newest first. Add to the
 top entry (`## X.Y.Z — unreleased` until tagged) in the same change that makes
-them, and call out behavior changes under **Changed**. It links from the README and
-from the package metadata (`[project] urls`), so it shows on PyPI. `docs/ROADMAP.md`
-holds only planned and deferred work.
+them, and call out behavior changes under **Changed**. It links from the README
+and from the package metadata (`[project] urls`), so it shows on PyPI.
+`docs/ROADMAP.md` holds only planned and deferred work.
+
+**Tie changes to issues.** Each release that closes GitHub issues lists them
+first, under **Issues fixed** (linked, with the issue's title). Commit messages
+name the issue they resolve with `fixes #N` (or `refs #N` for partial work), so
+GitHub links the commit and closes the issue when it reaches `main`.
 
 ## Environment setup
 

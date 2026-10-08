@@ -5,6 +5,10 @@ dates are release-tag dates.
 
 ## 3.0.0 — unreleased
 
+### Issues fixed
+- [#12](https://github.com/BenedatLLC/k8stools/issues/12): Redaction misses
+  credentials embedded in args, flags and URLs.
+
 ### Added
 - **`k8s-capture-state --redact-file FILE`** re-runs redaction over an existing
   capture and rewrites it in place, keeping its compression. Use it on captures
