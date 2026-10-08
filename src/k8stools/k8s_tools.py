@@ -3701,8 +3701,10 @@ TOOLSET_NAMES: dict[str, tuple[str, ...]] = {
     "all": tuple(fn.__name__ for fn in TOOLS),
 }
 
-#: The toolset k8s-mcp-server serves unless told otherwise.
-DEFAULT_TOOLSET = "all"
+#: The toolset k8s-mcp-server serves unless told otherwise. "investigate" since
+#: 3.0.0 (#20, #21), after k8srca measured the short descriptions and composites;
+#: `--toolset all` serves everything, as 2.x did.
+DEFAULT_TOOLSET = "investigate"
 
 
 def select_tools(tools: list, toolset: str = DEFAULT_TOOLSET,

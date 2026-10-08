@@ -8,8 +8,9 @@ import json
 import asyncio
 import tempfile
 
-from k8stools.k8s_tools import TOOLS
-EXPECTED_TOOLS = [tool.__name__ for tool in TOOLS]
+from k8stools.k8s_tools import DEFAULT_TOOLSET, TOOLSET_NAMES
+# A server started without --toolset serves the default toolset (investigate, 3.0.0).
+EXPECTED_TOOLS = list(TOOLSET_NAMES[DEFAULT_TOOLSET])
 
 import time
 import requests
@@ -159,8 +160,7 @@ def test_k8s_mcp_server_stdio_mock():
                 found_tools = [tool.name for tool in tools.tools]
                 
                 # Verify we have the expected tools (from mock_tools.py)
-                from k8stools.mock_tools import TOOLS as MOCK_TOOLS
-                expected_mock_tools = [tool.__name__ for tool in MOCK_TOOLS]
+                expected_mock_tools = EXPECTED_TOOLS
                 for tool in expected_mock_tools:
                     assert tool in found_tools, f"Mock tool '{tool}' not found in output: {found_tools}"
                 

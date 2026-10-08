@@ -1,11 +1,12 @@
 # k8stools roadmap
 
-This tracks planned and deferred work. It has three parts:
+This tracks planned and deferred work. It has two parts:
 
-1. **Planned: 3.0.0**, sequenced in GitHub issue
-   [#21](https://github.com/BenedatLLC/k8stools/issues/21).
-2. **Deferred feature requests**: asked for, not yet planned.
-3. **Completed internal work** (mock state capture).
+1. **Deferred feature requests**: asked for, not yet planned.
+2. **Completed internal work** (mock state capture).
+
+3.0.0 delivered the plan in [#21](https://github.com/BenedatLLC/k8stools/issues/21);
+see the changelog.
 
 What each release shipped is in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -17,37 +18,15 @@ only the tools it needs.
 
 ---
 
-## Planned: 3.0.0
-
-All of this ships together as 3.0.0. The issue,
-[#21](https://github.com/BenedatLLC/k8stools/issues/21), holds the build order, the
-reasons for it, the k8srca measurement checkpoints, and what makes the release a
-major version. In build order:
-
-| Step | Issue | Work |
-|---|---|---|
-| 1 | [#12](https://github.com/BenedatLLC/k8stools/issues/12) | Redaction: credentials embedded in args, flags and URLs |
-| 2 | [#20](https://github.com/BenedatLLC/k8stools/issues/20) | Short tool descriptions (caveats move into results); named toolsets |
-| 3 | [#13](https://github.com/BenedatLLC/k8stools/issues/13) | Composite tools: `get_namespace_health`, `get_workload_report` |
-| 4 | [#14](https://github.com/BenedatLLC/k8stools/issues/14), [#15](https://github.com/BenedatLLC/k8stools/issues/15), [#16](https://github.com/BenedatLLC/k8stools/issues/16) | HPA; Service endpoints (EndpointSlice); container and node metrics |
-| 5 | [#17](https://github.com/BenedatLLC/k8stools/issues/17), [#18](https://github.com/BenedatLLC/k8stools/issues/18) | Ingress; custom resource conditions |
-| 6 | [#20](https://github.com/BenedatLLC/k8stools/issues/20) | Default toolset becomes `investigate`, if the measurements support it |
-
-Steps 4–5 came from a downstream coverage request, tracked in
-[#19](https://github.com/BenedatLLC/k8stools/issues/19), which also records what was
-declined (ReplicationController) and why.
-
----
-
 ## Deferred feature requests
 
-Not part of 3.0.0. Kept from the original requester's priority list.
+Kept from the original requester's priority list.
 
 **Node allocated-resources breakdown.** The 1.1.0 node enhancement also asked for
 summed requests/limits ("allocated resources") per node, marked "if feasible".
 Everything else on the node summary shipped. This piece needs every pod listed per
-node and Kubernetes quantity strings (`100m`, `128Mi`, …) summed correctly. #16's
-metrics work needs the same quantity parsing, so this gets cheaper once that lands.
+node and Kubernetes quantity strings (`100m`, `128Mi`, …) summed correctly. 3.0.0's
+metrics work added that parsing (`k8s_tools.parse_quantity`), so this is now cheaper.
 - *Effort:* medium. *Value:* high for pods-per-node capacity modeling.
 
 **`get_pod_summaries`: label / field selectors.** Optional `label_selector` /

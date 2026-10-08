@@ -62,10 +62,10 @@ def test_unknown_names_fail_loudly(kwargs, match):
         select_tools(k8s_tools.TOOLS, **kwargs)
 
 
-def test_the_default_is_still_all():
-    """Changing it removes tools from existing MCP users; that's for 3.0.0's
-    release decision (#20, #21), not a side effect of adding toolsets."""
-    assert k8s_tools.DEFAULT_TOOLSET == "all"
+def test_the_default_is_investigate():
+    """3.0.0 (#20 step 6 of #21): every tool but the overlapping ones. A server
+    that needs all of them says --toolset all."""
+    assert k8s_tools.DEFAULT_TOOLSET == "investigate"
 
 
 # --- the server --------------------------------------------------------------
@@ -88,7 +88,8 @@ def _serve(monkeypatch, *argv):
 
 
 def test_server_serves_the_chosen_toolset(monkeypatch):
-    assert _serve(monkeypatch) == _names(k8s_tools.TOOLS)
+    assert _serve(monkeypatch) == [n for n in _names(k8s_tools.TOOLS) if n not in OVERLAPPING_TOOLS]
+    assert _serve(monkeypatch, "--toolset", "all") == _names(k8s_tools.TOOLS)
     assert _serve(monkeypatch, "--toolset", "triage") == list(
         n for n in _names(k8s_tools.TOOLS) if n in TOOLSET_NAMES["triage"])
     assert _serve(monkeypatch, "--toolset", "triage", "--include", "get_pod_spec",

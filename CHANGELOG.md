@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 3.0.0 — unreleased
+## 3.0.0 — 2026-10-08
 
 ### Issues fixed
 - [#12](https://github.com/BenedatLLC/k8stools/issues/12): Redaction misses
@@ -20,6 +20,32 @@ dates are release-tag dates.
   get_ingress_summaries, with backend resolution.
 - [#18](https://github.com/BenedatLLC/k8stools/issues/18): Custom resources: list
   CRDs and instance conditions (not raw objects).
+- [#20](https://github.com/BenedatLLC/k8stools/issues/20): Toolsets and short tool
+  descriptions: limit what each agent sees.
+
+The work was sequenced in [#21](https://github.com/BenedatLLC/k8stools/issues/21),
+with k8srca measuring each step: short descriptions cut cost per run 14% with no
+misreading returned, and the composite tools in the triage group took its trap
+score from 6/12 to 10/12 at half the calls and 36% less cost.
+
+### Upgrading from 2.x
+- **The MCP server serves the `investigate` toolset by default**, which leaves
+  out `get_pod_events`, `get_replicaset_summaries`, `get_logs_for_job` and
+  `get_logs_for_cronjob`; other tools cover each. `--toolset all` serves every
+  tool, as 2.x did. In Python, `TOOLS` is unchanged.
+- **Tool descriptions are short, and warnings come back in results.** Read the
+  `notes` lists, and skip log lines starting `[k8stools] note:`
+  (`k8s_tools.LOG_NOTE_PREFIX`) if you parse logs.
+- **Redaction catches more.** Credentials in args, flags, URLs and connection
+  strings that 2.x returned in full come back `[REDACTED]`. Run captures you've
+  kept or shared through `k8s-capture-state --redact-file`.
+- **A capture needs more read permissions:** `horizontalpodautoscalers`,
+  `endpointslices`, `ingresses`, and `metrics.k8s.io` pods and nodes where
+  metrics-server runs. Custom-resource types it can't read are recorded, not
+  fatal. The README's role has them all.
+- **Captures from 2.x still load.** Data they don't have replays as empty, as
+  unknown (`None`, never 0), or with an error saying the capture predates it.
+
 
 ### Added
 - **`get_custom_resource_definitions` and `get_custom_resource_status`** (issue
@@ -149,6 +175,9 @@ dates are release-tag dates.
   hold the credentials below in full.
 
 ### Changed
+- **`investigate` is the default toolset** (issue #20, step 6 of #21), rather
+  than every tool; `--toolset all` restores 2.x's behavior. k8srca's
+  measurements on #20 and #13 supported the change.
 - **A capture needs `list` on `horizontalpodautoscalers`** (autoscaling) **and
   `endpointslices`** (discovery.k8s.io). The README's role includes both.
   `get_service_summaries` works without the latter, with unknown counts.

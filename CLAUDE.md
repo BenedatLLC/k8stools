@@ -280,7 +280,7 @@ K8STOOLS_CONTEXT=prod-eu k8s-mcp-server
 # Disable secret redaction (on by default)
 k8s-mcp-server --no-redact
 
-# Serve a subset of the tools: triage | investigate | all (default)
+# Serve a subset of the tools: triage | investigate (default) | all
 k8s-mcp-server --toolset triage --include get_pod_spec
 ```
 

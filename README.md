@@ -255,7 +255,7 @@ options:
   --no-redact           Disable secret redaction of tool output (redaction is on by default; can
                         also be disabled with K8STOOLS_REDACT=0)
   --toolset {triage,investigate,all}
-                        Which tools to serve [default: all]. 'triage' is the few needed to find
+                        Which tools to serve [default: investigate]. 'triage' is the few needed to find
                         where to look, 'investigate' is every tool but those another tool covers,
                         'all' is everything.
   --include TOOL        Also serve TOOL (repeatable)
@@ -292,8 +292,8 @@ less reliably among many similar tools. `--toolset` serves a named subset:
 | Toolset | Tools | Use it for |
 |---|---|---|
 | `triage` | `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | finding where to look |
-| `investigate` | every tool except those another tool already covers | a full investigation |
-| `all` (default) | every tool | compatibility; the default until 3.0.0 |
+| `investigate` (default) | every tool except those another tool already covers | a full investigation |
+| `all` | every tool | compatibility with 2.x, which served every tool |
 
 `investigate` leaves out `get_pod_events` (use `get_events(involved_name=...)`),
 `get_replicaset_summaries` (use `get_workload_history`), and `get_logs_for_job` /
