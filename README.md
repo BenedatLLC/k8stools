@@ -2,60 +2,371 @@
 
 ![Unit Tests](https://github.com/BenedatLLC/k8stools/actions/workflows/unit-tests.yml/badge.svg)
 
-This package provides a collection of Kubernetes functions to be used by Agents. They can be passed
-directly to an agent as tools or placed behind an MCP server (included). Some use cases include:
-* Chat with your kubernetes cluster via GitHub CoPilot or Cursor.
-* Build [agents](https://github.com/BenedatLLC/orca-agent/) to monitor your cluster or perform root cause analysis.
-* Vibe-code a custom chat UI.
-* Use in non-agentic automations.
-* Snapshot a live cluster to a file and replay it as a test fixture, with no cluster
-  needed — see [Capturing and replaying a cluster](#capturing-and-replaying-a-cluster).
+k8stools gives AI agents read-only access to a Kubernetes cluster. It provides
+31 tools: from "what is wrong in this namespace?" down to a single pod's spec or
+logs. You can use them in two ways:
+
+* **As an MCP server** (`k8s-mcp-server`, included), for Claude Code, Cursor,
+  GitHub Copilot or any other MCP client.
+* **As Python functions**, passed straight to an agent framework such as
+  pydantic-ai, or called from ordinary scripts.
+
+Some use cases:
+* Chat with your Kubernetes cluster from your coding agent.
+* Build [agents](https://github.com/BenedatLLC/orca-agent/) that monitor your cluster or perform root cause analysis.
+* Build a custom chat UI, or use the tools in non-agentic automations.
+* Snapshot a live cluster to a file and replay it later as a test fixture, with no
+  cluster needed. See [Capturing and replaying a cluster](#capturing-and-replaying-a-cluster).
+
+Every tool only reads. None changes the cluster, and none reads Kubernetes
+`Secret` objects. Secret-shaped values in other objects (ConfigMaps, env vars,
+command lines, logs) are [redacted](#secret-redaction) by default.
 
 <a href="https://glama.ai/mcp/servers/@BenedatLLC/k8stools">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@BenedatLLC/k8stools/badge" alt="Kubernetes Tools Server MCP server" />
 </a>
 
-## Methodology
+## Contents
 
-Our goal is to focus on quality over quantity -- providing
-well-documented and strongly typed tools. We believe that this is a critical in enabling
-agents to make effective use of tools, beyond simple demos.
-
-These are built on top of the kubernetes Python API (https://github.com/kubernetes-client/python).
-There are three styles of tools provided here:
-1. There are tools that mimic the output of kubectl commands (e.g. `get_pod_summaries`, which is equivalent
-   to `kubectl get pods`).  Strongly-typed Pydantic models are used for the return values of these tools.
-2. There are tools that return strongly typed Pydantic models that attempt to match the associated Kubernetes
-   client types (see https://github.com/kubernetes-client/python/tree/master/kubernetes/docs).
-   Lesser used fields may be omitted from these models. An example of this case is `get_pod_container_statuses`.
-3. In some cases we simply call `to_dict()` on the class returned by the API (defined in 
-   https://github.com/kubernetes-client/python/tree/master/kubernetes/client/models).
-   The return type is `dict[str,Any]`, but we document the fields in the function's docstring.
-   `get_pod_spec` is an example of this type of tool.
-
-Currently, the priority is on functions that do not modify the state of the cluster.
-We want to focus first on the monitoring / RCA use cases. When we do add tools to address
-other use cases, they will be kept separate from the read-only tools so you can still build
-"safe" agents.
-
-## Installation
-Via `pip`:
-
-```sh
-pip install k8stools
-```
-
-Via `uv`:
-```sh
-uv add k8stools
-```
-
-This installs three commands: `k8s-mcp-server` (the MCP server), `k8s-mcp-client`
-(a client for manual testing), and `k8s-capture-state` (snapshot a cluster to a
-replayable file).
+* [Quick start](#quick-start)
+* [Toolsets: choosing which tools an agent sees](#toolsets-choosing-which-tools-an-agent-sees)
+* [The tools](#the-tools)
+* [Running the MCP server](#running-the-mcp-server)
+* [Using the tools from Python](#using-the-tools-from-python)
+* [Mock data](#mock-data)
+* [Capturing and replaying a cluster](#capturing-and-replaying-a-cluster)
+* [Secret redaction](#secret-redaction)
+* [Design approach](#design-approach)
+* [Development](#development)
 
 What changed in each release is in the
 [changelog](https://github.com/BenedatLLC/k8stools/blob/main/CHANGELOG.md).
+
+## Quick start
+
+### 1. Install
+
+k8stools needs Python 3.12 or newer.
+
+```sh
+pip install k8stools      # or: uv add k8stools
+```
+
+This installs three commands:
+
+| Command | What it does |
+|---|---|
+| `k8s-mcp-server` | The MCP server |
+| `k8s-capture-state` | Snapshots a cluster to a file that the server can replay |
+| `k8s-mcp-client` | Lists the server's tools and their schemas, for manual checking |
+
+### 2. Try it without a cluster
+
+`--mock` serves a built-in snapshot of a small cluster that has a few things wrong
+with it (see [Mock data](#mock-data)), so you can see what the tools do before
+pointing them at anything real. To add it to Claude Code:
+
+```sh
+claude mcp add k8stools-mock -- k8s-mcp-server --mock
+```
+
+Then ask something like *"What's wrong in the default namespace?"*
+
+For VS Code, Cursor or another client that reads an `mcp.json`, see
+[Connecting an MCP client](#connecting-an-mcp-client).
+
+### 3. Point it at your cluster
+
+Without `--mock`, the server uses the same cluster as `kubectl`: the file in
+`KUBECONFIG` (or `~/.kube/config`) and its current context. To choose a different
+one, pass `--kubeconfig` and/or `--context`:
+
+```sh
+claude mcp add k8stools -- k8s-mcp-server --context my-cluster
+```
+
+The account it runs as needs only `get` and `list` permissions. See
+[Permissions](#permissions) for a ClusterRole that covers every tool, and
+[Selecting a cluster](#selecting-a-cluster) for the details.
+
+## Toolsets: choosing which tools an agent sees
+
+An MCP client sends every tool's description to the model on every turn, and
+agents choose less reliably when they have many similar tools to pick from. So the
+server doesn't have to offer all 31 tools: it serves a named **toolset**, chosen
+with `--toolset`:
+
+| Toolset | What it contains | Use it when |
+|---|---|---|
+| `triage` | 5 tools: `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | The agent's job is to find what's wrong and where. The two *composite* tools answer in one call what otherwise takes five or six. |
+| `investigate` **(default)** | 27 tools: every tool except the four that another tool already covers | The agent needs to dig into details: specs, history, logs, networking, storage. |
+| `all` | All 31 tools | You want the full set, as k8stools 2.x served. |
+
+The four tools that `investigate` leaves out, and what to use instead:
+
+| Left out | Use instead |
+|---|---|
+| `get_pod_events` | `get_events(involved_name=...)` |
+| `get_replicaset_summaries` | `get_workload_history` |
+| `get_logs_for_job`, `get_logs_for_cronjob` | `get_logs_for_pod_and_container`; each pod's `owner` names its Job |
+
+You can adjust any toolset with `--include TOOL` and `--exclude TOOL`. Both can be
+repeated:
+
+```sh
+# The triage tools, plus pod specs and container logs
+k8s-mcp-server --toolset triage --include get_pod_spec --include get_logs_for_pod_and_container
+
+# Everything except ConfigMap contents
+k8s-mcp-server --toolset all --exclude get_configmap
+```
+
+A misspelled toolset or tool name stops the server at startup, rather than
+quietly serving a different set. The [table of tools](#the-tools) below shows which
+toolsets each tool is in. In Python, the same sets are in `k8s_tools.TOOLSETS`
+(see [Choosing tools in Python](#choosing-tools-in-python)).
+
+## The tools
+
+Each tool's description, which is what the model sees, is kept to a few lines.
+[docs/TOOL_REFERENCE.md](https://github.com/BenedatLLC/k8stools/blob/main/docs/TOOL_REFERENCE.md)
+documents every parameter and field.
+
+Warnings that apply to a particular result come back *in* that result, rather than
+in the description: nodes, pods, container statuses, events and DaemonSets have a
+`notes` list (for example, that a node's Ready time is not its uptime), and a log
+can begin with `[k8stools] note:` lines (for example, that the "previous" log is
+the same as the current one). See
+[Notes in results](https://github.com/BenedatLLC/k8stools/blob/main/docs/TOOL_REFERENCE.md#notes-in-results).
+
+In the tables below, **T** means the tool is in the `triage` toolset and **I** that
+it is in `investigate`. Every tool is in `all`.
+
+### Start here: overview tools
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_namespace_health` | What is wrong in a namespace, and where. A full entry for each unhealthy workload (last termination with the exit code's meaning, how long instances live, the restart back-off, memory limit vs request, when the template last changed) and one line for each healthy one. Workloads failing the same way are grouped. | ✓ | ✓ |
+| `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails; the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA and resource usage. | ✓ | ✓ |
+| `get_cluster_info` | Which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed. | ✓ | ✓ |
+
+These *composite* tools are built from the other tools, and report facts rather
+than diagnoses: they say "exit code 137, without OOMKilled", not "this was an
+out-of-memory kill".
+
+### Cluster and nodes
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_namespaces` | The namespaces, like `kubectl get namespace` | | ✓ |
+| `get_node_summaries` | The nodes, like `kubectl get nodes -o wide`, with capacity, allocatable, conditions, taints and labels | ✓ | ✓ |
+| `get_node_metrics` | Each node's current CPU and memory use against its allocatable, like `kubectl top node` (needs metrics-server) | | ✓ |
+| `get_events` | Cluster- or namespace-wide events, filtered on the server (by object, reason, type) | ✓ | ✓ |
+
+### Pods, containers and logs
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_pod_summaries` | The pods, like `kubectl get pods -o wide`, with each pod's controlling owner (e.g. `DaemonSet/otel-collector-agent`) | | ✓ |
+| `get_pod_container_statuses` | Each container's state in a pod: running, waiting or terminated, restarts, last termination | | ✓ |
+| `get_pod_spec` | A pod's full spec | | ✓ |
+| `get_pod_events` | The events for one pod | | |
+| `get_logs_for_pod_and_container` | A container's logs, with `tail`, `since_seconds` and `previous` (the instance before the last restart). See [Previous-instance log semantics](#previous-instance-log-semantics). | | ✓ |
+| `get_container_metrics` | Each running container's current CPU and memory use beside its requests and limits, like `kubectl top pod --containers` (needs metrics-server) | | ✓ |
+
+### Workloads
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_deployment_summaries` | Deployments, like `kubectl get deployments` | | ✓ |
+| `get_statefulset_summaries` | StatefulSets, like `kubectl get statefulsets` | | ✓ |
+| `get_daemonset_summaries` | DaemonSets, like `kubectl get daemonsets -o wide`, with node selector and images | | ✓ |
+| `get_workload_history` | What changed in a Deployment, StatefulSet or DaemonSet, and when: each retained revision compared with the one before (images, resources, probes, command and args, env var *names*, volumes, scheduling), plus the ConfigMaps and Secrets it references. It also says what the history cannot show. | | ✓ |
+| `get_replicaset_summaries` | A Deployment's ReplicaSets with their revision numbers and images | | |
+| `get_hpa_summaries` | HorizontalPodAutoscalers, like `kubectl get hpa` plus `describe`: target, min/max/current/desired replicas, each metric against its target, and the scaling conditions | | ✓ |
+| `get_cronjob_summaries` | CronJobs, like `kubectl get cronjobs` | | ✓ |
+| `get_job_summaries` | Jobs, like `kubectl get jobs` | | ✓ |
+| `get_logs_for_job` | Logs from a Job's most recent pod | | |
+| `get_logs_for_cronjob` | Logs from a CronJob's most recent run | | |
+
+### Networking
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_service_summaries` | Services, like `kubectl get services`, with selector, labels, annotations, and ready / not-ready endpoint counts | | ✓ |
+| `get_endpoint_summaries` | Each Service's backends, from its EndpointSlices: every address's ready / serving / terminating state, pod and node | | ✓ |
+| `get_ingress_summaries` | Ingresses, like `kubectl get ingress` plus `describe`: each host/path rule with its backend Service and port resolved (flagged when the Service or port doesn't exist), TLS hosts and Secret names, load-balancer addresses | | ✓ |
+
+### Configuration and storage
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_configmap_summaries` | ConfigMaps, like `kubectl get configmaps` | | ✓ |
+| `get_configmap` | The full contents of one ConfigMap (redacted by the server) | | ✓ |
+| `get_pvc_summaries` | PersistentVolumeClaims, like `kubectl get pvc`, with the pods that mount each one | | ✓ |
+
+### Custom resources
+
+| Tool | What it answers | T | I |
+|---|---|:-:|:-:|
+| `get_custom_resource_definitions` | The custom kinds the cluster serves (CRDs): group, kind, plural, scope, versions | | ✓ |
+| `get_custom_resource_status` | Custom resources' health: each instance's conditions (Ready, Synced, ...) and whether its controller has caught up with its spec. Not the objects themselves, which can be huge and can hold credentials. | | ✓ |
+
+## Running the MCP server
+
+### Connecting an MCP client
+
+The server uses the **stdio** transport by default, which is what local agents
+such as Claude Code, Cursor and VS Code expect: the client starts the server
+itself.
+
+**Claude Code:**
+
+```sh
+claude mcp add k8stools -- k8s-mcp-server
+# with options:
+claude mcp add k8stools -- k8s-mcp-server --context prod-eu --toolset triage
+```
+
+**VS Code, Cursor and other clients with an `mcp.json`:**
+
+```json
+{
+   "servers": {
+      "k8stools": {
+         "command": "${workspaceFolder}/.venv/bin/k8s-mcp-server",
+         "args": ["--toolset", "investigate"],
+         "envFile": "${workspaceFolder}/.envrc"
+      }
+   }
+}
+```
+
+This assumes that:
+1. k8stools is installed in a virtual environment in `.venv`, at the root of your workspace.
+2. The environment file `.envrc` sets any variables you need: for example
+   `KUBECONFIG` to point to your kubeconfig file and `K8STOOLS_CONTEXT` to pin a
+   context. You can pass `--kubeconfig` and `--context` in `args` instead.
+
+### Command-line options
+
+The options, grouped by what they're for:
+
+| Purpose | Options |
+|---|---|
+| Which tools to serve | `--toolset {triage,investigate,all}` (default `investigate`), `--include TOOL`, `--exclude TOOL`. See [Toolsets](#toolsets-choosing-which-tools-an-agent-sees). |
+| Which cluster to read | `--kubeconfig PATH`, `--context NAME`. See [Selecting a cluster](#selecting-a-cluster). |
+| Serve a snapshot instead of a cluster | `--mock` (the built-in snapshot), `--state-file FILE` (one of your own), `--state-time {advancing,frozen}`. See [Mock data](#mock-data) and [Capturing and replaying a cluster](#capturing-and-replaying-a-cluster). |
+| Secret redaction | `--no-redact` turns it off (it is on by default). See [Secret redaction](#secret-redaction). |
+| Transport | `--transport {stdio,streamable-http}` (default `stdio`), `--host` (default `127.0.0.1`), `--port` (default `8000`) |
+| Logging | `--log-level`, `--debug` |
+
+Some common combinations:
+
+```sh
+k8s-mcp-server                                         # stdio, current kubeconfig context, investigate toolset
+k8s-mcp-server --toolset triage                        # just the five triage tools
+k8s-mcp-server --context prod-eu                       # a specific cluster
+k8s-mcp-server --mock                                  # the built-in snapshot, no cluster needed
+k8s-mcp-server --state-file incident-1234.json         # replay your own capture
+k8s-mcp-server --transport=streamable-http --port=8000 # HTTP, for remote access
+```
+
+<details>
+<summary>Full <code>k8s-mcp-server --help</code></summary>
+
+```
+usage: k8s-mcp-server [-h] [--transport {streamable-http,stdio}] [--host HOST] [--port PORT]
+                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug]
+                      [--kubeconfig PATH] [--context NAME] [--mock] [--state-file FILE]
+                      [--state-time {advancing,frozen}] [--no-redact]
+                      [--toolset {triage,investigate,all}] [--include TOOL] [--exclude TOOL]
+
+Run the MCP server.
+
+options:
+  -h, --help            show this help message and exit
+  --transport {streamable-http,stdio}
+                        Transport to use for MCP server [default: stdio]
+  --host HOST           Hostname for HTTP service [default: 127.0.0.1]
+  --port PORT           Port for HTTP service [default: 8000]
+  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        Log level [default: INFO]
+  --debug               Enable debug mode [default: False]
+  --kubeconfig PATH     Kubeconfig file to use [default: KUBECONFIG, then ~/.kube/config]
+  --context NAME        Kubeconfig context to use [default: K8STOOLS_CONTEXT, then the
+                        kubeconfig's current-context]. A kubeconfig or context that is given but
+                        cannot be loaded stops the server rather than falling back to another
+                        cluster.
+  --mock                If specified, just run mock versions of the tools that don't need a
+                        cluster
+  --state-file FILE     Serve a captured cluster snapshot from FILE (implies --mock). Captures are
+                        written by k8s-capture-state.
+  --state-time {advancing,frozen}
+                        Replay clock for a captured snapshot [default: advancing]. 'frozen' pins
+                        every age at its captured value, so repeated runs are identical - what an
+                        automated suite wants.
+  --no-redact           Disable secret redaction of tool output (redaction is on by default; can
+                        also be disabled with K8STOOLS_REDACT=0)
+  --toolset {triage,investigate,all}
+                        Which tools to serve [default: investigate]. 'triage' is the few needed to find
+                        where to look, 'investigate' is every tool but those another tool covers,
+                        'all' is everything.
+  --include TOOL        Also serve TOOL (repeatable)
+  --exclude TOOL        Don't serve TOOL (repeatable)
+```
+
+</details>
+
+Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `KUBECONFIG` | Kubeconfig file, when `--kubeconfig` isn't given |
+| `K8STOOLS_CONTEXT` | Kubeconfig context, when `--context` isn't given |
+| `K8STOOLS_REDACT=0` | Turns redaction off, like `--no-redact` |
+
+### Selecting a cluster
+
+Each server answers from exactly one cluster, chosen at startup:
+
+| | Kubeconfig file | Context |
+|---|---|---|
+| 1st | `--kubeconfig PATH` | `--context NAME` |
+| 2nd | `KUBECONFIG` | `K8STOOLS_CONTEXT` |
+| 3rd | `~/.kube/config` | the file's `current-context` |
+
+With none of these given and no usable kubeconfig, the server falls back to the
+in-cluster service account, as when it runs in a pod.
+
+The server logs the cluster it chose when it starts:
+
+```
+WARNING:root:Bound to cluster: context 'prod-eu' at https://prod-eu.example:6443 (kubeconfig: /home/me/.kube/prod.yaml)
+```
+
+and the `get_cluster_info` tool reports it, so an agent can check which cluster it
+is talking to.
+
+A few rules keep a server from quietly answering from the wrong cluster:
+
+* **An explicit selection never falls back.** If a `--kubeconfig`, `--context` or
+  `K8STOOLS_CONTEXT` is given but cannot be loaded (a missing file, a misspelled
+  context), the server exits with an error. It does not fall back to in-cluster
+  config, which in a pod would silently mean *that pod's* cluster.
+* **The choice is made once.** Every tool shares it, and it does not follow later
+  changes to the kubeconfig: running `kubectl config use-context` does not
+  repoint a server that is already running.
+* **`--kubeconfig` and `--context` are rejected with `--mock` or `--state-file`**,
+  which serve a snapshot rather than a cluster.
+
+To serve two clusters, run two servers:
+
+```sh
+k8s-mcp-server --transport=streamable-http --port=8001 --context prod-eu
+k8s-mcp-server --transport=streamable-http --port=8002 \
+    --kubeconfig ~/.kube/eks.yaml --context staging
+```
 
 ### Permissions
 
@@ -109,79 +420,43 @@ use, rather than a wildcard:
 authenticated user can read by default. No tool reads Secrets: `get_workload_history`
 names the Secrets a workload uses, from its pod template, without reading them.
 
-## Current tools
+### The HTTP transport
 
-Each tool's description, which an MCP client sends to the model on every turn,
-is a few lines. [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md) documents every
-parameter and field. Warnings that apply to a particular result come back in that
-result: a `notes` list on nodes, pods, container statuses, events and DaemonSets,
-and `[k8stools] note:` lines at the top of a log (see
-[Notes in results](docs/TOOL_REFERENCE.md#notes-in-results)).
+`--transport=streamable-http` starts an HTTP server that listens on `--host` and
+`--port` (by default 127.0.0.1 and 8000). Use it when the agent is not on the
+same machine as the server.
 
-These are the tools we define:
+Here's how to start the server and check it with `curl`:
 
-* `get_namespace_health` - what is wrong in a namespace, and where: a full entry per unhealthy workload and one line per healthy one, with the last termination (exit code and its meaning beside Kubernetes' reason), instance lifetime and restart gap, memory limit vs request, and when the template last changed; workloads failing the same way are grouped
-* `get_workload_report` - everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails; the last template change; the ConfigMaps and Secrets it uses
-* `get_cluster_info` - which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed
-* `get_namespaces` - get a list of namespaces, like `kubectl get namespace`
-* `get_node_summaries` - get a list of nodes, like `kubectl get nodes -o wide` (includes capacity/allocatable/conditions/taints/labels)
-* `get_pod_summaries` - get a list of pods, like `kubectl get pods -o wide`, with each pod's controlling owner (e.g. `DaemonSet/otel-collector-agent`)
-* `get_pod_container_statuses` - return the status for each of the container in a pod
-* `get_pod_events` - return the events for a pod
-* `get_pod_spec` - retrieves the spec for a given pod
-* `get_logs_for_pod_and_container` - retrieves logs from a pod and container (supports `tail`, `since_seconds`, and `previous`). See [Previous-instance log semantics](#previous-instance-log-semantics) for when `previous=True` returns the same text as `previous=False` — it is Kubernetes behavior, not a bug.
-* `get_deployment_summaries` - get a list of deployments, like `kubectl get deployments`
-* `get_replicaset_summaries` - get a deployment's replica sets with their revision numbers and images. A deployment's replica sets are its change history: use this to see when a workload last changed and what the change was.
-* `get_workload_history` - what changed in a Deployment, StatefulSet or DaemonSet, and when: each retained revision of its pod template compared with the one before (images, resources, probes, command/args, env var *names*, volumes, scheduling), plus the ConfigMaps and Secrets it references. It states what history cannot show.
-* `get_service_summaries` - get a list of services, like `kubectl get services` (includes `selector`/labels/annotations)
-* `get_endpoint_summaries` - each Service's backends, from its EndpointSlices: every address's ready / serving / terminating state, pod and node, with counts. `get_service_summaries` also reports each Service's ready and not-ready endpoint counts
-* `get_ingress_summaries` - get Ingresses, like `kubectl get ingress` plus `describe`: class, each host/path rule with its backend Service and port resolved (flagged when the Service or port doesn't exist, with its ready endpoints otherwise), TLS hosts and Secret names, load-balancer addresses
-* `get_configmap_summaries` - get a list of ConfigMaps, like `kubectl get configmaps`
-* `get_configmap` - retrieve the full contents of a single ConfigMap
-* `get_statefulset_summaries` - get a list of StatefulSets, like `kubectl get statefulsets`
-* `get_daemonset_summaries` - get a list of DaemonSets, like `kubectl get daemonsets -o wide` (includes node selector and images)
-* `get_hpa_summaries` - get HorizontalPodAutoscalers (autoscaling/v2), like `kubectl get hpa` plus `describe`: scale target, min/max/current/desired replicas, each metric's current value against its target, and the AbleToScale / ScalingActive / ScalingLimited conditions
-* `get_container_metrics` - each running container's current CPU and memory use (metrics-server, like `kubectl top pod --containers`) beside its requests and limits, with percentages; each reading's notes say which instance it's from and what a short-window sample can't show
-* `get_node_metrics` - each node's current CPU and memory use against its allocatable, like `kubectl top node`
-* `get_cronjob_summaries` - get a list of CronJobs, like `kubectl get cronjobs`
-* `get_job_summaries` - get a list of Jobs, like `kubectl get jobs`
-* `get_custom_resource_definitions` - the custom kinds the cluster serves (CRDs): group, kind, plural, scope, versions
-* `get_custom_resource_status` - custom resources' health: each instance's conditions (Ready, Synced, ...) and whether its controller has caught up with its spec. Not the objects themselves
-* `get_logs_for_job` - retrieve logs from a Job's most-recent pod
-* `get_logs_for_cronjob` - retrieve logs from a CronJob's most-recent run
-* `get_pvc_summaries` - get a list of PersistentVolumeClaims, like `kubectl get pvc` (resolves mounting pods)
-* `get_events` - list cluster/namespace-wide events with server-side filtering
+```sh
+# start the server
+$ k8s-mcp-server --transport=streamable-http
+INFO:     Started server process [6649]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 
-We also define a set of associated "print_" functions that are helpful in debugging:
+# in another terminal, list the tools
+$ curl -H "Content-Type: application/json" \
+       -H "Accept: application/json, text/event-stream" \
+       -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}' \
+       http://127.0.0.1:8000/mcp
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
+```
 
-* `print_namespaces`
-* `print_node_summaries`
-* `print_pod_summaries`
-* `print_pod_container_statuses`
-* `print_pod_events`
-* `print_pod_spec`
-* `print_deployment_summaries`
-* `print_workload_history`
-* `print_service_summaries`
-* `print_endpoint_summaries`
-* `print_ingress_summaries`
-* `print_configmap_summaries`
-* `print_configmap`
-* `print_statefulset_summaries`
-* `print_daemonset_summaries`
-* `print_hpa_summaries`
-* `print_container_metrics`
-* `print_node_metrics`
-* `print_cronjob_summaries`
-* `print_job_summaries`
-* `print_custom_resource_definitions`
-* `print_custom_resource_status`
-* `print_pvc_summaries`
-* `print_events`
+### Checking the tools with `k8s-mcp-client`
 
-## Using the tools
-### Directly use in an agent
-The core tools are in `k8stools.k8s_tools`. Here's an example usage in an agent:
+`k8s-mcp-client` starts the server over stdio and prints each tool's description
+and input schema as Markdown. `--short` prints only the descriptions, and
+`--tools NAME ...` limits it to the tools named. It passes `KUBECONFIG` and
+`K8STOOLS_CONTEXT` through to the server.
+
+## Using the tools from Python
+
+### In an agent
+
+The tools are in `k8stools.k8s_tools`. Here's an example with pydantic-ai:
 
 ```python
 from pydantic_ai.agent import Agent
@@ -198,17 +473,6 @@ result = agent.run_sync("What is the status of the pods in my cluster?")
 print(result.output)
 ```
 
-The tools use `KUBECONFIG` (or `~/.kube/config`) and its current context. To pin a
-cluster instead, call `configure` before the first tool call:
-
-```python
-from k8stools import k8s_tools
-
-k8s_tools.configure(kubeconfig="~/.kube/prod.yaml", context="prod-eu")
-```
-
-See [Selecting a cluster](#selecting-a-cluster) for how the selection is resolved.
-
 > **⚠️ Redaction is not automatic outside the k8stools MCP server.** The functions
 > in `TOOLS` (and `mock_tools.TOOLS`) return raw values: ConfigMap contents, env
 > values in pod specs, container logs and command-line args, exactly as the API
@@ -218,217 +482,74 @@ See [Selecting a cluster](#selecting-a-cluster) for how the selection is resolve
 > your cluster goes straight into the model's context. See
 > [Where redaction applies](#where-redaction-applies).
 
-### Using via MCP
-The script `k8s-mcp-server` provides an MCP server for the same set of tools.
-Here are the command line arguments for the server:
-```
-usage: k8s-mcp-server [-h] [--transport {streamable-http,stdio}] [--host HOST] [--port PORT]
-                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--debug]
-                      [--kubeconfig PATH] [--context NAME] [--mock] [--state-file FILE]
-                      [--state-time {advancing,frozen}] [--no-redact]
-                      [--toolset {triage,investigate,all}] [--include TOOL] [--exclude TOOL]
+### Choosing a cluster
 
-Run the MCP server.
+The tools use `KUBECONFIG` (or `~/.kube/config`) and its current context. To pin a
+cluster instead, call `configure` before the first tool call:
 
-options:
-  -h, --help            show this help message and exit
-  --transport {streamable-http,stdio}
-                        Transport to use for MCP server [default: stdio]
-  --host HOST           Hostname for HTTP service [default: 127.0.0.1]
-  --port PORT           Port for HTTP service [default: 8000]
-  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
-                        Log level [default: INFO]
-  --debug               Enable debug mode [default: False]
-  --kubeconfig PATH     Kubeconfig file to use [default: KUBECONFIG, then ~/.kube/config]
-  --context NAME        Kubeconfig context to use [default: K8STOOLS_CONTEXT, then the
-                        kubeconfig's current-context]. A kubeconfig or context that is given but
-                        cannot be loaded stops the server rather than falling back to another
-                        cluster.
-  --mock                If specified, just run mock versions of the tools that don't need a
-                        cluster
-  --state-file FILE     Serve a captured cluster snapshot from FILE (implies --mock). Captures are
-                        written by k8s-capture-state.
-  --state-time {advancing,frozen}
-                        Replay clock for a captured snapshot [default: advancing]. 'frozen' pins
-                        every age at its captured value, so repeated runs are identical - what an
-                        automated suite wants.
-  --no-redact           Disable secret redaction of tool output (redaction is on by default; can
-                        also be disabled with K8STOOLS_REDACT=0)
-  --toolset {triage,investigate,all}
-                        Which tools to serve [default: investigate]. 'triage' is the few needed to find
-                        where to look, 'investigate' is every tool but those another tool covers,
-                        'all' is everything.
-  --include TOOL        Also serve TOOL (repeatable)
-  --exclude TOOL        Don't serve TOOL (repeatable)
+```python
+from k8stools import k8s_tools
+
+k8s_tools.configure(kubeconfig="~/.kube/prod.yaml", context="prod-eu")
 ```
 
-#### Selecting a cluster
+The selection is resolved as described in [Selecting a cluster](#selecting-a-cluster).
 
-Each server answers from exactly one cluster, chosen at startup:
+### Choosing tools in Python
 
-| | Kubeconfig file | Context |
-|---|---|---|
-| 1st | `--kubeconfig PATH` | `--context NAME` |
-| 2nd | `KUBECONFIG` | `K8STOOLS_CONTEXT` |
-| 3rd | `~/.kube/config` | the file's `current-context` |
+`TOOLS` is every tool. The toolsets are in `TOOLSETS`, and `select_tools` builds an
+adjusted one, just like `--toolset`, `--include` and `--exclude`:
 
-With none of these given and no usable kubeconfig, the server falls back to the
-in-cluster service account, as when it runs in a pod.
+```python
+from k8stools.k8s_tools import TOOLS, TOOLSETS, select_tools
 
-The server logs the binding when it starts:
+triage = TOOLSETS["triage"]
+mine = select_tools(TOOLS, "triage", include=("get_pod_spec",), exclude=("get_events",))
 
-```
-WARNING:root:Bound to cluster: context 'prod-eu' at https://prod-eu.example:6443 (kubeconfig: /home/me/.kube/prod.yaml)
+tools = [wrap_with_redaction(fn) for fn in mine]   # wrap them, as above
 ```
 
-and the `get_cluster_info` tool reports it to an agent, so an agent can check which
-cluster it is talking to without leaving MCP.
+`mock_tools.TOOLSETS` holds the same sets of [mock tools](#mock-data).
 
-#### Choosing which tools to serve
+### Printing results
 
-Every tool's description is sent to the model on every turn, and agents choose
-less reliably among many similar tools. `--toolset` serves a named subset:
+Most `get_*` tools have a `print_*` companion that prints the result as a table,
+which is handy when debugging (for example `print_pod_summaries`,
+`print_workload_history`, `print_hpa_summaries`). The log readers have none, since
+they already return text.
 
-| Toolset | Tools | Use it for |
-|---|---|---|
-| `triage` | `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | finding where to look |
-| `investigate` (default) | every tool except those another tool already covers | a full investigation |
-| `all` | every tool | compatibility with 2.x, which served every tool |
-
-`investigate` leaves out `get_pod_events` (use `get_events(involved_name=...)`),
-`get_replicaset_summaries` (use `get_workload_history`), and `get_logs_for_job` /
-`get_logs_for_cronjob` (use the pod log tool; `PodSummary.owner` names each pod's
-Job). They stay available in `all` and in Python.
-
-Adjust a toolset with `--include TOOL` and `--exclude TOOL`, both repeatable:
-
-```sh
-k8s-mcp-server --toolset triage --include get_pod_spec
+```python
+from k8stools.k8s_tools import print_pod_summaries
+print_pod_summaries("default")
 ```
 
-A misspelled toolset or tool name stops the server at startup.
+## Mock data
 
-In Python, `k8s_tools.TOOLSETS["triage"]` (and `mock_tools.TOOLSETS`) hold the same
-sets, and `k8s_tools.select_tools(TOOLS, toolset, include, exclude)` builds an
-adjusted one. Wrap them for redaction as above.
+When building agents, it can be helpful to test them against *mock* versions of the
+tools that don't need a real cluster but return realistic values. The module
+`k8stools.mock_tools` does just that, and so does the server's `--mock` option.
 
-A few rules keep a server from quietly answering from the wrong cluster:
+The data is a small, hand-maintained cluster modeled on a Minikube instance running
+the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
+application, with problems for an agent to find:
 
-* **An explicit selection never falls back.** If a `--kubeconfig`, `--context` or
-  `K8STOOLS_CONTEXT` is given but cannot be loaded (a missing file, a misspelled
-  context), the server exits with an error. It does not fall back to in-cluster
-  config, which in a pod would silently mean *that pod's* cluster.
-* **The binding is made once.** Every tool shares it, and it does not follow later
-  changes to the kubeconfig: running `kubectl config use-context` does not
-  repoint a server that is already running.
-* **`--kubeconfig` and `--context` are rejected with `--mock` or `--state-file`**,
-  which serve a capture rather than a cluster.
+* a crash-looping `ad` service, mid-upgrade, whose Service has no ready backends;
+* a Deployment whose HPA is at its maximum;
+* an Ingress with one rule to a missing Service;
+* a cert-manager `Certificate` that isn't Ready;
+* a DaemonSet, a CronJob and its Job, a StatefulSet with PVCs, and events.
 
-To serve two clusters, run two servers:
-
-```sh
-k8s-mcp-server --transport=streamable-http --port=8001 --context prod-eu
-k8s-mcp-server --transport=streamable-http --port=8002 \
-    --kubeconfig ~/.kube/eks.yaml --context staging
-```
-
-#### Use MCP with the stdio transport
-The *stdio* transport is best for use with local Coding Agents, like GitHub CoPilot or Cursor.
-It is the default, so you can run the `k8s-mcp-server` script without arguments. Here's an example
-`mcp.json` configuration:
-
-```json
-{
-   "servers": {
-      "k8stools-stdio": {
-         "command": "${workspaceFolder}/.venv/bin/k8s-mcp-server",
-         "args": [
-         ],
-         "envFile": "${workspaceFolder}/.envrc"
-      }
-   }
-}
-```
-
-This assumes the following:
-1. The Python virtual environment is expected to be in `.venv` under the root of your VSCode workspace
-2. You have installed the k8stools package into your workspace
-3. The environment file `.envrc` contains any variables you need defined. In particular, you may need to
-   set `KUBECONFIG` to point to your `kubectl` config file, and `K8STOOLS_CONTEXT` to pin a context
-   (or pass `--kubeconfig` / `--context` in `args`).
-
-#### Use MCP with the streamable HTTP transport
-The *streamable http* transport is enabled with the command line option `--transport=streamable-http`. It will
-start an HTTP server which listens on the specified address and port (defaulting to 127.0.0.1 and 8000, respectively).
-This transport is best for cases where you want remote access to your MCP server.
-
-Here's a short example that starts the server and then does a sanity test using `curl` to get the tool information:
-```sh
-# start the server
- $ k8s-mcp-server --transport=streamable-http
-[07/21/25 19:55:13] INFO     Starting with 18 tools on transport streamable-http          mcp_server.py:59
-INFO:     Started server process [6649]
-INFO:     Waiting for application startup.
-INFO     StreamableHTTP session manager started         streamable_http_manager.py:111
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-
-# Now, open another terminal window and test it
-$ curl -v \
-     -H "Content-Type: application/json" \
-     -H "Accept: application/json, text/event-stream" \
-     -d '{
-           "jsonrpc": "2.0",
-           "id": 1,
-           "method": "tools/list",
-           "params": {}
-         }' \
-     http://127.0.0.1:8000/mcp
-*   Trying 127.0.0.1:8000...
-* Connected to 127.0.0.1 (127.0.0.1) port 8000
-> POST /mcp HTTP/1.1
-> Host: 127.0.0.1:8000
-> User-Agent: curl/8.7.1
-> Content-Type: application/json
-> Accept: application/json, text/event-stream
-> Content-Length: 120
->
-* upload completely sent off: 120 bytes
-< HTTP/1.1 200 OK
-< date: Tue, 22 Jul 2025 02:56:25 GMT
-< server: uvicorn
-< cache-control: no-cache, no-transform
-< connection: keep-alive
-< content-type: text/event-stream
-< x-accel-buffering: no
-< Transfer-Encoding: chunked
-<
-event: message
-data: {"jsonrpc":"2.0","id":1,"result":{"tools":[.... long text elided ...]}}
-```
-
-## Mock tools
-When building agents, it can be helpful to test them against *mock* versions that do
-not go against a real cluster, but return realistic values. The module
-`k8stools.mock_tools` does just that. The data is a small, hand-maintained
-cluster modeled on a Minikube instance running the
-[Open Telemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
-application: a crash-looping `ad` service mid-upgrade, a DaemonSet, a CronJob and
-its Job, a StatefulSet with PVCs, and a few events. When running the MCP server,
-this may be enabled by using the `--mock` command line option.
-
-The mock serves a *capture* — a JSON snapshot of one cluster — rather than a set of
-per-tool canned answers, so the tools agree with each other: a pod that is not in the
+The mock serves a *capture* (a JSON snapshot of one cluster) rather than a set of
+canned answers per tool, so the tools agree with each other: a pod that is not in the
 capture does not exist for any tool, and one that is has consistent statuses, events,
-spec and logs. You can snapshot your own cluster the same way — see
-[Capturing and replaying a cluster](#capturing-and-replaying-a-cluster).
+spec and logs. You can snapshot your own cluster the same way.
 
 ## Capturing and replaying a cluster
 
 `k8s-capture-state` snapshots a live cluster into a single JSON file, and the MCP
-server replays that file as if it were the cluster. A whole scenario — a crash
-loop, a full volume, a bad rollout — becomes a fixture you can re-run, commit, or
-attach to an issue, with no cluster needed to reproduce it.
+server replays that file as if it were the cluster. A whole scenario, such as a
+crash loop, a full volume or a bad rollout, becomes a fixture you can re-run,
+commit, or attach to an issue, with no cluster needed to reproduce it.
 
 ```bash
 # Snapshot the current cluster (respects KUBECONFIG)
@@ -436,6 +557,17 @@ k8s-capture-state -o incident-1234.json
 
 # Replay it
 k8s-mcp-server --state-file incident-1234.json
+```
+
+It finishes with a summary of what it got:
+
+```
+$ k8s-capture-state --namespace default -o incident-1234.json
+Captured 27 pod(s), 31 container(s).
+  logs captured:          31
+  previous logs captured: 31
+  values redacted:        4
+Wrote incident-1234.json (1,435,335 bytes, redacted).
 ```
 
 ### `k8s-capture-state` options
@@ -484,17 +616,6 @@ options:
                         Log level [default: INFO]
 ```
 
-It finishes with a summary of what it got:
-
-```
-$ k8s-capture-state --namespace default -o incident-1234.json
-Captured 27 pod(s), 31 container(s).
-  logs captured:          31
-  previous logs captured: 31
-  values redacted:        4
-Wrote incident-1234.json (1,435,335 bytes, redacted).
-```
-
 ### What gets captured
 
 Everything the tools can read, so that every tool answers on replay:
@@ -509,22 +630,28 @@ Everything the tools can read, so that every tool answers on replay:
 
 A cluster is selected exactly as for the MCP server (see [Selecting a
 cluster](#selecting-a-cluster)), and a selection that cannot be loaded fails the
-capture.
+capture. The capture needs the permissions in [Permissions](#permissions); a
+custom-resource type it can't read is recorded as such rather than failing the
+capture, and so is a cluster without metrics-server.
 
 `--namespace` restricts only the namespaced resources; namespaces and nodes are
 always captured in full so the cluster still makes sense.
 
-Logs dominate the file size — expect a few MB for a few dozen pods (the 27-pod
+Logs dominate the file size: expect a few MB for a few dozen pods (the 27-pod
 capture above was 1.4 MB with only 50 lines per container; a 38-pod one at 200
 lines was 3.3 MB). Use `--max-log-lines` to trade size against history, or
 `--no-logs` for a structure-only snapshot. Captures compress about 10x, and can be
-written and read gzipped — see [Compression, and what to check
+written and read gzipped; see [Compression, and what to check
 in](#compression-and-what-to-check-in).
+
+Captures made by older versions of k8stools still load. Data they don't have
+replays as empty, as unknown (`None`, never 0), or as an error saying the capture
+predates it.
 
 ### Compression, and what to check in
 
 A name ending in `.gz` is written gzipped, and captures are read back compressed
-or not either way — detection is by content, so a capture still loads after being
+or not either way. Detection is by content, so a capture still loads after being
 renamed:
 
 ```bash
@@ -533,7 +660,7 @@ k8s-mcp-server --state-file incident-1234.json.gz
 ```
 
 **For a fixture you check into git, use plain `.json` anyway.** Git already stores
-blobs compressed, so you do not pay the uncompressed size — and it *deltas*
+blobs compressed, so you do not pay the uncompressed size, and it *deltas*
 successive versions of a text file against each other, which it cannot do for a
 gzip blob. Measured on two captures of the same 38-pod cluster:
 
@@ -544,23 +671,23 @@ gzip blob. Measured on two captures of the same 38-pod cluster:
 
 The two cost about the same once, but every re-capture of a `.gz` adds a whole
 fresh blob, so the repo grows roughly 6x faster. Captures are also indented rather
-than compact for the same reason — it gives git something to delta. This is also
+than compact for the same reason: it gives git something to delta. This is also
 why you probably do *not* need git-lfs here: LFS stores every version whole, which
 gives up exactly the delta compression that makes these files cheap.
 
-Reach for `.gz` when the file travels on its own — attached to an issue, dropped
+Reach for `.gz` when the file travels on its own: attached to an issue, dropped
 in object storage, or simply too large to keep expanded in a working tree.
 
 ### Previous-instance logs
 
-The capture includes the **previous-instance logs** of every restarted container —
-what `get_logs_for_pod_and_container(..., previous=True)` returns. For a
+The capture includes the **previous-instance logs** of every restarted container,
+which is what `get_logs_for_pod_and_container(..., previous=True)` returns. For a
 crash-looping container the current instance's logs are usually empty or
 post-restart, and the stack trace or OOM message that explains the crash lives in
 the previous instance, so a capture without them would be missing the evidence
 that matters most.
 
-They roughly double the log payload for a cluster where a lot is restarting —
+They roughly double the log payload for a cluster where a lot is restarting,
 which is exactly the cluster worth capturing. `--no-previous-logs` skips them. The
 summary reports how many could not be read (the previous instance may have been
 garbage-collected), because a crash-loop capture that lost them looks identical to
@@ -649,7 +776,7 @@ agent = Agent(model="openai:gpt-4.1", tools=mock_tools.TOOLS)
 
 `k8s-capture-state` applies the same redaction pass as the MCP server, **on by
 default**, opt out with `--no-redact` or `K8STOOLS_REDACT=0`. This matters because
-a capture file is far more portable than cluster access — it gets committed to
+a capture file is far more portable than cluster access: it gets committed to
 git, attached to issues, and passed around long after anyone remembers which
 cluster it came from. Redaction is one-way: replaying a redacted capture with
 `--no-redact` restores nothing, so a scenario that genuinely needs real values has
@@ -667,8 +794,9 @@ Captures taken before 3.0.0 may hold credentials embedded in args, URLs and
 connection strings (see below). Re-redact any you've committed or shared.
 
 ## Secret redaction
+
 Some read-only resources can carry secret-shaped values even though they are not
-Kubernetes `Secret` objects — `ConfigMap` data and the `env` blocks in a pod spec
+Kubernetes `Secret` objects: `ConfigMap` data and the `env` blocks in a pod spec
 are the common cases. When you run the k8stools MCP server directly against an
 agent (with no wrapping service to scrub output), those values would otherwise flow
 straight into the model's context.
@@ -679,15 +807,15 @@ It is **on by default** and can be disabled with `--no-redact` or by setting
 visible `[REDACTED]` marker so the agent can tell "hidden" from "absent". We never
 provide a reader for Kubernetes `Secret` objects.
 
-1. **By value shape** — AWS access keys, JWT / bearer tokens, PEM private-key blocks.
-2. **By key / env-var name** — the name contains `key`, `secret`, `token`,
+1. **By value shape**: AWS access keys, JWT / bearer tokens, PEM private-key blocks.
+2. **By key / env-var name**: the name contains `key`, `secret`, `token`,
    `password`, `passwd`, `credential` or `cred` **as a whole word**. Names are split
    on separators and camelCase, so `AWS_SECRET_ACCESS_KEY`, `apiKey` and
    `x-auth-token` all match while `VALKEY_ADDR` does not.
 
    A field named *exactly* `key` is exempt: in the Kubernetes API that is always a
    map entry, a taint, a label selector or a projected-volume item, never a
-   credential. This matters more than it sounds — on a real 38-pod cluster it was
+   credential. This matters more than it sounds: on a real 38-pod cluster it was
    130 of 139 redactions, none of them secrets: toleration keys such as
    `node.kubernetes.io/not-ready`, the filename `ca.crt`, and `secretKeyRef.key`.
    That last is worth stating plainly: **a reference to a secret is not a secret.**
@@ -698,7 +826,7 @@ provide a reader for Kubernetes `Secret` objects.
    compound `key` are exempt too, in both spellings: an affinity term's
    `topologyKey` / `topology_key` and label-key lists, and `get_configmap`'s
    `binary_data_keys`.
-3. **By context** — a credential inside a longer string, found by what surrounds
+3. **By context**: a credential inside a longer string, found by what surrounds
    it, with only the credential replaced:
 
    | Where | Example |
@@ -738,3 +866,40 @@ framework that builds tool schemas from them (pydantic-ai, MCP) sees the same to
 Redaction cannot catch everything. A secret with nothing naming it, such as a bare
 positional argument (`app hunter2`), can't be told apart from any other value; nor
 can an unusual format none of the rules above recognise.
+
+## Design approach
+
+Our goal is quality over quantity: well-documented, strongly typed tools. We
+believe this is critical for agents to use tools effectively, beyond simple demos.
+
+The tools are built on the [Kubernetes Python client](https://github.com/kubernetes-client/python),
+and return one of three kinds of result:
+1. **kubectl-like**: Pydantic models that mirror a `kubectl` command's output.
+   For example, `get_pod_summaries` is equivalent to `kubectl get pods -o wide`.
+2. **API-typed**: Pydantic models that match the Kubernetes client's types
+   (see https://github.com/kubernetes-client/python/tree/master/kubernetes/docs),
+   with lesser-used fields omitted. For example, `get_pod_container_statuses`.
+3. **Raw dict**: the result of `to_dict()` on the API's object (defined in
+   https://github.com/kubernetes-client/python/tree/master/kubernetes/client/models),
+   with its fields documented in the tool's docstring. For example, `get_pod_spec`.
+
+Read-only tools come first, because we are focusing on monitoring and root cause
+analysis. If we add tools that change the cluster, they will be kept separate
+from the read-only ones, so you can still build "safe" agents.
+
+## Development
+
+```sh
+git clone https://github.com/BenedatLLC/k8stools.git
+cd k8stools
+uv sync
+
+# Unit tests (no cluster needed)
+uv run pytest -v
+
+# Integration tests against a real cluster (skipped automatically if unreachable)
+KUBECONFIG=~/.kube/your-config.yaml uv run pytest tests/test_k8s_tools_realk8s.py -v
+```
+
+Planned and deferred work is in
+[docs/ROADMAP.md](https://github.com/BenedatLLC/k8stools/blob/main/docs/ROADMAP.md).

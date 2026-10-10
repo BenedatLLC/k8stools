@@ -3,6 +3,34 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 3.0.1 — unreleased
+
+### Changed
+- `get_service_summaries` and `get_ingress_summaries` treat an EndpointSlice
+  client that can't be set up (`K8sConfigError`) like an unreadable EndpointSlice
+  API: endpoint counts and backend readiness are None (unknown), rather than the
+  call failing. With one cluster binding shared by every API group, a live
+  server reaches this only when the core query would have failed first anyway.
+
+### Fixed
+- **`test_service_summaries` failed in CI.** Since #15, `get_service_summaries`
+  lists EndpointSlices for its endpoint counts, and the test faked only the core
+  API client: with no kubeconfig it raised `K8sConfigError`, while locally it
+  passed by querying whatever cluster the kubeconfig named. The test now fakes
+  the discovery API and checks the counts, and `tests/conftest.py` fails any
+  unit test that tries to resolve a cluster binding (integration, binding and
+  MCP client tests are exempt), so local runs behave like CI.
+
+### Documentation
+- **The README is reorganized for someone new to the project.** It starts with
+  a quick start (install, try `--mock`, point at a cluster, add to Claude Code or
+  an `mcp.json`) and explains toolsets (`--toolset`, `--include`, `--exclude`) in
+  their own section. The tools are grouped by area, with the toolsets each is
+  in, and the server's options are grouped by purpose. New sections cover
+  choosing toolsets in Python, `k8s-mcp-client`, and development. The rules for
+  cluster selection were under toolsets by mistake and moved back, and links to
+  `docs/` are absolute so they work on PyPI.
+
 ## 3.0.0 — 2026-10-08
 
 ### Issues fixed
