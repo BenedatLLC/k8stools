@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.0.0 — unreleased
+## 4.0.0 — 2026-10-17
 
 ### Issues fixed
 - [#22](https://github.com/BenedatLLC/k8stools/issues/22): Redaction misses a SQL
