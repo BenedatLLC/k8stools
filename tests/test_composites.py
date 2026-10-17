@@ -22,6 +22,7 @@ NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 #: Size budgets (characters of JSON), part of the contract (#13).
 NAMESPACE_BUDGET_PER_WORKLOAD = 900   # an unhealthy workload, in full (with usage, #16)
 HEALTHY_LINE_BUDGET = 60              # a healthy one, in a line
+RECOVERING_LINE_BUDGET = 110          # a recovering one past the first 10 (#24)
 REPORT_BUDGET = 8000
 
 
@@ -234,15 +235,77 @@ def test_restart_gap_of_a_running_container_is_the_back_off():
     assert t.restart_gap == datetime.timedelta(seconds=300) and t.waiting is None
 
 
+# --- recovering (#24): ready is not healthy ------------------------------------------
+
+def _restarted(pod, container, finished_ago, code=137, reason="OOMKilled", restarts=578):
+    """Running and ready again, after a termination ``finished_ago``."""
+    finished = NOW - finished_ago
+    last = ContainerStateTerminated(exit_code=code, reason=reason, finished_at=finished,
+                                    started_at=finished - datetime.timedelta(minutes=15))
+    return _status(pod, container, ContainerStateRunning(started_at=finished + datetime.timedelta(seconds=10)),
+                   last, restarts, ready=True, memory=("120Mi", "120Mi"))
+
+
+def _ready_workload(name, finished_ago, restarts=578):
+    return dict(deployment=_deployment(name, 1, 1), replicaset=_replicaset(name + "-1", name),
+                pod=_pod(f"{name}-1-a", f"ReplicaSet/{name}-1",
+                         _restarted(f"{name}-1-a", name, finished_ago, restarts=restarts),
+                         restarts, ready=1))
+
+
+def _ready_state(*workloads):
+    return _state(deployments=[w["deployment"] for w in workloads],
+                  replicasets=[w["replicaset"] for w in workloads],
+                  pods=[w["pod"] for w in workloads])
+
+
+def test_a_ready_workload_that_restarted_recently_is_recovering_not_healthy():
+    """#24: "every other workload is healthy" while accounting had 578 restarts,
+    the last an exit 137 ten minutes earlier."""
+    h = namespace_health(_ready_state(_ready_workload("accounting", datetime.timedelta(minutes=10)),
+                                      _ready_workload("cart", datetime.timedelta(days=2), 3)))
+    [w] = h.recovering
+    assert w.workload == "Deployment/accounting" and w.restarts == 578
+    assert (w.last_termination.exit_code, w.last_termination.reason) == (137, "OOMKilled")
+    assert w.last_termination.finished == datetime.timedelta(minutes=10)
+    assert w.memory == "limit 120Mi = request"
+    assert w.restarts_per_day == 578.0  # its one pod is a day old
+    assert h.healthy == ["Deployment/cart 1/1, 3 restarts"]  # restarted, but not within 24h
+    assert h.workloads == [] and k8s_tools.NOTE_RECOVERING in h.notes
+
+
+def test_recovering_is_sorted_by_recency_and_bounded():
+    workloads = [_ready_workload(f"w{i:02d}", datetime.timedelta(hours=i + 1), 5) for i in range(12)]
+    h = namespace_health(_ready_state(*reversed(workloads)))
+    assert [w.workload for w in h.recovering] == [f"Deployment/w{i:02d}" for i in range(10)]
+    assert h.recovering_more == [
+        "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)",
+        "Deployment/w11 1/1, 5 restarts, last terminated 12h0m ago: exit 137 (OOMKilled)"]
+
+
+def test_a_finished_job_is_not_a_restart():
+    done = ContainerStateTerminated(exit_code=0, reason="Completed", finished_at=_ago(minutes=5),
+                                    started_at=_ago(minutes=6))
+    state = _state(jobs=[{"name": "nightly", "namespace": "default", "active": 0, "succeeded": 1,
+                          "failed": 0, "conditions": ["Complete"], "containers": [],
+                          "age_seconds": 600.0}],
+                   pods=[_pod("nightly-x1", "Job/nightly", _status("nightly-x1", "nightly", done))])
+    h = namespace_health(state)
+    assert h.recovering == [] and h.healthy == ["Job/nightly 1/1"]
+
+
 def test_namespace_health_is_bounded():
     h = namespace_health(MockState.from_builtin(frozen=True), "default")
     size = len(json.dumps(h.model_dump(mode="json")))
-    assert size <= NAMESPACE_BUDGET_PER_WORKLOAD * len(h.workloads) + \
-        HEALTHY_LINE_BUDGET * len(h.healthy) + 400
+    assert size <= NAMESPACE_BUDGET_PER_WORKLOAD * (len(h.workloads) + len(h.recovering)) + \
+        HEALTHY_LINE_BUDGET * len(h.healthy) + RECOVERING_LINE_BUDGET * len(h.recovering_more) + 400
 
 
 def test_namespace_health_on_the_mock_fixture():
     h = mock_tools.get_namespace_health("default")
+    [accounting] = h.recovering  # 1/1 ready, but OOM-killed 40m ago: not healthy (#24)
+    assert accounting.workload == "Deployment/accounting" and accounting.restarts == 578
+    assert not any(line.startswith("Deployment/accounting") for line in h.healthy)
     [ad] = h.workloads
     assert ad.workload == "Deployment/ad" and not ad.healthy
     assert ad.last_termination.reason == "OOMKilled"

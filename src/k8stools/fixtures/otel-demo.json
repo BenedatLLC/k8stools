@@ -888,6 +888,87 @@
         "postgres": "2026-09-10T01:37:47.892704000Z 2026-09-10 01:37:47.892 UTC [1] LOG:  starting PostgreSQL 16.4 on x86_64-pc-linux-gnu\n2026-09-10T01:37:48.242704137Z 2026-09-10 01:37:48.242 UTC [1] LOG:  listening on IPv4 address '0.0.0.0', port 5432\n2026-09-10T01:37:48.592704274Z 2026-09-10 01:37:48.592 UTC [28] LOG:  database system was shut down at 2026-09-10 01:37:07 UTC\n2026-09-10T01:37:48.942704411Z 2026-09-10 01:37:48.942 UTC [1] LOG:  database system is ready to accept connections\n"
       },
       "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "accounting-6c9f8b7d4-x2k8p",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 578,
+        "last_restart_seconds": 2400.0,
+        "age_seconds": 691190.0,
+        "ip": "10.244.0.14",
+        "node": "minikube",
+        "owner": "ReplicaSet/accounting-6c9f8b7d4"
+      },
+      "labels": {
+        "app": "accounting",
+        "pod-template-hash": "6c9f8b7d4"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "accounting-6c9f8b7d4-x2k8p",
+          "namespace": "default",
+          "container_name": "accounting",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-accounting",
+          "ready": true,
+          "restart_count": 578,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 2390.0
+          },
+          "last_state": {
+            "state_name": "Terminated",
+            "exit_code": 137,
+            "finished_at_offset_seconds": 2400.0,
+            "reason": "OOMKilled",
+            "message": null,
+            "started_at_offset_seconds": 3000.0,
+            "ran_for_seconds": 600.0
+          },
+          "volume_mounts": [],
+          "resource_requests": {
+            "memory": "120Mi",
+            "cpu": "50m"
+          },
+          "resource_limits": {
+            "memory": "120Mi"
+          },
+          "allocated_resources": {
+            "memory": "120Mi",
+            "cpu": "50m"
+          }
+        }
+      ],
+      "init_container_statuses": [],
+      "spec": {
+        "containers": [
+          {
+            "name": "accounting",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-accounting",
+            "resources": {
+              "limits": {
+                "memory": "120Mi"
+              },
+              "requests": {
+                "memory": "120Mi",
+                "cpu": "50m"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "accounting": "2026-09-13T00:57:44.492704000Z info: Microsoft.Hosting.Lifetime[0] Application started.\n2026-09-13T00:57:45.492704000Z info: Accounting.Consumer[0] Connecting to Kafka at kafka:9092\n2026-09-13T01:17:32.492704000Z info: Accounting.Consumer[0] Processed 18000 orders\n"
+      },
+      "previous_logs": {
+        "accounting": "unable to retrieve container logs for containerd://4f1c2b9e7a6d"
+      }
     }
   ],
   "deployments": [
@@ -908,6 +989,15 @@
       "up_to_date_relicas": 3,
       "available_replicas": 3,
       "age_seconds": 7200.0
+    },
+    {
+      "name": "accounting",
+      "namespace": "default",
+      "total_replicas": 1,
+      "ready_replicas": 1,
+      "up_to_date_relicas": 1,
+      "available_replicas": 1,
+      "age_seconds": 691200.0
     }
   ],
   "replicasets": [
@@ -949,6 +1039,19 @@
         "ghcr.io/open-telemetry/demo:2.2.0-cart"
       ],
       "age_seconds": 7199.0
+    },
+    {
+      "name": "accounting-6c9f8b7d4",
+      "namespace": "default",
+      "owner_deployment": "accounting",
+      "revision": 1,
+      "desired_replicas": 1,
+      "current_replicas": 1,
+      "ready_replicas": 1,
+      "images": [
+        "ghcr.io/open-telemetry/demo:2.2.0-accounting"
+      ],
+      "age_seconds": 691199.0
     }
   ],
   "services": [
@@ -1433,6 +1536,36 @@
         "Env var values are never shown, only names. Secret contents and change times are not read.",
         "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
       ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "accounting",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 1,
+          "source": "ReplicaSet/accounting-6c9f8b7d4",
+          "age_seconds": 691199.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-accounting"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ReplicaSet was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
     }
   ],
   "cronjobs": [
@@ -1749,6 +1882,28 @@
         "restarts": 0,
         "last_termination_reason": null,
         "last_terminated_seconds": null
+      },
+      {
+        "pod": "accounting-6c9f8b7d4-x2k8p",
+        "namespace": "default",
+        "container": "accounting",
+        "cpu_millicores": 12,
+        "memory_bytes": 104857600,
+        "cpu": "12m",
+        "memory": "100Mi",
+        "cpu_request_millicores": 50,
+        "cpu_limit_millicores": null,
+        "memory_request_bytes": 125829120,
+        "memory_limit_bytes": 125829120,
+        "memory_percent_of_limit": 83.3,
+        "cpu_percent_of_request": 24.0,
+        "cpu_percent_of_limit": null,
+        "sampled_seconds": 30.0,
+        "window_seconds": 15.0,
+        "started_seconds": 2390.0,
+        "restarts": 578,
+        "last_termination_reason": "OOMKilled",
+        "last_terminated_seconds": 2400.0
       }
     ],
     "nodes": [

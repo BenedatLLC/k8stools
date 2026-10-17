@@ -154,7 +154,7 @@ def test_logs_fall_inside_the_instance_that_wrote_them(state):
     """Including the CrashLoopBackOff case: with no running instance, the
     kubelet serves the last terminated one for previous=False too."""
     now = state.get_cluster_info().captured_at
-    checked = 0
+    checked = reclaimed = 0
     for pod in state.get_pod_summaries():
         for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers:
             for previous in (False, True):
@@ -162,8 +162,12 @@ def test_logs_fall_inside_the_instance_that_wrote_them(state):
                     else s.state
                 if instance is None:
                     continue  # no previous instance: the call raises, as live
-                text = state.get_logs_for_pod_and_container(
-                    pod.name, pod.namespace, s.container_name, previous=previous)
+                try:
+                    text = state.get_logs_for_pod_and_container(
+                        pod.name, pod.namespace, s.container_name, previous=previous)
+                except k8s_tools.K8sLogReclaimed:
+                    reclaimed += 1  # no log exists for that instance (#24)
+                    continue
                 if not text:
                     continue
                 times = _log_times(text)
@@ -173,6 +177,7 @@ def test_logs_fall_inside_the_instance_that_wrote_them(state):
                     (pod.name, s.container_name, previous)
                 checked += 1
     assert checked >= 6
+    assert reclaimed == 1  # accounting's previous instance: the fixture shows the case
 
 
 def test_restart_count_fits_the_pods_age(state):

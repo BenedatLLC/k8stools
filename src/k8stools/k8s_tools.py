@@ -372,6 +372,10 @@ NOTE_CR_NO_CONDITIONS = (
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
+NOTE_RECOVERING = (
+    "recovering: ready now, but a container restarted within the last 24h (its last "
+    "termination finished then), most recent first. healthy: ready, with no restart "
+    "in that time.")
 NOTE_INIT_NOT_RECORDED = (
     "Init container statuses weren't recorded (the capture predates them, or they "
     "couldn't be read). That doesn't mean there are none: the pod spec lists any.")
@@ -3582,6 +3586,9 @@ class WorkloadHealth(_Compact):
     desired: int
     #: None when none of its pods could be found (see notes), rather than 0.
     restarts: Optional[int] = None
+    #: restarts divided by the summed age of its pods, in days: a raw count
+    #: favours old pods. A ratio of two facts, not a rate of recent restarts.
+    restarts_per_day: Optional[float] = None
     healthy: bool = False
     last_termination: Optional[Termination] = None
     #: e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit".
@@ -3609,6 +3616,11 @@ class NamespaceHealth(_Compact):
     namespace: str
     #: Unhealthy workloads, in full, by name.
     workloads: list[WorkloadHealth] = Field(default_factory=list)
+    #: Ready workloads with a container that restarted within the last 24h, in
+    #: full, most recent termination first (at most 10; see recovering_more).
+    recovering: list[WorkloadHealth] = Field(default_factory=list)
+    #: Recovering workloads past the first 10, one line each.
+    recovering_more: list[str] = Field(default_factory=list)
     #: Healthy workloads, one line each: "Deployment/cart 3/3", with restarts if any.
     healthy: list[str] = Field(default_factory=list)
     #: Two or more unhealthy workloads with the same failure signature.
@@ -3717,8 +3729,9 @@ def get_namespace_health(namespace: str = "default") -> NamespaceHealth:
     (Deployment, StatefulSet, DaemonSet, Job, or a pod nothing owns) in full:
     ready/desired, restarts, the last termination (exit code and its meaning
     beside Kubernetes' recorded reason), instance lifetime and restart gap,
-    memory limit vs request, when the pod template last changed. Healthy ones
-    in a line each. Workloads failing the same way are grouped. Facts only."""
+    memory limit vs request, when the pod template last changed. Ready ones
+    that restarted within 24h as recovering, the same way; healthy ones in a
+    line each. Workloads failing the same way are grouped. Facts only."""
     from .composites import namespace_health
     return namespace_health(sys.modules[__name__], namespace)
 

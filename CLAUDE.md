@@ -172,6 +172,10 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 - **Restart cadence from container status, never event counts** (event records
   lag): `instance_lifetime` is `ran_for`; `restart_gap` is finished-to-next-start,
   or the wait so far.
+- **Ready is not healthy** (#24): a ready workload with a restart (a container
+  running again after a termination) within `_RECOVERING_WINDOW` (24h) goes in
+  `recovering`, in full, most recent first, capped at 10 (`recovering_more` lines
+  after). A fixed window, stated in `NOTE_RECOVERING`; no "abnormal" threshold.
 - **Init containers apart** (#24): a completed init container (exit 0) is never
   a termination; one that hasn't completed makes the workload unhealthy and is
   named. `WorkloadReport.init_containers` is always serialized (`_keep_empty`), so

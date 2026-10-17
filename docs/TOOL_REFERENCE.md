@@ -113,6 +113,7 @@ the record, not the current rhythm.
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
   - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
   - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
+  - **`restarts_per_day`** (`float`): `restarts` divided by the summed age of its pods, in days. A raw count favours old pods; this is a ratio of two facts, not the rate of recent restarts.
   - **`last_termination`** (`Termination`): the most recent termination across its pods and containers:
     - **`pod`**, **`container`**
     - **`exit_code`** and **`exit_meaning`**: the code's fixed meaning, e.g. 137 is "killed by SIGKILL (128+9)".
@@ -129,7 +130,9 @@ the record, not the current rhythm.
   - **`notes`** (`list[str]`)
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
 - **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
-- **`healthy`** (`list[str]`): one line per healthy workload, e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
+- **`recovering`** (`list[WorkloadHealth]`): workloads that pass the healthy rule (all ready, nothing waiting) but have a container that restarted within the last 24 hours: its last termination finished then, and it is running again. Same fields as `workloads`, with `last_termination` the most recent restart. Most recent first, at most 10. A Job's finished container and a completed init container are not restarts. "Ready" is not "healthy": a workload that restarts and recovers would otherwise be listed as healthy, and answers quote that word.
+- **`recovering_more`** (`list[str]`): recovering workloads past the first 10, one line each, e.g. "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)".
+- **`healthy`** (`list[str]`): one line per healthy workload (ready, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
 - **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
 

@@ -25,6 +25,15 @@ dates are release-tag dates.
   that this is not a tool failure. In `get_workload_report`, that log tail has
   `available: false`, a `reason`, and no lines. Captures still record the
   kubelet's text, and replay raises the same error.
+- **"Ready" is no longer "healthy"** (issue #24). `get_namespace_health`
+  listed a workload that restarts and recovers as healthy, e.g. "Deployment/
+  accounting 1/1, 578 restarts", without its last termination, and "every other
+  workload is healthy" became the largest source of unsupported claims. A ready
+  workload with a restart in the last 24 hours now goes in a new `recovering`
+  group, with the same fields as an unhealthy one (last termination, memory,
+  usage), most recent first, at most 10 in full. `WorkloadHealth` gains
+  `restarts_per_day` (restarts over the summed age of its pods). The `--mock`
+  fixture has such a workload, `accounting`, whose previous log is reclaimed.
 - **Init containers are reported** (issue #24). Answers said "no init
   containers" when there was one, because no tool showed them.
   - `get_pod_container_statuses` lists them in `init_containers`, apart from the

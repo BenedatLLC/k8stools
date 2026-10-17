@@ -36,6 +36,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
+                        NOTE_RECOVERING,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
                         _to_whole_seconds)
 
@@ -232,6 +233,9 @@ def _services_for(endpoints: list[EndpointSummary], pod_names: set[str]) -> list
 
 #: A healthy workload this close to a memory limit is worth a mention.
 _NEAR_LIMIT_PERCENT = 90.0
+#: A ready workload with a restart more recent than this is recovering, not healthy.
+_RECOVERING_WINDOW = datetime.timedelta(hours=24)
+_MAX_RECOVERING = 10
 
 
 def _usage(api, namespace: str) -> tuple[Optional[list[ContainerUsage]], Optional[str]]:
@@ -303,6 +307,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     endpoints = api.get_endpoint_summaries(namespace)
     usage, usage_unavailable = _usage(api, namespace)
     entries: list[WorkloadHealth] = []
+    recovering: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
 
     def assess(label, kind, name, ready, desired, pods):
@@ -333,6 +338,13 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         pod_names = {p.name for p in pods}
         readings = [u for u in usage or [] if u.pod in pod_names]
         if ready >= desired and not waiting and not failed_job:
+            # A restart: a container running again after a termination (not a
+            # Job's container that finished, nor a completed init container).
+            restart = _latest([t for t in terminations if t.restart_gap is not None])
+            if restart is not None and restart.finished <= _RECOVERING_WINDOW:
+                recovering.append(entry(label, kind, name, ready, desired, pods, restarts,
+                                        restart, first_pod, hpa, readings, []))
+                return
             at_max = hpa is not None and hpa.current_replicas >= hpa.max_replicas
             peak = max((u.memory_percent_of_limit for u in readings
                         if u.memory_percent_of_limit is not None), default=None)
@@ -342,8 +354,16 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                                  + (f", memory at {peak}% of limit"
                                     if peak is not None and peak >= _NEAR_LIMIT_PERCENT else ""))
             return
+        entries.append(entry(label, kind, name, ready, desired, pods, restarts, last,
+                             first_pod, hpa, readings, init_pending))
+
+    def entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
+              readings, init_pending) -> WorkloadHealth:
+        pod_names = {p.name for p in pods}
+        pod_days = sum(p.age.total_seconds() for p in pods) / 86400
         w = WorkloadHealth(
             workload=label, ready=ready, desired=desired, restarts=restarts,
+            restarts_per_day=round(restarts / pod_days, 1) if restarts and pod_days else None,
             last_termination=last, memory=_memory_shape(first_pod),
             template_changed=_template_changed(api, kind, name, namespace) if kind else None,
             autoscaler=_autoscaler_line(hpa) if hpa else None,
@@ -360,7 +380,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         if last:
             w.notes.extend(last.notes)
             last.notes = []
-        entries.append(w)
+        return w
 
     for kind, name, ready, desired in workloads:
         assess(f"{kind}/{name}", kind, name, ready, desired, grouped.get((kind, name), []))
@@ -369,6 +389,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                pod.total_containers, [pod])
 
     entries.sort(key=lambda w: w.workload)
+    recovering.sort(key=lambda w: w.last_termination.finished)
+    recovering_more = [_recovering_line(w) for w in recovering[_MAX_RECOVERING:]]
     healthy_lines.sort()
     # Grouped by what a termination reliably repeats: exit code, reason and memory
     # shape. Not by lifetime: one workload's instances live 7s, 20s and 2m on
@@ -389,22 +411,31 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                            f"{_lifetimes([m.last_termination for m in members])}"),
                 workloads=[m.workload for m in members]))
     result = NamespaceHealth(
-        namespace=namespace, workloads=entries, healthy=healthy_lines,
+        namespace=namespace, workloads=entries, recovering=recovering[:_MAX_RECOVERING],
+        recovering_more=recovering_more, healthy=healthy_lines,
         common_failures=failures,
         services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready],
         ingress_problems=_ingress_lines(api.get_ingress_summaries(namespace), problems_only=True))
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
+    if recovering:
+        result.notes.append(NOTE_RECOVERING)
     if usage_unavailable:
         result.notes.append(f"Usage unavailable: {usage_unavailable}")
     if any("of limit" in line for line in healthy_lines):
         result.notes.append(NOTE_WORKING_SET)
-    if any(w.last_termination for w in entries):
+    if any(w.last_termination for w in entries + recovering):
         result.notes.append(
             "instance_lifetime is how long the last instance ran; restart_gap is the "
             "back-off before the next start (or the wait so far). Restarts are "
             "lifetime + gap apart.")
     return result
+
+
+def _recovering_line(w: WorkloadHealth) -> str:
+    t = w.last_termination
+    return (f"{w.workload} {w.ready}/{w.desired}, {w.restarts} restarts, last terminated "
+            f"{_human(t.finished)} ago: exit {t.exit_code} ({t.reason})")
 
 
 # --- get_workload_report -----------------------------------------------------------------
