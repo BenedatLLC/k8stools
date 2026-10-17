@@ -2,6 +2,7 @@
 testing of the results. The tests are skipped if we can't reach the cluster.
 """
 import datetime
+import time
 import pytest
 from k8stools import k8s_tools
 
@@ -872,12 +873,37 @@ def test_workload_history_of_a_missing_workload_raises():
         k8s_tools.get_workload_history("no-such-deployment-k8stools-test", "default")
 
 
+def _readiness_disagreements(health, deployments) -> list[str]:
+    """Deployments whose ready/desired in the health result differs from
+    get_deployment_summaries'."""
+    seen = {w.workload: (w.ready, w.desired) for w in health.workloads + health.recovering}
+    for line in health.healthy:
+        workload, ratio = line.split(" ")[:2]
+        ready, desired = ratio.rstrip(",").split("/")
+        seen[workload] = (int(ready), int(desired))
+    return [f"{name}: health {seen[name]}, deployment {(d.ready_replicas, d.total_replicas)}"
+            for name, d in deployments.items()
+            if name in seen and seen[name] != (d.ready_replicas, d.total_replicas)]
+
+
 def test_namespace_health_agrees_with_the_raw_tools():
     """Issue #13: one entry per workload, unhealthy first, consistent with
-    the summaries it's built from."""
+    the summaries it's built from.
+
+    The readiness comparison reads the cluster twice (health, then the
+    deployments), and a crash-looping pod can change readiness in between, so
+    it's retried: it must agree on one of a few reads, not necessarily the first.
+    """
     namespace = "default"
-    health = k8s_tools.get_namespace_health(namespace)
-    deployments = {f"Deployment/{d.name}": d for d in k8s_tools.get_deployment_summaries(namespace)}
+    for attempt in range(3):
+        health = k8s_tools.get_namespace_health(namespace)
+        deployments = {f"Deployment/{d.name}": d
+                       for d in k8s_tools.get_deployment_summaries(namespace)}
+        disagreements = _readiness_disagreements(health, deployments)
+        if not disagreements:
+            break
+        time.sleep(2)
+    assert not disagreements, disagreements
     names = [w.workload for w in health.workloads + health.recovering] + \
         [h.split(" ")[0] for h in health.healthy + health.recovering_more]
     assert set(deployments) <= set(names)
@@ -886,15 +912,7 @@ def test_namespace_health_agrees_with_the_raw_tools():
         assert w.ready >= w.desired and w.last_termination.restart_gap is not None
         assert w.last_termination.finished <= datetime.timedelta(hours=24)
     assert not any(w.healthy for w in health.workloads)  # full entries are the unhealthy
-    for line in health.healthy:
-        workload, ratio = line.split(" ")[:2]
-        if workload in deployments:
-            d = deployments[workload]
-            assert ratio.rstrip(",") == f"{d.ready_replicas}/{d.total_replicas}"
     for w in health.workloads:
-        if w.workload in deployments:
-            d = deployments[w.workload]
-            assert (w.ready, w.desired) == (d.ready_replicas, d.total_replicas)
         if not w.healthy and w.last_termination and w.last_termination.exit_code is not None:
             assert w.last_termination.exit_meaning
     for group in health.common_failures:
