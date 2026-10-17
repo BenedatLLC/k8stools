@@ -3,9 +3,29 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 3.0.1 — unreleased
+## 4.0.0 — unreleased
+
+### Upgrading from 3.x
+- **A log whose file is gone raises `K8sLogReclaimed`** (a `K8sApiError`) from
+  `get_logs_for_pod_and_container`, `get_logs_for_job` and `get_logs_for_cronjob`,
+  where 3.x returned the kubelet's `unable to retrieve container logs for ...`
+  text with a note above it. Code that already catches `K8sApiError` needs no
+  change.
 
 ### Changed
+- **Reclaimed logs are absent, not text** (issue #24). Agents read the kubelet's
+  `unable to retrieve container logs for ...` message as the program's output,
+  note or not, and offered "no exception in the previous log" as evidence. The
+  log tools now raise `K8sLogReclaimed`, saying which instance's log is gone and
+  that this is not a tool failure. In `get_workload_report`, that log tail has
+  `available: false`, a `reason`, and no lines. Captures still record the
+  kubelet's text, and replay raises the same error.
+- **Nothing claims how long event records last** (issue #24). `get_events`,
+  `get_pod_events` and `get_workload_report`'s event note said records expire
+  about an hour after their last update. That is the API server's default
+  `--event-ttl`, not something the API reports, and answers quoted it as this
+  cluster's retention. They now say only where the records start, and that the
+  retention period isn't reported.
 - `get_service_summaries` and `get_ingress_summaries` treat an EndpointSlice
   client that can't be set up (`K8sConfigError`) like an unreadable EndpointSlice
   API: endpoint counts and backend readiness are None (unknown), rather than the

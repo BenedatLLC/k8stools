@@ -34,7 +34,8 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         IngressSummary,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
-                        LastChange, LOG_NOTE_PREFIX, LogTail, NamespaceHealth, Termination,
+                        K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
+                        LogTail, NamespaceHealth, Termination,
                         WorkloadHealth, WorkloadReport, _to_whole_seconds)
 
 
@@ -503,6 +504,9 @@ def _tail(api, pod: str, namespace: str, container: str, previous: bool,
           lines: int, grep: Optional[str]) -> Optional[LogTail]:
     try:
         text = api.get_logs_for_pod_and_container(pod, namespace, container, previous=previous)
+    except K8sLogReclaimed:
+        return LogTail(pod=pod, container=container, previous=previous, available=False,
+                       reason=LOG_RECLAIMED_REASON)
     except K8sApiError:
         return None  # e.g. no previous instance
     notes, body = [], []
@@ -576,9 +580,9 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     oldest = max((e.first_seen for e in report.events if e.first_seen is not None), default=None)
     if oldest is not None:
         report.notes.append(
-            f"Event records start {_human(oldest)} ago: that is where the records begin "
-            "(they expire about an hour after their last update), not necessarily when "
-            "the problem did.")
+            f"Event records start {_human(oldest)} ago: that is where the records begin, "
+            "not necessarily when the problem did. Records expire after a retention "
+            "period the API doesn't report.")
 
     if kind != "Job":
         history = api.get_workload_history(name, namespace, kind)

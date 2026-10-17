@@ -110,14 +110,30 @@ def test_notes_are_recomputed_not_taken_from_input():
 
 # --- notes in logs ----------------------------------------------------------------
 
-def test_log_notes_for_a_waiting_container_and_a_kubelet_error():
+def test_log_notes_for_a_waiting_container():
     waiting = _status(ContainerStateWaiting(reason="CrashLoopBackOff"), _terminated(), 67)
     text = k8s_tools._with_log_notes("2026-10-07T00:00:00Z boom\n", [waiting], None)
     assert text.startswith(LOG_NOTE_PREFIX + "The container is waiting (CrashLoopBackOff)")
     assert text.endswith("2026-10-07T00:00:00Z boom\n")
-    gone = k8s_tools._with_log_notes("unable to retrieve container logs for docker://abc",
-                                     [_status(ContainerStateRunning(started_at=NOW))], "ad")
-    assert gone.startswith(LOG_NOTE_PREFIX + "This is the kubelet's message")
+
+
+KUBELET_GONE = "unable to retrieve container logs for docker://abc"
+
+
+@pytest.mark.parametrize("state, previous, which", [
+    (ContainerStateRunning(started_at=NOW), True, "its previous instance"),
+    (ContainerStateRunning(started_at=NOW), False, "its current instance"),
+    (ContainerStateWaiting(reason="CrashLoopBackOff"), False, "its last terminated instance"),
+])
+def test_a_reclaimed_log_raises_rather_than_returning_the_kubelet_text(state, previous, which):
+    """#24: answers read the kubelet's message as the process's output, note or not."""
+    with pytest.raises(k8s_tools.K8sLogReclaimed) as e:
+        k8s_tools._with_log_notes(KUBELET_GONE, [_status(state, _terminated(), 3)], "ad",
+                                  pod_name="ad-1", previous=previous)
+    assert which in str(e.value)
+    assert "'ad'" in str(e.value) and "'ad-1'" in str(e.value)
+    assert "not a tool failure" in str(e.value)
+    assert isinstance(e.value, k8s_tools.K8sApiError)  # existing handlers still catch it
 
 
 def test_a_log_with_nothing_to_note_is_unchanged():
@@ -144,6 +160,37 @@ def test_the_live_log_tool_adds_notes_and_capture_reads_raw(monkeypatch, waiting
     assert text.endswith("Terminating due to OOM\n")
     # The capture stores the raw log, so replay can note the replayed state.
     assert not k8s_tools._read_pod_log("ad-1", "default", previous=True).startswith(LOG_NOTE_PREFIX)
+
+
+@pytest.mark.parametrize("reader", ["pod", "job"])
+def test_the_live_log_tools_raise_for_a_reclaimed_log(monkeypatch, reader):
+    monkeypatch.setattr(k8s_tools, "K8S", SimpleNamespace(
+        read_namespaced_pod_log=lambda **kw: SimpleNamespace(data=KUBELET_GONE.encode())))
+    monkeypatch.setattr(k8s_tools, "_decode_log_response", lambda resp: resp.data.decode())
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses",
+                        lambda pod, ns: [_status(ContainerStateRunning(started_at=NOW), _terminated(), 3)])
+    monkeypatch.setattr(k8s_tools, "_latest_pod_name_for_selector", lambda ns, sel: "ad-1")
+    with pytest.raises(k8s_tools.K8sLogReclaimed):
+        if reader == "pod":
+            k8s_tools.get_logs_for_pod_and_container("ad-1", "default", previous=True)
+        else:
+            k8s_tools.get_logs_for_job("job-1", "default", previous=True)
+    # The capture still records the kubelet's body, so replay can raise the same way.
+    assert k8s_tools._read_pod_log("ad-1", "default", previous=True) == KUBELET_GONE
+
+
+def test_replay_raises_for_a_reclaimed_log_even_with_since_seconds():
+    status = encode_model(_status(ContainerStateRunning(started_at=NOW), _terminated(), 3), NOW)
+    state = MockState(json.loads(json.dumps({
+        "version": CAPTURE_VERSION, "captured_at": "2026-01-01T00:00:00+00:00", "redacted": False,
+        "pods": [{"summary": {"name": "ad-1", "namespace": "default"},
+                  "container_statuses": [status],
+                  "logs": {"ad": "2026-01-01T00:00:00Z ok\n"},
+                  "previous_logs": {"ad": KUBELET_GONE}}]})))
+    for since in (None, 60):
+        with pytest.raises(k8s_tools.K8sLogReclaimed, match="its previous instance"):
+            state.get_logs_for_pod_and_container("ad-1", "default", previous=True,
+                                                 since_seconds=since)
 
 
 def test_a_failed_status_lookup_still_returns_the_log(monkeypatch):

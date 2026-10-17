@@ -38,13 +38,15 @@ notes existed) give the same notes; captures don't store them.
 **Logs** are plain text, so the log tools (`get_logs_for_pod_and_container`,
 `get_logs_for_job`, `get_logs_for_cronjob`) put a note on a line of its own at
 the top, starting `[k8stools] note: `, which is not the container's output. A
-log gets a note when:
+log gets a note when the container is waiting (e.g. in CrashLoopBackOff) after a
+restart: there is no running instance, so `previous=False` and `previous=True`
+both return the last terminated instance's log.
 
-- the container is waiting (e.g. in CrashLoopBackOff) after a restart: there is
-  no running instance, so `previous=False` and `previous=True` both return the
-  last terminated instance's log;
-- the text is the kubelet's `unable to retrieve container logs for ...` message
-  rather than a log: that instance's log file is gone.
+When the instance's log file is gone, the log tools raise `K8sLogReclaimed` (a
+`K8sApiError`) rather than return the kubelet's `unable to retrieve container logs
+for ...` message, which agents read as the container's output even with a note
+above it. The error says which instance it was, and that this is not a tool
+failure.
 
 Captures store logs without these lines, and replay adds them for the replayed
 state. Strip lines starting with `[k8stools] note: ` (the constant
@@ -154,7 +156,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured").
 - **`instances`** (`list[Instance]`): every pod's containers now: `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
 - **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
-- **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that the text is the kubelet's message, not container output) is moved into the tail's `notes`.
+- **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; `available` is omitted when the log was read.
 - **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
 - **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
 - **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
@@ -212,7 +214,7 @@ List of node summary objects. Each NodeSummary has the following fields:
 - **`conditions`** (`dict[str, str]`): Node conditions keyed by type with their status, e.g. {"Ready": "True", "MemoryPressure": "False", "DiskPressure": "False"}.
 - **`conditions_since`** (`dict[str, datetime.timedelta]`): For each condition in `conditions`, the time since its status last changed (the API's lastTransitionTime), e.g. how long the node has been Ready, or how long ago a MemoryPressure episode ended. A condition with no transition time is left out.
 
-  It changes only when the status does. A node or kubelet restart in which the node comes back Ready without having been marked NotReady or Unknown in between does not reset it: on a minikube cluster stopped and started together with its control plane, Ready stayed "True since the node was created" across a reboot. So a long Ready age does not mean the node or its pods have been running that long, and a short one can come from a brief NotReady flap rather than a reboot. To date a node's last start, use its "Starting" or "Rebooted" events (`get_events(involved_kind="Node")`, while they last - events usually expire after an hour), or the `started_at` of containers that start with the node, such as kube-proxy and the kube-system control-plane containers (`get_pod_container_statuses`).
+  It changes only when the status does. A node or kubelet restart in which the node comes back Ready without having been marked NotReady or Unknown in between does not reset it: on a minikube cluster stopped and started together with its control plane, Ready stayed "True since the node was created" across a reboot. So a long Ready age does not mean the node or its pods have been running that long, and a short one can come from a brief NotReady flap rather than a reboot. To date a node's last start, use its "Starting" or "Rebooted" events (`get_events(involved_kind="Node")`, while the records last), or the `started_at` of containers that start with the node, such as kube-proxy and the kube-system control-plane containers (`get_pod_container_statuses`).
 - **`taints`** (`list[str]`): Taints on the node formatted as "key=value:effect" (value omitted when empty).
 - **`labels`** (`dict[str, str]`): All labels on the node. Useful for identifying node pool / instance type and spotting version skew across pools.
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
@@ -301,7 +303,7 @@ List of events associated with the specified pod. Each EventSummary has the foll
 
 - **`last_seen`** (`Optional[datetime.timedelta]`): Time since the most recent occurrence of the event (if available).
 - **`first_seen`** (`Optional[datetime.timedelta]`): Time since the first occurrence combined into this record (if available).
-- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after 1h by default), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
+- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after the API server's `--event-ttl`: 1h by default, but clusters vary and the API doesn't report it), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
 
   A record can lag behind what it counts. By default the kubelet writes at most one event update per object and event type ("Normal" or "Warning") every 5 minutes, once a burst of 25 is used up; occurrences in between are counted but only written with the next update, which then jumps by several at once. So count and last_seen describe the most recent *written* occurrence and can trail reality by several occurrences and tens of minutes. They lag together, so the rate above still holds, but last_seen is not the time of the last restart: for that, use the container status (last_state.finished_at, state.started_at from get_pod_container_statuses) or PodSummary.last_restart, which come from the kubelet's status rather than from events. "Pulled", "Created" and "Started" share one write budget, so their counts for the same restarts can differ by a few; don't compare counts across reasons.
 - **`type`** (`str`): Type of the event.
@@ -362,7 +364,7 @@ The log may begin with lines starting `[k8stools] note: `, added by the tool rat
 
   - While a container sits in CrashLoopBackOff there is no running instance, so the kubelet serves the most recently *terminated* one for `previous=False` as well - both calls then return the same text. Check the container's state with `get_pod_container_statuses` before concluding the flag had no effect.
   - A restart between two calls shifts the window: the instance that was current becomes the previous one, so a container crash-looping every few seconds can legitimately return identical bytes for both. Compare the log timestamps, not just the flag.
-  - Once the previous instance's log file has been reclaimed, the API answers 200 with the text `unable to retrieve container logs for <id>` - a successful call whose body is an error message, not a raised error.
+  - Once the previous instance's log file has been reclaimed, the API answers 200 with the text `unable to retrieve container logs for <id>` - a successful call whose body is an error message. This tool raises `K8sLogReclaimed` instead of returning that text.
 
   Only the single most recent terminated instance is retained by the kubelet; there is no way to reach further back than one.
 
@@ -1017,9 +1019,9 @@ Lists cluster- or namespace-wide events with optional server-side filtering.
 Unlike `get_pod_events` (which is scoped to a single named pod), this supports
 the sweep queries common in capacity/storage runbooks — e.g. all "Evicted"
 events, or all "FailedScheduling" events — where the affected pods often have no
-stable name to look up. Note Kubernetes expires an event record about an hour
-(by default) after its last occurrence, so events that stopped repeating
-earlier than that are gone.
+stable name to look up. Kubernetes expires an event record a while after its last
+update (the API server's `--event-ttl`, which this API doesn't report and which
+varies between clusters), so events that stopped repeating some time ago are gone.
 
 #### Parameters
 
@@ -1036,7 +1038,7 @@ Matching events. Each EventSummary has the following fields:
 
 - **`last_seen`** (`Optional[datetime.timedelta]`): Time since the event was last seen (if available).
 - **`first_seen`** (`Optional[datetime.timedelta]`): Time since the first occurrence combined into this record (if available).
-- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after 1h by default), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
+- **`count`** (`Optional[int]`): How many occurrences Kubernetes combined into this record: repeats of the same event on the same object are counted in one record rather than listed separately. The count covers first_seen to last_seen, not the object's lifetime - a record that stops repeating expires (after the API server's `--event-ttl`: 1h by default, but clusters vary and the API doesn't report it), and a later repeat starts a new one. For a crash-looping container, count the "Created" or "Started" events to get restarts. "BackOff" is emitted repeatedly while the kubelet waits to restart, so its count is several times the number of restarts. count divided by (first_seen - last_seen) is the average rate over that window, not the current back-off.
 
   A record can lag behind what it counts. By default the kubelet writes at most one event update per object and event type ("Normal" or "Warning") every 5 minutes, once a burst of 25 is used up; occurrences in between are counted but only written with the next update, which then jumps by several at once. So count and last_seen describe the most recent *written* occurrence and can trail reality by several occurrences and tens of minutes. They lag together, so the rate above still holds, but last_seen is not the time of the last restart: for that, use the container status (last_state.finished_at, state.started_at from get_pod_container_statuses) or PodSummary.last_restart, which come from the kubelet's status rather than from events. "Pulled", "Created" and "Started" share one write budget, so their counts for the same restarts can differ by a few; don't compare counts across reasons.
 - **`type`** (`str`): Type of the event ("Normal" or "Warning").

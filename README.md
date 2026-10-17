@@ -708,13 +708,15 @@ as well as in live queries:
   return byte-identical output for both. Compare the log timestamps, not the flag.
 - **A reclaimed log file returns 200, not an error**, with the body
   `unable to retrieve container logs for <container-id>`. It is a successful call
-  whose content is an error message.
+  whose content is an error message. The log tools don't return that text, which
+  agents kept reading as the program's output: they raise `K8sLogReclaimed`, and
+  `get_workload_report` shows the log tail as `available: false`, with no lines.
 
 Only the single most recent terminated instance is retained; there is no way to
 reach further back than one.
 
-The first and third are detected for you: the log then starts with a
-`[k8stools] note:` line saying so. The second can't be seen from a single call.
+The first is detected for you: the log then starts with a `[k8stools] note:`
+line saying so. The second can't be seen from a single call.
 
 ### Replay clock
 

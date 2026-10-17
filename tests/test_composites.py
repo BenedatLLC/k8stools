@@ -305,6 +305,22 @@ def test_logs_are_bounded_filtered_and_their_notes_separated():
     assert len(workload_report(state, "ad", "default", log_lines=10_000).logs[0].lines) == 60
 
 
+def test_a_reclaimed_previous_log_is_absent_not_text():
+    """#24: nothing where log content goes can be mistaken for it."""
+    state = _state(deployments=[_deployment("ad", 0, 1)], replicasets=[_replicaset("ad-1", "ad")],
+                   pods=[_pod("ad-1-a", "ReplicaSet/ad-1", _crashing("ad-1-a", "ad", gap=30), 40,
+                              logs={"ad": "2026-10-08T00:00:00Z started\n"},
+                              previous={"ad": "unable to retrieve container logs for containerd://abc"})])
+    r = workload_report(state, "ad", "default")
+    current, previous = sorted(r.logs, key=lambda t: t.previous)
+    assert current.available is None and current.lines
+    assert previous.available is False and previous.lines == []
+    assert previous.reason == k8s_tools.LOG_RECLAIMED_REASON
+    # Serialized, the flag survives _Compact; on the readable tail it's omitted.
+    dumped = [t for t in json.loads(r.model_dump_json())["logs"]]
+    assert [t.get("available") for t in sorted(dumped, key=lambda t: t["previous"])] == [None, False]
+
+
 def test_kind_is_found_by_name_and_errors_are_clear():
     state = _state(deployments=[_deployment("x", 1, 1)],
                    statefulsets=[{"name": "x", "namespace": "default", "total_replicas": 1,

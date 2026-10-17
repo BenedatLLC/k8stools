@@ -135,9 +135,15 @@ test fake that returns `str` hides the whole failure, which is how it shipped.
 
 `previous=True` has three Kubernetes behaviors that read as bugs (identical output
 during CrashLoopBackOff, a restart shifting the window between two calls, and a
-reclaimed log file answering 200 with `unable to retrieve container logs`). Two are
-detected and noted in the log itself (below); all three are in README's
-"Previous-instance log semantics" and `docs/TOOL_REFERENCE.md`. Don't "fix" them in code.
+reclaimed log file answering 200 with `unable to retrieve container logs`). All
+three are in README's "Previous-instance log semantics" and `docs/TOOL_REFERENCE.md`.
+The first is noted in the log itself (below); don't "fix" the first two in code.
+The third is the exception (#24): the log readers raise `K8sLogReclaimed` (a
+`K8sApiError`) instead of returning the kubelet's text, because agents read that
+text as the process's output even with a note above it, and `LogTail` reports
+`available: false` with no lines. Detection is in `_with_log_notes`, shared by
+the live tools and `MockState`; `_read_pod_log` returns the body unchanged, so
+captures record it and replay raises the same error.
 
 ### Composite tools (#13)
 

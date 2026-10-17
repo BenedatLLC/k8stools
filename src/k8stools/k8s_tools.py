@@ -60,6 +60,13 @@ class K8sMetricsUnavailable(K8sApiError):
     taken without metrics."""
 
 
+class K8sLogReclaimed(K8sApiError):
+    """The log instance asked for exists in the container's status, but its log
+    file is gone: the kubelet answered 200 with "unable to retrieve container logs
+    for ...". Raised rather than returned, so that nothing where log content goes
+    can be read as the container's output. Not a fault in the tool or the cluster."""
+
+
 #: Environment variable naming the kubeconfig context to use, for deployments that
 #: pin a server through its environment rather than its command line. There is no
 #: counterpart for the file: ``KUBECONFIG`` already is that variable.
@@ -736,7 +743,7 @@ def _event_summary(event: Any, now: datetime.datetime, obj: str) -> EventSummary
 def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSummary]:
     """Events for one pod; the same as get_events(involved_name=pod_name).
     Each has count, first_seen and last_seen, and notes on how far to trust them.
-    Records expire about an hour after their last update."""
+    Records expire after a retention period this API doesn't report."""
     global K8S
     if K8S is None:
         K8S = _get_api_client()
@@ -1067,26 +1074,53 @@ LOG_NOTE_PREFIX = "[k8stools] note: "
 _KUBELET_LOG_ERROR = "unable to retrieve container logs for"
 
 
-def _log_notes(status: Optional["ContainerStatus"], text: str) -> list[str]:
+def _is_reclaimed_log(text: str) -> bool:
+    """Whether a log body is the kubelet's message that the log file is gone."""
+    return text.lstrip().startswith(_KUBELET_LOG_ERROR)
+
+
+def _waiting(status: Optional["ContainerStatus"]) -> bool:
+    """Waiting after a restart: no running instance, so a log call for either
+    instance returns the last terminated one."""
+    return status is not None and isinstance(status.state, ContainerStateWaiting) \
+        and bool(status.restart_count)
+
+
+def _log_notes(status: Optional["ContainerStatus"]) -> list[str]:
     """Warnings for a log, from the container's status at the time of the call."""
-    notes = []
-    if text.lstrip().startswith(_KUBELET_LOG_ERROR):
-        notes.append("This is the kubelet's message, not container output: that "
-                     "instance's log file is gone.")
-    if status is not None and isinstance(status.state, ContainerStateWaiting) \
-            and status.restart_count:
-        notes.append(f"The container is waiting ({status.state.reason}) with no running "
-                     "instance, so this is its last terminated instance's log, for "
-                     "previous=False and previous=True alike.")
-    return notes
+    if _waiting(status):
+        return [f"The container is waiting ({status.state.reason}) with no running "
+                "instance, so this is its last terminated instance's log, for "
+                "previous=False and previous=True alike."]
+    return []
+
+
+def _reclaimed_error(pod_name: Optional[str], container_name: Optional[str],
+                     previous: bool, status: Optional["ContainerStatus"]) -> K8sLogReclaimed:
+    if _waiting(status):
+        which = ("its last terminated instance (the container is waiting, with no "
+                 "running instance)")
+    else:
+        which = "its previous instance" if previous else "its current instance"
+    container = container_name or (status.container_name if status else "(default)")
+    return K8sLogReclaimed(
+        f"No log exists for {which} of container '{container}' in pod '{pod_name}': "
+        "the kubelet reports that instance's log file is gone. "
+        "This is not a tool failure, and the log cannot be retrieved. That instance's "
+        "exit code, reason and times are in get_pod_container_statuses.")
 
 
 def _with_log_notes(text: str, statuses: list["ContainerStatus"],
-                    container_name: Optional[str]) -> str:
-    """Prefix ``text`` with a marked line per note (none when nothing applies)."""
+                    container_name: Optional[str], *, pod_name: Optional[str] = None,
+                    previous: bool = False) -> str:
+    """Prefix ``text`` with a marked line per note (none when nothing applies).
+    Raises :class:`K8sLogReclaimed` when ``text`` is the kubelet's message that the
+    log file is gone, rather than returning that message where a log belongs."""
     status = next((s for s in statuses if s.container_name == container_name),
                   statuses[0] if statuses and container_name is None else None)
-    notes = _log_notes(status, text)
+    if _is_reclaimed_log(text):
+        raise _reclaimed_error(pod_name, container_name, previous, status)
+    notes = _log_notes(status)
     return "".join(f"{LOG_NOTE_PREFIX}{n}\n" for n in notes) + text
 
 
@@ -1104,7 +1138,7 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
 
     Lines starting "[k8stools] note:" are added by this tool, not the container:
     e.g. that a waiting container returns its last instance for both values of
-    previous, or that the text is the kubelet's error, not a log.
+    previous. When that instance's log file is gone, raises an error, not text.
     """
     text = _read_pod_log(pod_name, namespace, container_name, tail=tail,
                          since_seconds=since_seconds, previous=previous)
@@ -1113,7 +1147,8 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
     except Exception as e:  # notes are best-effort; the log itself was readable
         logging.debug(f"get_logs_for_pod_and_container: no status for notes: {e}")
         statuses = []
-    return _with_log_notes(text, statuses, container_name)
+    return _with_log_notes(text, statuses, container_name, pod_name=pod_name,
+                           previous=previous)
 
 
 class DeploymentSummary(BaseModel):
@@ -3362,7 +3397,7 @@ def get_events(namespace: Optional[str] = None,
     reason (e.g. "Evicted", "FailedScheduling"), involved_kind ("Pod", "Node",
     ...), involved_name or event_type ("Normal", "Warning"). Each has count,
     first_seen and last_seen, and notes on how far to trust them. Records expire
-    about an hour after their last update."""
+    after a retention period this API doesn't report."""
     global K8S
     if K8S is None:
         K8S = _get_api_client()
@@ -3570,10 +3605,18 @@ class EventLine(_Compact):
     objects: int = 1
 
 
+#: LogTail.reason when the instance's log file is gone.
+LOG_RECLAIMED_REASON = "that instance's log file is gone (the kubelet reclaimed it)"
+
+
 class LogTail(_Compact):
     pod: str
     container: str
     previous: bool
+    #: False when no log exists for that instance (see reason); then lines is
+    #: empty. Omitted when the log was read.
+    available: Optional[bool] = None
+    reason: Optional[str] = None
     lines: list[str] = Field(default_factory=list)
     #: Lines the tool added about this log ("[k8stools] note: ..."), not output.
     notes: list[str] = Field(default_factory=list)

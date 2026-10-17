@@ -560,6 +560,10 @@ class MockState:
                     f"Error fetching logs: previous terminated instance of container "
                     f"'{container_name}' in pod '{pod_name}' not found.")
             text = ''
+        elif k8s_tools._is_reclaimed_log(logs[container_name]):
+            # The kubelet's message has no timestamp for since_seconds to filter on;
+            # passed whole, it raises below as the live tool does.
+            text = logs[container_name]
         else:
             text = _slice_log(_reanchor_log(logs[container_name], self._log_shift),
                               tail=tail, since_seconds=since_seconds,
@@ -567,7 +571,8 @@ class MockState:
                                   seconds=self._clock.elapsed()))
         # Notes from the replayed state, as the live tool adds them from the live one.
         return k8s_tools._with_log_notes(
-            text, self.get_pod_container_statuses(pod_name, namespace), container_name)
+            text, self.get_pod_container_statuses(pod_name, namespace), container_name,
+            pod_name=pod_name, previous=previous)
 
     @_pinned_query
     def get_deployment_summaries(self,
