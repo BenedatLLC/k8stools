@@ -216,6 +216,16 @@ _FLAG_SPACE_RE = re.compile(r"(?<![\w.-])(?P<name>--?[A-Za-z][\w.-]*)[ \t]+(?=[^
 #: A setting's value: quoted, or up to whitespace or a separator.
 _SETTING_VALUE_RE = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'|<[^<>\n]*>|[^\s;&\"',<][^\s;&\"']*")
 
+#: A password given to SQL as a quoted literal after a keyword, with no ``=`` for
+#: the setting rules to find (#22): Postgres ``CREATE/ALTER ROLE|USER ... [WITH]
+#: [ENCRYPTED] PASSWORD '...'`` and MySQL ``IDENTIFIED [WITH plugin] BY '...'``.
+#: Only a quoted literal counts, so prose ("password reset") is left alone, and
+#: only its contents are replaced, so the statement still reads as SQL.
+_SQL_PASSWORD_RE = re.compile(
+    r"\b(?:PASSWORD|IDENTIFIED(?:[ \t]+WITH[ \t]+\w+)?[ \t]+BY)[ \t]+"
+    r"(?P<quote>['\"])(?P<value>[^'\"\n]*)(?P=quote)",
+    re.IGNORECASE)
+
 #: A list item that is a flag on its own, its value being the next item.
 _BARE_FLAG_RE = re.compile(r"--?[A-Za-z][\w.-]*")
 
@@ -285,6 +295,11 @@ def _option_name_is_sensitive(name: str) -> bool:
     # Numbered keys are structural too: "-l key1=value1,key2=value2".
     if [w for w in words if not w.isdigit()] == ["key"] and bare.islower():
         return False
+    # A setting named for several keys lists names, not secrets (#23):
+    # `?contextKeys=telescopes` in an access log. Plural `tokens` and
+    # `credentials` still count, and so does `keys` in field and env-var names.
+    if not any(_word_is_sensitive(w) for w in words if w != "keys"):
+        return any(w in _SETTING_ONLY_WORDS for w in words)
     return _field_name_is_sensitive(bare) or any(w in _SETTING_ONLY_WORDS for w in words)
 
 
@@ -335,6 +350,9 @@ def _redact_embedded(value: str) -> tuple[str, int]:
         consider(name, m.end(), alias)
     for m in _FLAG_SPACE_RE.finditer(value):
         consider(m.group("name"), m.end(), False, in_running_text=True)
+    for m in _SQL_PASSWORD_RE.finditer(value):
+        if not _is_placeholder(m.group("value")):
+            spans.append((m.start("value"), m.end("value")))
 
     if not spans:
         return value, 0

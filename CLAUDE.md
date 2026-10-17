@@ -413,8 +413,10 @@ The exceptions:
 **Context rules (#12)** catch a credential embedded in a longer string by what
 surrounds it — URL userinfo, a sensitive `--flag=`/`--flag value`/`-Dprop=`,
 `Password=`/`password=` connection strings, query parameters including presigned
-URL signatures, and `["--token", "x"]` in an argv list — replacing only the
-credential. Two principles keep them from over-reaching, and both were driven by
+URL signatures, `["--token", "x"]` in an argv list, and SQL's quoted `PASSWORD
+'...'` / `IDENTIFIED BY '...'` (#22) — replacing only the credential. In setting
+names (not field or env-var names), the plural `keys` doesn't count (#23):
+`?contextKeys=telescopes` lists names; `tokens` and `credentials` still do. Two principles keep them from over-reaching, and both were driven by
 measurement rather than reasoning:
 
 - **A reference is not a secret.** Nothing is redacted that only *locates* one:

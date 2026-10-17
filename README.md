@@ -842,6 +842,7 @@ provide a reader for Kubernetes `Secret` objects.
    | Connection strings | `Password=[REDACTED];`, `password=[REDACTED] dbname=otel` |
    | Query strings and presigned URLs | `?access_token=[REDACTED]&`, `X-Amz-Signature=[REDACTED]`, `sig=[REDACTED]` |
    | Properties files | `spring.datasource.password=[REDACTED]` |
+   | SQL password literals | `CREATE USER otelu WITH PASSWORD '[REDACTED]'`, `IDENTIFIED BY '[REDACTED]'` |
 
    In running text (`sh -c "..."`, logs, `--help` output), a `--flag value` pair
    counts only when the value looks like a credential (a digit or symbol, or 16+
@@ -854,8 +855,9 @@ nothing: `$(DB_PASSWORD)`, `${token}`, `$API_KEY`, templates, file paths
 (`--password-file`, `--secret-name`, `--token-url`). Booleans and masks
 (`skip-secret: "true"`, `password=****`) are left alone too.
 
-On a real 38-pod cluster, these rules redact 6 values, all real credentials,
-where the 2.x rules redacted 6 of which 3 were not secrets.
+On a real 38-pod cluster, these rules redact 7 values, all real credentials (the
+seventh is the SQL password literal), where the 2.x rules redacted 6 of which 3
+were not secrets.
 
 ### Where redaction applies
 

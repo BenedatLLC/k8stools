@@ -6,6 +6,10 @@ dates are release-tag dates.
 ## 4.0.0 — unreleased
 
 ### Issues fixed
+- [#22](https://github.com/BenedatLLC/k8stools/issues/22): Redaction misses a SQL
+  password literal (CREATE USER ... WITH PASSWORD '...').
+- [#23](https://github.com/BenedatLLC/k8stools/issues/23): Redaction false
+  positive: query parameter contextKeys=… redacted (plural of 'key').
 - [#24](https://github.com/BenedatLLC/k8stools/issues/24): Triage composites:
   state the facts agents keep misreading (logs gone, timing, recovering
   workloads, init containers).
@@ -70,6 +74,19 @@ dates are release-tag dates.
   `--event-ttl`, not something the API reports, and answers quoted it as this
   cluster's retention. They now say only where the records start, and that the
   retention period isn't reported.
+- **Redaction catches SQL password literals** (issue #22): `CREATE/ALTER
+  ROLE|USER ... PASSWORD '...'` and MySQL's `IDENTIFIED [WITH plugin] BY '...'`,
+  replacing only the literal's contents. 3.0.0 caught the OTel demo's database
+  password in three connection-string formats but returned its Postgres init
+  script's `CREATE USER otelu WITH PASSWORD 'otelp'` in full. Only a quoted
+  literal counts, so prose such as "password reset" is untouched. Measured on a
+  live OTel demo capture: one new redaction, that password, and no other change.
+  Re-redact kept captures with `k8s-capture-state --redact-file`.
+- **Redaction no longer hides `...Keys=` settings** (issue #23). In setting
+  names, the plural `keys` no longer marks a value sensitive: an Envoy access
+  log's `?contextKeys=telescopes` came back `contextKeys=[REDACTED]`, 41 times in
+  one capture, none a credential. Plural `tokens` and `credentials` still count,
+  and so does `keys` in env-var and field names (`API_KEYS`).
 - `get_service_summaries` and `get_ingress_summaries` treat an EndpointSlice
   client that can't be set up (`K8sConfigError`) like an unreadable EndpointSlice
   API: endpoint counts and backend readiness are None (unknown), rather than the

@@ -416,6 +416,17 @@ def _r(value):
     # Properties files in ConfigMaps
     ("spring.datasource.password=hunter2\nspring.datasource.url=jdbc:x",
      "spring.datasource.password=[REDACTED]\nspring.datasource.url=jdbc:x"),
+    # SQL password literals (#22): the OTel demo's Postgres init script, found
+    # unredacted in a ConfigMap; only the literal's contents go
+    ("CREATE USER otelu WITH PASSWORD 'otelp';\nCREATE SCHEMA accounting;",
+     "CREATE USER otelu WITH PASSWORD '[REDACTED]';\nCREATE SCHEMA accounting;"),
+    ("ALTER ROLE app WITH ENCRYPTED PASSWORD \"s3cret\";",
+     "ALTER ROLE app WITH ENCRYPTED PASSWORD \"[REDACTED]\";"),
+    ("create role app login password 'abc';", "create role app login password '[REDACTED]';"),
+    ("CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2';",
+     "CREATE USER 'app'@'%' IDENTIFIED BY '[REDACTED]';"),
+    ("ALTER USER 'app'@'%' IDENTIFIED WITH mysql_native_password BY 'hunter2';",
+     "ALTER USER 'app'@'%' IDENTIFIED WITH mysql_native_password BY '[REDACTED]';"),
 ])
 def test_embedded_credentials_are_redacted_in_place(given, expected):
     assert _r(given) == expected
@@ -439,10 +450,26 @@ def test_embedded_credentials_are_redacted_in_place(given, expected):
     "      --tls-sni-cert-key namedCertKey          A pair of x509 certificate and private key",
     "use the --tls-sni-cert-key multiple times.",
     "Selector (label query) to filter on (e.g. -l key1=value1,key2=value2).",
+    # A plural "keys" names things (#23): 41 of these in one capture's Envoy logs
+    '"GET /api/data?contextKeys=telescopes HTTP/1.1" 200',
+    "https://shop/api?sortKeys=price&cacheKeys=a,b", ["--label-keys=app,tier"],
+    # SQL without a quoted literal (#22): prose, NULL, and references
+    "Click here for a password reset.", "ALTER ROLE app PASSWORD NULL;",
+    "CREATE USER app WITH PASSWORD '${DB_PASSWORD}';", "ALTER ROLE app PASSWORD '';",
 ])
 def test_things_that_look_like_settings_but_hold_no_credential(value):
     _, count = redact_object(value)
     assert count == 0, _r(value)
+
+
+def test_plural_tokens_and_credentials_still_count_in_settings_and_keys_elsewhere():
+    """#23 exempts only `keys`, and only in settings: an env var or field named
+    for keys plausibly holds them."""
+    assert _r("?tokens=abc123&page=2") == "?tokens=[REDACTED]&page=2"
+    assert _r(["--credentials=hunter2"]) == ["--credentials=[REDACTED]"]
+    assert _r({"API_KEYS": "k1,k2"}) == {"API_KEYS": "[REDACTED]"}
+    assert _r({"env": [{"name": "SIGNING_KEYS", "value": "k1"}]}) == \
+        {"env": [{"name": "SIGNING_KEYS", "value": "[REDACTED]"}]}
 
 
 def test_running_text_needs_a_credential_like_value_but_argv_does_not():
