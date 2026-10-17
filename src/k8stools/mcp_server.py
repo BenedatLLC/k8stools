@@ -145,6 +145,11 @@ def main():
     logging.info(f"Starting with {len(wrapped_tools)} tools on transport {args.transport}")
     # this starts the uvicorn server
     if args.transport == 'streamable-http':
+        # Stateless on purpose, not as a workaround (#1): every tool is a read-only
+        # query with no per-session state, and the server sends no notifications or
+        # progress, which are what sessions are for. Stateful mode works with mcp 2.x
+        # but would lose every session on a restart and need sticky sessions behind
+        # a load balancer.
         mcp.run(
             transport='streamable-http',
             host=args.host,
