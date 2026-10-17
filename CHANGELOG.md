@@ -5,6 +5,11 @@ dates are release-tag dates.
 
 ## 4.0.0 — unreleased
 
+### Issues fixed
+- [#24](https://github.com/BenedatLLC/k8stools/issues/24): Triage composites:
+  state the facts agents keep misreading (logs gone, timing, recovering
+  workloads, init containers).
+
 ### Upgrading from 3.x
 - **A log whose file is gone raises `K8sLogReclaimed`** (a `K8sApiError`) from
   `get_logs_for_pod_and_container`, `get_logs_for_job` and `get_logs_for_cronjob`,
@@ -50,6 +55,15 @@ dates are release-tag dates.
   - Captures record init container statuses and logs; older captures replay
     them as not recorded. The `--mock` fixture's `postgres-0` has a completed
     init container.
+- **Restart history is said to be missing, not estimated** (issue #24). Answers
+  read the event window as when a crash loop began. Kubernetes keeps only each
+  container's restart count and last termination, so `get_namespace_health` and
+  `get_workload_report` now say so when anything has restarted, and point to
+  metrics or centralized logs for history. `get_workload_report`'s instances
+  gain `pod_age`, the span a restart count covers. The issue's proposed derived
+  timings (a restart interval from event counts, failures-observed-since,
+  restarts vs. event span) were left out: event counts aren't restarts, and
+  the API doesn't keep the history they'd need.
 - **Nothing claims how long event records last** (issue #24). `get_events`,
   `get_pod_events` and `get_workload_report`'s event note said records expire
   about an hour after their last update. That is the API server's default

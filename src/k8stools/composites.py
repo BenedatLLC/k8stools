@@ -36,7 +36,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
-                        NOTE_RECOVERING,
+                        NOTE_RECOVERING, NOTE_RESTART_HISTORY,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
                         _to_whole_seconds)
 
@@ -429,6 +429,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
             "instance_lifetime is how long the last instance ran; restart_gap is the "
             "back-off before the next start (or the wait so far). Restarts are "
             "lifetime + gap apart.")
+    if any(w.restarts for w in entries + recovering):
+        result.notes.append(NOTE_RESTART_HISTORY)
     return result
 
 
@@ -606,7 +608,8 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         termination = _termination(pod.name, s, now)
         if termination:
             termination.pod = termination.container = None  # the instance names them
-        return Instance(pod=pod.name, container=s.container_name, state=_state_text(s, now),
+        return Instance(pod=pod.name, container=s.container_name, pod_age=pod.age,
+                        state=_state_text(s, now),
                         started=_to_whole_seconds(now - started) if started else None,
                         ready=s.ready, restarts=s.restart_count, last_termination=termination)
 
@@ -681,6 +684,8 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         report.notes.append(
             "instance_lifetime is how long an instance ran; restart_gap is the back-off "
             "before the next start (or the wait so far). Restarts are lifetime + gap apart.")
+    if any(i.restarts for i in report.instances + report.init_instances):
+        report.notes.append(NOTE_RESTART_HISTORY)
     for i in report.instances + report.init_instances:
         if i.last_termination:
             report.notes.extend(n for n in i.last_termination.notes if n not in report.notes)

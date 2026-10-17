@@ -878,8 +878,13 @@ def test_namespace_health_agrees_with_the_raw_tools():
     namespace = "default"
     health = k8s_tools.get_namespace_health(namespace)
     deployments = {f"Deployment/{d.name}": d for d in k8s_tools.get_deployment_summaries(namespace)}
-    names = [w.workload for w in health.workloads] + [h.split(" ")[0] for h in health.healthy]
+    names = [w.workload for w in health.workloads + health.recovering] + \
+        [h.split(" ")[0] for h in health.healthy + health.recovering_more]
     assert set(deployments) <= set(names)
+    assert len(names) == len(set(names))  # each workload in exactly one group
+    for w in health.recovering:  # ready, with a restart inside the window (#24)
+        assert w.ready >= w.desired and w.last_termination.restart_gap is not None
+        assert w.last_termination.finished <= datetime.timedelta(hours=24)
     assert not any(w.healthy for w in health.workloads)  # full entries are the unhealthy
     for line in health.healthy:
         workload, ratio = line.split(" ")[:2]

@@ -372,6 +372,11 @@ NOTE_CR_NO_CONDITIONS = (
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
+NOTE_RESTART_HISTORY = (
+    "Kubernetes keeps only each container's restart count and last termination: "
+    "earlier terminations, and when restarts began, aren't available from its API. "
+    "For restart history, see your metrics (e.g. Prometheus' "
+    "kube_pod_container_status_restarts_total) or centralized logs.")
 NOTE_RECOVERING = (
     "recovering: ready now, but a container restarted within the last 24h (its last "
     "termination finished then), most recent first. healthy: ready, with no restart "
@@ -3649,6 +3654,8 @@ class Instance(_Compact):
     """One container instance of one pod, now."""
     pod: str
     container: str
+    #: Time since the pod was created. Its restart count covers this span.
+    pod_age: Optional[Duration] = None
     state: str
     #: Time since the current instance started (if running).
     started: Optional[Duration] = None

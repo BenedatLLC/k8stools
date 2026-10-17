@@ -23,6 +23,7 @@ NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 NAMESPACE_BUDGET_PER_WORKLOAD = 900   # an unhealthy workload, in full (with usage, #16)
 HEALTHY_LINE_BUDGET = 60              # a healthy one, in a line
 RECOVERING_LINE_BUDGET = 110          # a recovering one past the first 10 (#24)
+NAMESPACE_OVERHEAD_BUDGET = 700       # the result's own keys and fixed notes (#24 added two)
 REPORT_BUDGET = 8000
 
 
@@ -294,11 +295,25 @@ def test_a_finished_job_is_not_a_restart():
     assert h.recovering == [] and h.healthy == ["Job/nightly 1/1"]
 
 
+def test_restart_history_is_said_to_be_missing_not_estimated():
+    """#24, as scoped: the API keeps one termination, so say where history is."""
+    h = namespace_health(_ready_state(_ready_workload("accounting", datetime.timedelta(minutes=10))))
+    assert k8s_tools.NOTE_RESTART_HISTORY in h.notes
+    r = workload_report(_ready_state(_ready_workload("accounting", datetime.timedelta(minutes=10))),
+                        "accounting", "default")
+    assert k8s_tools.NOTE_RESTART_HISTORY in r.notes
+    [i] = r.instances
+    assert i.pod_age == datetime.timedelta(days=1) and i.restarts == 578
+    quiet = namespace_health(_ready_state(_ready_workload("cart", datetime.timedelta(days=2), 0)))
+    assert k8s_tools.NOTE_RESTART_HISTORY not in quiet.notes
+
+
 def test_namespace_health_is_bounded():
     h = namespace_health(MockState.from_builtin(frozen=True), "default")
     size = len(json.dumps(h.model_dump(mode="json")))
     assert size <= NAMESPACE_BUDGET_PER_WORKLOAD * (len(h.workloads) + len(h.recovering)) + \
-        HEALTHY_LINE_BUDGET * len(h.healthy) + RECOVERING_LINE_BUDGET * len(h.recovering_more) + 400
+        HEALTHY_LINE_BUDGET * len(h.healthy) + RECOVERING_LINE_BUDGET * len(h.recovering_more) + \
+        NAMESPACE_OVERHEAD_BUDGET
 
 
 def test_namespace_health_on_the_mock_fixture():
