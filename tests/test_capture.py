@@ -108,7 +108,7 @@ def test_container_state_datetimes_round_trip_and_discriminate():
                     "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
                     "age_seconds": 100.0},
         "container_statuses": [record]}]))
-    back = state.get_pod_container_statuses("p", "default")[0]
+    back = state.get_pod_container_statuses("p", "default").containers[0]
     # The union member is recovered from state_name, not guessed from field shape.
     assert isinstance(back.state, k8s_tools.ContainerStateWaiting)
     assert back.state.reason == "CrashLoopBackOff"
@@ -140,7 +140,7 @@ def test_a_capture_recorded_before_ran_for_existed_still_gets_it():
                     "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
                     "age_seconds": 100.0},
         "container_statuses": [record]}]))
-    back = state.get_pod_container_statuses("p", "default")[0]
+    back = state.get_pod_container_statuses("p", "default").containers[0]
     assert back.last_state.ran_for == datetime.timedelta(seconds=63)
 
 
@@ -170,7 +170,7 @@ def test_ran_for_does_not_grow_on_an_advancing_replay_clock():
     later = datetime.datetime.now(UTC) - datetime.timedelta(days=1)
     reloaded = MockState(json.loads(json.dumps(state)), frozen=False,
                          server_start_time=later)
-    back = reloaded.get_pod_container_statuses("p", "default")[0].last_state
+    back = reloaded.get_pod_container_statuses("p", "default").containers[0].last_state
     assert back.ran_for == datetime.timedelta(seconds=60)
     assert back.ran_for == back.finished_at - back.started_at
 
@@ -222,7 +222,7 @@ def test_a_hand_edited_ran_for_takes_effect_on_replay():
                     "ready_containers": 0, "restarts": 3, "last_restart_seconds": None,
                     "age_seconds": 100.0},
         "container_statuses": [record]}]), frozen=False)
-    back = state.get_pod_container_statuses("p", "default")[0]
+    back = state.get_pod_container_statuses("p", "default").containers[0]
     assert back.last_state.ran_for == datetime.timedelta(hours=1)
 
 
@@ -390,12 +390,12 @@ def test_a_containers_name_cannot_redact_its_own_logs(monkeypatch):
                              total_containers=1, ready_containers=1, restarts=1,
                              last_restart=datetime.timedelta(seconds=60),
                              age=datetime.timedelta(hours=1))])
-    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: [
-        k8s_tools.ContainerStatus(
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: k8s_tools.PodContainerStatuses(
+        pod_name=p, namespace=ns, init_containers=[], containers=[k8s_tools.ContainerStatus(
             pod_name=p, namespace=ns, container_name="valkey-cart", image="valkey:8",
             ready=True, restart_count=1, started=True, stop_signal=None, state=None,
             last_state=None, volume_mounts=[], resource_requests={},
-            resource_limits={}, allocated_resources={})])
+            resource_limits={}, allocated_resources={})]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
     monkeypatch.setattr(k8s_tools, "_read_pod_log",
                         lambda *a, **kw: log)
@@ -427,7 +427,8 @@ def test_pod_labels_are_not_subject_to_the_key_name_heuristic(monkeypatch):
         k8s_tools.PodSummary(name="p", namespace="default", total_containers=1,
                              ready_containers=1, restarts=0, last_restart=None,
                              age=datetime.timedelta(hours=1))])
-    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: [])
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: k8s_tools.PodContainerStatuses(
+        pod_name=p, namespace=ns, init_containers=[]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
     monkeypatch.setattr(capture, "_pod_labels",
                         lambda ns: {"p": {"gcp-auth-skip-secret": "true"}})
@@ -445,12 +446,12 @@ def test_no_logs_skips_previous_logs_too(monkeypatch):
                              ready_containers=0, restarts=3,
                              last_restart=datetime.timedelta(seconds=60),
                              age=datetime.timedelta(hours=1))])
-    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: [
-        k8s_tools.ContainerStatus(
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: k8s_tools.PodContainerStatuses(
+        pod_name=p, namespace=ns, init_containers=[], containers=[k8s_tools.ContainerStatus(
             pod_name=p, namespace=ns, container_name="c", image="img", ready=False,
             restart_count=3, started=False, stop_signal=None, state=None,
             last_state=None, volume_mounts=[], resource_requests={},
-            resource_limits={}, allocated_resources={})])
+            resource_limits={}, allocated_resources={})]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
     monkeypatch.setattr(k8s_tools, "_read_pod_log",
                         lambda *a, **kw: "some log text")
@@ -570,7 +571,8 @@ def test_pod_labels_are_redacted_at_capture_time(monkeypatch):
         k8s_tools.PodSummary(name="p", namespace="default", total_containers=1,
                              ready_containers=1, restarts=0, last_restart=None,
                              age=datetime.timedelta(days=1))])
-    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda *a, **k: [])
+    monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", lambda p, ns: k8s_tools.PodContainerStatuses(
+        pod_name=p, namespace=ns, init_containers=[]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda *a, **k: {})
     stats = CaptureStats()
     records = capture._capture_pods("default", datetime.datetime.now(datetime.timezone.utc),

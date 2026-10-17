@@ -78,7 +78,7 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[k8s_tools.PodSumm
 get_pod_summaries.__doc__ = k8s_tools.get_pod_summaries.__doc__
 
 
-def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> list[k8s_tools.ContainerStatus]:
+def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> k8s_tools.PodContainerStatuses:
     return _state().get_pod_container_statuses(pod_name, namespace)
 
 get_pod_container_statuses.__doc__ = k8s_tools.get_pod_container_statuses.__doc__

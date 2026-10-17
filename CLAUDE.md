@@ -34,6 +34,7 @@ tests/
   test_toolsets.py           - Toolsets: named subsets, include/exclude, server flags
   test_notes.py              - Description budgets, notes on results and logs, notes in replay
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
+  test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
@@ -171,6 +172,10 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 - **Restart cadence from container status, never event counts** (event records
   lag): `instance_lifetime` is `ran_for`; `restart_gap` is finished-to-next-start,
   or the wait so far.
+- **Init containers apart** (#24): a completed init container (exit 0) is never
+  a termination; one that hasn't completed makes the workload unhealthy and is
+  named. `WorkloadReport.init_containers` is always serialized (`_keep_empty`), so
+  "none" doesn't vanish into a dropped field.
 - **Bounded:** healthy workloads are a one-line string each; compact models
   (`_Compact` drops empty fields; the server sends a result twice), at most 20 events and 100 log lines of 300 characters; tests
   hold the namespace view and reports to budgets on the `--mock` fixture.
@@ -337,7 +342,13 @@ Invariants worth preserving when touching this code:
   with different messages: recorded unavailable (as live), and no `metrics` key
   (the capture predates them). Never fill in a missing reading.
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
-  synthesizes answers for unknown pod names.
+  synthesizes answers for unknown pod names, and `get_pod_container_statuses`
+  raises for one, as live.
+- **Init container statuses: absent means unknown, `[]` means none** (#24). A pod
+  record's `init_container_statuses` key is written only when they were read;
+  replay turns a missing key into `init_containers=None` with
+  `NOTE_INIT_NOT_RECORDED`, never `[]`. Native sidecars are stored and served in
+  `container_statuses` with `sidecar: true`.
 
 The built-in fixture lives under `src/k8stools/` (not `tests/`) because
 `--mock` serves it, so it has to ship in the wheel. It is **hand-maintained**, not

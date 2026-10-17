@@ -49,7 +49,7 @@ def test_builtin_loads_and_is_a_coherent_cluster():
     assert any(p.name == "ad-647b4947cc-s5mpm" for p in pods)
     # Every pod in the capture answers the per-pod tools.
     for pod in pods:
-        assert state.get_pod_container_statuses(pod.name, pod.namespace)
+        assert state.get_pod_container_statuses(pod.name, pod.namespace).containers
         assert state.get_pod_spec(pod.name, pod.namespace)
 
 
@@ -62,7 +62,7 @@ def test_builtin_terminated_containers_state_how_long_they_ran():
     terminated = [
         s
         for pod in state.get_pod_summaries()
-        for cs in state.get_pod_container_statuses(pod.name, pod.namespace)
+        for cs in state.get_pod_container_statuses(pod.name, pod.namespace).containers
         for s in (cs.state, cs.last_state)
         if isinstance(s, k8s_tools.ContainerStateTerminated)
     ]
@@ -91,9 +91,11 @@ def test_namespace_filtering_matches_the_real_tools():
     assert state.get_service_summaries("nonexistent") == []
 
 
-def test_missing_pod_returns_empty_container_statuses():
+def test_missing_pod_container_statuses_raise_like_the_real_tool():
+    """A pod not in the capture does not exist, for this tool too."""
     state = MockState(_capture(pods=[]), frozen=True)
-    assert state.get_pod_container_statuses("nope", "default") == []
+    with pytest.raises(k8s_tools.K8sApiError, match="not found"):
+        state.get_pod_container_statuses("nope", "default")
 
 
 def test_missing_configmap_raises_like_the_real_tool():
@@ -368,7 +370,7 @@ class TestReplayClock:
         for frozen in (True, False):
             state = MockState(json.loads(json.dumps(capture)), frozen=frozen,
                               server_start_time=start)
-            status = state.get_pod_container_statuses("p", "default")[0]
+            status = state.get_pod_container_statuses("p", "default").containers[0]
             assert status.state.started_at == start - datetime.timedelta(seconds=60)
 
 

@@ -55,7 +55,7 @@ def test_every_owner_is_in_the_fixture_and_runs_the_pods_images(state):
     owned = [p for p in state.get_pod_summaries() if p.owner]
     assert {p.owner.partition("/")[0] for p in owned} >= {"ReplicaSet", "DaemonSet", "Job"}
     for pod in owned:
-        images = [s.image for s in state.get_pod_container_statuses(pod.name, pod.namespace)]
+        images = [s.image for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers]
         expected = _owned_images(state, pod)
         assert expected is None or images == expected, pod.name
 
@@ -86,8 +86,20 @@ def test_spec_and_status_name_the_same_containers(state):
     for pod in state.get_pod_summaries():
         spec = [c["name"] for c in state.get_pod_spec(pod.name, pod.namespace)["containers"]]
         statuses = [s.container_name
-                    for s in state.get_pod_container_statuses(pod.name, pod.namespace)]
+                    for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers]
         assert spec == statuses and len(spec) == pod.total_containers, pod.name
+
+
+def test_every_pod_with_init_containers_reports_them(state):
+    """#24: answers said "no init containers" when the pod had one."""
+    reported = 0
+    for pod in state.get_pod_summaries():
+        spec = state.get_pod_spec(pod.name, pod.namespace).get("init_containers") or []
+        statuses = state.get_pod_container_statuses(pod.name, pod.namespace)
+        assert statuses.init_containers is not None, pod.name  # recorded, even if none
+        assert [c["name"] for c in spec] == [s.container_name for s in statuses.init_containers]
+        reported += len(spec)
+    assert reported  # the fixture shows the case
 
 
 def test_services_select_pods_and_statefulsets_have_theirs(state):
@@ -130,7 +142,7 @@ def test_node_conditions_have_times_and_none_predates_the_node(state):
 def test_last_restart_is_the_latest_termination(state):
     for pod in state.get_pod_summaries():
         finished = [s.last_state.finished_at
-                    for s in state.get_pod_container_statuses(pod.name, pod.namespace)
+                    for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers
                     if s.last_state is not None and s.last_state.state_name == "Terminated"]
         if not finished:
             assert pod.last_restart is None, pod.name
@@ -144,7 +156,7 @@ def test_logs_fall_inside_the_instance_that_wrote_them(state):
     now = state.get_cluster_info().captured_at
     checked = 0
     for pod in state.get_pod_summaries():
-        for s in state.get_pod_container_statuses(pod.name, pod.namespace):
+        for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers:
             for previous in (False, True):
                 instance = s.last_state if previous or s.state.state_name == "Waiting" \
                     else s.state
@@ -168,7 +180,7 @@ def test_restart_count_fits_the_pods_age(state):
     costs at least the instance's run time plus (after the first few) 300s.
     Agents divide restarts by age to get a rate; it has to be possible."""
     for pod in state.get_pod_summaries():
-        for s in state.get_pod_container_statuses(pod.name, pod.namespace):
+        for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers:
             if s.last_state is None or s.last_state.ran_for is None:
                 continue
             cycle = s.last_state.ran_for + datetime.timedelta(minutes=5)
@@ -235,7 +247,7 @@ def test_every_hpa_scales_a_workload_that_agrees_with_it(state):
                     if p.owner and p.owner.startswith(f"ReplicaSet/{name}-")]
             assert pods and all(s.resource_requests.get("cpu")
                                 for p in pods
-                                for s in state.get_pod_container_statuses(p.name, p.namespace))
+                                for s in state.get_pod_container_statuses(p.name, p.namespace).containers)
 
 
 def test_endpoints_agree_with_pods_and_services(state):
@@ -258,7 +270,7 @@ def test_usage_readings_agree_with_the_containers_they_measure(state):
     reading is its pods' average."""
     statuses = {(p.namespace, p.name, s.container_name): s
                 for p in state.get_pod_summaries()
-                for s in state.get_pod_container_statuses(p.name, p.namespace)}
+                for s in state.get_pod_container_statuses(p.name, p.namespace).containers}
     readings = state.get_container_metrics()
     assert readings
     for u in readings:

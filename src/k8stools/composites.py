@@ -35,8 +35,9 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
-                        LogTail, NamespaceHealth, Termination,
-                        WorkloadHealth, WorkloadReport, _to_whole_seconds)
+                        LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
+                        Termination, WorkloadHealth, WorkloadReport, _init_completed,
+                        _to_whole_seconds)
 
 
 # --- fixed semantics ------------------------------------------------------------
@@ -305,12 +306,23 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     healthy_lines: list[str] = []
 
     def assess(label, kind, name, ready, desired, pods):
-        terminations, first_pod, waiting = [], [], False
+        terminations, first_pod, waiting, init_pending = [], [], False, []
         for i, pod in enumerate(pods):
-            for s in api.get_pod_container_statuses(pod.name, namespace):
+            statuses = api.get_pod_container_statuses(pod.name, namespace)
+            for s in statuses.containers:
                 if i == 0:
                     first_pod.append(s)
                 waiting |= isinstance(s.state, ContainerStateWaiting)
+                t = _termination(pod.name, s, now)
+                if t:
+                    terminations.append(t)
+            # A completed init container's exit 0 is not a termination to report;
+            # one that hasn't completed holds the app containers back.
+            for s in statuses.init_containers or []:
+                if _init_completed(s):
+                    continue
+                waiting = True
+                init_pending.append(f"Init container '{s.container_name}': {_state_text(s, now)}")
                 t = _termination(pod.name, s, now)
                 if t:
                     terminations.append(t)
@@ -340,6 +352,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         for note in (n for u in readings for n in u.notes):
             if note not in w.notes:
                 w.notes.append(note)
+        if init_pending:
+            w.notes.extend([NOTE_INIT_PENDING, *dict.fromkeys(init_pending)])
         if restarts is None:
             w.notes.append("None of its pods could be found, so its restarts and "
                            "terminations are unknown.")
@@ -440,23 +454,34 @@ def _probe_summary(probe: dict) -> str:
     return text + (f", starts after {delay}s" if delay else "")
 
 
-def _essentials(spec: dict, statuses) -> list[ContainerEssentials]:
-    by_name = {s.container_name: s for s in statuses}
-    out = []
-    for c in spec.get("containers") or []:
-        status = by_name.get(c.get("name"))
-        resources = c.get("resources") or {}
-        probes = []
-        for kind in ("liveness", "readiness", "startup"):
-            probe = _get(c, f"{kind}_probe", f"{kind}Probe")
-            if probe:
-                probes.append(f"{kind}: {_probe_summary(probe)}")
-        out.append(ContainerEssentials(
-            container=c.get("name"), image=c.get("image") or (status.image if status else ""),
-            requests=dict(resources.get("requests") or {}),
-            limits=dict(resources.get("limits") or {}),
-            probes=probes or ["none configured"]))
-    return out
+def _essentials(spec: dict, statuses) -> tuple[list[ContainerEssentials],
+                                               list[ContainerEssentials]]:
+    """The app containers (with native sidecars) and the init containers."""
+    init = _get(spec, "init_containers", "initContainers") or []
+    sidecars = [c for c in init if _get(c, "restart_policy", "restartPolicy") == "Always"]
+    app = [_container_essentials(c, statuses) for c in spec.get("containers") or []]
+    for c in sidecars:
+        app.append(_container_essentials(c, statuses))
+        app[-1].sidecar = True
+    init_only = [_container_essentials(c, statuses) for c in init if c not in sidecars]
+    for e in init_only:
+        e.probes = []  # init containers can't have probes; "none configured" misleads
+    return app, init_only
+
+
+def _container_essentials(c: dict, statuses) -> ContainerEssentials:
+    status = next((s for s in statuses if s.container_name == c.get("name")), None)
+    resources = c.get("resources") or {}
+    probes = []
+    for kind in ("liveness", "readiness", "startup"):
+        probe = _get(c, f"{kind}_probe", f"{kind}Probe")
+        if probe:
+            probes.append(f"{kind}: {_probe_summary(probe)}")
+    return ContainerEssentials(
+        container=c.get("name"), image=c.get("image") or (status.image if status else ""),
+        requests=dict(resources.get("requests") or {}),
+        limits=dict(resources.get("limits") or {}),
+        probes=probes or ["none configured"])
 
 
 def _state_text(status, now) -> str:
@@ -544,24 +569,40 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         report.notes.append(NOTE_MATCHED_BY_NAME)
 
     statuses_by_pod = {p.name: api.get_pod_container_statuses(p.name, namespace) for p in pods}
+
+    def instance(pod, s):
+        started = s.state.started_at if isinstance(s.state, ContainerStateRunning) else None
+        termination = _termination(pod.name, s, now)
+        if termination:
+            termination.pod = termination.container = None  # the instance names them
+        return Instance(pod=pod.name, container=s.container_name, state=_state_text(s, now),
+                        started=_to_whole_seconds(now - started) if started else None,
+                        ready=s.ready, restarts=s.restart_count, last_termination=termination)
+
+    def pending_init(pod):
+        return [s for s in statuses_by_pod[pod.name].init_containers or []
+                if not _init_completed(s)]
+
     for pod in pods:
-        for s in statuses_by_pod[pod.name]:
-            started = s.state.started_at if isinstance(s.state, ContainerStateRunning) else None
-            termination = _termination(pod.name, s, now)
-            if termination:
-                termination.pod = termination.container = None  # the instance names them
-            report.instances.append(Instance(
-                pod=pod.name, container=s.container_name, state=_state_text(s, now),
-                started=_to_whole_seconds(now - started) if started else None,
-                ready=s.ready, restarts=s.restart_count, last_termination=termination))
+        report.instances.extend(instance(pod, s) for s in statuses_by_pod[pod.name].containers)
+        report.init_instances.extend(instance(pod, s) for s in pending_init(pod))
+    if any(st.init_containers is None for st in statuses_by_pod.values()):
+        report.notes.append(NOTE_INIT_NOT_RECORDED)
+    elif report.init_instances:
+        report.notes.append(NOTE_INIT_PENDING)
     if pods:
-        # The pod most in trouble speaks for the workload: waiting, then most restarts.
-        focus = max(pods, key=lambda p: (any(isinstance(s.state, ContainerStateWaiting)
-                                              for s in statuses_by_pod[p.name]), p.restarts))
-        report.containers = _essentials(api.get_pod_spec(focus.name, namespace),
-                                        statuses_by_pod[focus.name])
+        # The pod most in trouble speaks for the workload: waiting (or held back by
+        # an init container), then most restarts.
+        focus = max(pods, key=lambda p: (
+            bool(pending_init(p)) or any(isinstance(s.state, ContainerStateWaiting)
+                                         for s in statuses_by_pod[p.name].containers),
+            p.restarts))
+        focus_statuses = statuses_by_pod[focus.name]
+        report.containers, report.init_containers = _essentials(
+            api.get_pod_spec(focus.name, namespace),
+            focus_statuses.containers + (focus_statuses.init_containers or []))
         lines = max(1, min(log_lines, _MAX_LOG_LINES))
-        for s in statuses_by_pod[focus.name]:
+        for s in focus_statuses.containers + pending_init(focus):
             for previous in (False, True):
                 if previous and not s.restart_count:
                     continue
@@ -605,11 +646,11 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         report.notes.append(f"Usage unavailable: {usage_unavailable}")
     report.usage = [u for u in usage or [] if u.pod in {p.name for p in pods}]
 
-    if any(i.last_termination for i in report.instances):
+    if any(i.last_termination for i in report.instances + report.init_instances):
         report.notes.append(
             "instance_lifetime is how long an instance ran; restart_gap is the back-off "
             "before the next start (or the wait so far). Restarts are lifetime + gap apart.")
-    for i in report.instances:
+    for i in report.instances + report.init_instances:
         if i.last_termination:
             report.notes.extend(n for n in i.last_termination.notes if n not in report.notes)
             i.last_termination.notes = []

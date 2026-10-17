@@ -354,8 +354,10 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
     records = []
     for summary in redactor(k8s_tools.get_pod_summaries(namespace)):
         stats.pods += 1
-        statuses = redactor(_safe(k8s_tools.get_pod_container_statuses, summary.name,
-                                  namespace, default=[]))
+        pod_statuses = redactor(_safe(k8s_tools.get_pod_container_statuses, summary.name,
+                                      namespace, default=None))
+        statuses = pod_statuses.containers if pod_statuses else []
+        init_statuses = pod_statuses.init_containers if pod_statuses else None
         record: dict[str, Any] = {
             "summary": encode_model(summary, captured_at),
             # Labels aren't a tool's output, but they're served on replay, so
@@ -366,8 +368,11 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
                                    default={})),
             "logs": {},
         }
+        # Absent (not []) when unreadable, so replay says "not recorded", not "none".
+        if init_statuses is not None:
+            record["init_container_statuses"] = _encode_all(init_statuses, captured_at)
         previous_logs: dict[str, str] = {}
-        for status in statuses:
+        for status in statuses + (init_statuses or []):
             stats.containers += 1
             if include_logs:
                 logs = _safe(k8s_tools._read_pod_log, summary.name,

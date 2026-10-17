@@ -87,7 +87,7 @@ def _pod(name, owner, status, restarts=0, ready=0, spec=None, logs=None, previou
                         "ready_containers": ready, "restarts": restarts,
                         "last_restart_seconds": 240.0 if restarts else None,
                         "age_seconds": 86400.0, "owner": owner},
-            "labels": {}, "container_statuses": [status],
+            "labels": {}, "container_statuses": [status], "init_container_statuses": [],
             "spec": spec or {"containers": [{"name": owner.split("/")[1].rsplit("-", 1)[0] if owner else name}]},
             "logs": logs or {}, "previous_logs": previous or {}}
 

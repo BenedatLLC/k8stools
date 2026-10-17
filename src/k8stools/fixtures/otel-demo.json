@@ -116,6 +116,7 @@
           }
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -203,6 +204,7 @@
           "allocated_resources": {}
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -273,6 +275,7 @@
           "allocated_resources": {}
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -336,6 +339,7 @@
           "allocated_resources": {}
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -417,6 +421,7 @@
           }
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -559,6 +564,7 @@
           }
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -635,6 +641,7 @@
           }
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -711,6 +718,7 @@
           }
         }
       ],
+      "init_container_statuses": [],
       "spec": {
         "containers": [
           {
@@ -795,7 +803,57 @@
           }
         }
       ],
+      "init_container_statuses": [
+        {
+          "pod_name": "postgres-0",
+          "namespace": "default",
+          "container_name": "init-permissions",
+          "image": "busybox:1.36",
+          "ready": false,
+          "restart_count": 0,
+          "started": false,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Terminated",
+            "exit_code": 0,
+            "finished_at_offset_seconds": 259187.0,
+            "reason": "Completed",
+            "message": null,
+            "started_at_offset_seconds": 259189.0,
+            "ran_for_seconds": 2.0
+          },
+          "last_state": null,
+          "volume_mounts": [
+            {
+              "mount_path": "/var/lib/postgresql/data",
+              "name": "data",
+              "read_only": null,
+              "recursive_read_only": null
+            }
+          ],
+          "resource_requests": {},
+          "resource_limits": {},
+          "allocated_resources": {}
+        }
+      ],
       "spec": {
+        "init_containers": [
+          {
+            "name": "init-permissions",
+            "image": "busybox:1.36",
+            "command": [
+              "sh",
+              "-c",
+              "chown -R 999:999 /var/lib/postgresql/data"
+            ],
+            "volume_mounts": [
+              {
+                "name": "data",
+                "mount_path": "/var/lib/postgresql/data"
+              }
+            ]
+          }
+        ],
         "containers": [
           {
             "name": "postgres",

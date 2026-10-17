@@ -18,7 +18,7 @@ import logging
 import datetime
 import json
 import re
-from typing import Optional, Union, Literal, Any, Annotated
+from typing import Optional, Union, Literal, Any, Annotated, ClassVar
 
 from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
 import yaml
@@ -372,6 +372,12 @@ NOTE_CR_NO_CONDITIONS = (
 NOTE_DAEMONSET_SELECTOR = (
     "No nodeSelector, but affinity or tolerations may still limit its nodes; "
     "desired_number_scheduled is the actual count.")
+NOTE_INIT_NOT_RECORDED = (
+    "Init container statuses weren't recorded (the capture predates them, or they "
+    "couldn't be read). That doesn't mean there are none: the pod spec lists any.")
+NOTE_INIT_PENDING = (
+    "An init container hasn't completed. App containers don't start until every "
+    "init container has exited 0.")
 
 
 class NodeSummary(BaseModel):
@@ -863,6 +869,9 @@ class ContainerStatus(BaseModel):
     resource_requests: dict[str, str]
     resource_limits: dict[str, str]
     allocated_resources: dict[str, str]
+    #: A native sidecar: an init container with restartPolicy Always, which runs
+    #: beside the app containers for the pod's life and is listed with them.
+    sidecar: bool = False
     notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -876,73 +885,103 @@ class ContainerStatus(BaseModel):
         return self
 
 
-def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> list[ContainerStatus]:
+def _init_completed(status: ContainerStatus) -> bool:
+    return isinstance(status.state, ContainerStateTerminated) and status.state.exit_code == 0
+
+
+class PodContainerStatuses(BaseModel):
+    """The statuses of one pod's containers, app and init kept apart, so that a
+    completed init container's exit 0 can't be read as an app container's
+    termination."""
+    pod_name: str
+    namespace: str
+    #: App containers, then native sidecars (``sidecar`` true).
+    containers: list[ContainerStatus] = Field(default_factory=list)
+    #: Init containers that run to completion before the app containers start.
+    #: ``[]`` when the pod has none; None when not recorded (see notes).
+    init_containers: Optional[list[ContainerStatus]] = None
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "PodContainerStatuses":
+        notes = []
+        if self.init_containers is None:
+            notes.append(NOTE_INIT_NOT_RECORDED)
+        elif not all(_init_completed(s) for s in self.init_containers):
+            notes.append(NOTE_INIT_PENDING)
+        self.notes = notes
+        return self
+
+
+def _container_status(pod_name: str, namespace: str, container_status: Any,
+                      sidecar: bool = False) -> ContainerStatus:
+    resources = container_status.resources
+    return ContainerStatus(
+        pod_name=pod_name,
+        namespace=namespace,
+        container_name=container_status.name,
+        image=container_status.image,
+        ready=container_status.ready,
+        restart_count=container_status.restart_count,
+        started=container_status.started,
+        stop_signal=container_status.stop_signal,
+        state=_v1_container_state_to_container_state(container_status.state)
+              if container_status.state is not None else None,
+        last_state=_v1_container_state_to_container_state(container_status.last_state)
+                   if container_status.last_state is not None else None,
+        volume_mounts=[_v1_volume_mount_status_to_mount_statis(volume_mount)
+                       for volume_mount in container_status.volume_mounts or []],
+        resource_requests=(resources.requests or {}) if resources else {},
+        resource_limits=(resources.limits or {}) if resources else {},
+        allocated_resources=container_status.allocated_resources or {},
+        sidecar=sidecar,
+    )
+
+
+def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> PodContainerStatuses:
     """Each container's status in one pod: image, ready, restart count, the
     current state and the last terminated instance (last_state: exit code, reason,
-    started_at, finished_at, ran_for), resources and mounts. Check this before
-    reading logs: it says which instance a log call will return."""   
+    started_at, finished_at, ran_for), resources and mounts. containers holds app
+    containers and native sidecars; init_containers the init containers, [] if
+    none. Check this before reading logs: it says which instance a log call will
+    return."""
     global K8S
     if K8S is None:
         K8S = _get_api_client()
     logging.info(f"get_pod_container_statuses(pod_name={pod_name}, namespace={namespace})")
-    pod = K8S.read_namespaced_pod(name=pod_name, namespace=namespace)
+    try:
+        pod = K8S.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching pod '{pod_name}' in namespace '{namespace}': {e}") from e
     # Only proceed if pod is a V1Pod instance
     if not isinstance(pod, client.V1Pod):
         raise K8sApiError(f"Unexpected type for pod: {type(pod)}")
-    result:list[ContainerStatus] = []
-    if not pod.status or not pod.status.container_statuses:
-        return result
-    for container_status in pod.status.container_statuses:
-        container_name = container_status.name
-        image = container_status.image
-        ready = container_status.ready
-        restart_count = container_status.restart_count
-        started = container_status.started
-        stop_signal = container_status.stop_signal
-        state = _v1_container_state_to_container_state(container_status.state) \
-                if container_status.state is not None else None
-        last_state = _v1_container_state_to_container_state(container_status.last_state) \
-                if container_status.last_state is not None else None
-        volume_mounts = [_v1_volume_mount_status_to_mount_statis(volume_mount)
-                         for volume_mount in container_status.volume_mounts] \
-                if container_status.volume_mounts is not None else []
-        if container_status.resources:
-            resource_requests = container_status.resources.requests \
-                                if container_status.resources.requests is not None else {}
-            resource_limits = container_status.resources.limits \
-                              if container_status.resources.limits is not None else {}
+    # A native sidecar is an init container with restartPolicy Always; only the
+    # spec says which.
+    sidecars = {c.name for c in (pod.spec.init_containers if pod.spec else None) or []
+                if c.restart_policy == "Always"}
+    status = pod.status
+    containers = [_container_status(pod_name, namespace, cs)
+                  for cs in (status.container_statuses if status else None) or []]
+    init_containers = []
+    for cs in (status.init_container_statuses if status else None) or []:
+        if cs.name in sidecars:
+            containers.append(_container_status(pod_name, namespace, cs, sidecar=True))
         else:
-            resource_requests = {}
-            resource_limits = {}
-        allocated_resources = container_status.allocated_resources \
-                              if container_status.allocated_resources is not None else {}
-
-        result.append(ContainerStatus(
-            pod_name=pod_name,
-            namespace=namespace,
-            container_name=container_name,
-            image=image,
-            ready=ready,
-            restart_count=restart_count,
-            started=started,
-            stop_signal=stop_signal,
-            state=state,
-            last_state=last_state,
-            volume_mounts=volume_mounts,
-            resource_requests=resource_requests,
-            resource_limits=resource_limits,
-            allocated_resources=allocated_resources
-        ))
-    return result
+            init_containers.append(_container_status(pod_name, namespace, cs))
+    return PodContainerStatuses(pod_name=pod_name, namespace=namespace,
+                                containers=containers, init_containers=init_containers)
 
 
 def print_pod_container_statuses(pod_name: str, namespace: str = "default") -> None:
     """
     Pretty-print the status for all containers in a specified Kubernetes pod. 
     """
-    containers = get_pod_container_statuses(pod_name, namespace)
-    print(f"{'NAME':<24} {'READY':<8} {'RESTARTS':<9} {'STATE':<12} {'REASON':<20} {'STARTED':<30} {'FINISHED':<30} {'MEMORY':<12}")
-    for cs in containers:
+    statuses = get_pod_container_statuses(pod_name, namespace)
+    print(f"{'NAME':<24} {'KIND':<8} {'READY':<8} {'RESTARTS':<9} {'STATE':<12} {'REASON':<20} {'STARTED':<30} {'FINISHED':<30} {'MEMORY':<12}")
+    rows = [("init", cs) for cs in statuses.init_containers or []] + \
+           [("sidecar" if cs.sidecar else "app", cs) for cs in statuses.containers]
+    for kind, cs in rows:
         name = cs.container_name
         ready = str(cs.ready)
         restarts = str(cs.restart_count)
@@ -963,7 +1002,9 @@ def print_pod_container_statuses(pod_name: str, namespace: str = "default") -> N
                 reason = cs.state.reason if cs.state.reason else "-"
                 started = cs.state.started_at.isoformat() if cs.state.started_at else "-"
                 finished = cs.state.finished_at.isoformat() if cs.state.finished_at else "-"
-        print(f"{name:<24} {ready:<8} {restarts:<9} {state:<12} {reason:<20} {started:<30} {finished:<30} {memory:<12}")
+        print(f"{name:<24} {kind:<8} {ready:<8} {restarts:<9} {state:<12} {reason:<20} {started:<30} {finished:<30} {memory:<12}")
+    for note in statuses.notes:
+        print(f"note: {note}")
 
 
 def get_pod_spec(pod_name: str, namespace: str = "default") -> dict[str,Any]:
@@ -1110,6 +1151,11 @@ def _reclaimed_error(pod_name: Optional[str], container_name: Optional[str],
         "exit code, reason and times are in get_pod_container_statuses.")
 
 
+def _all_statuses(pod: PodContainerStatuses) -> list[ContainerStatus]:
+    """App containers first (the log readers' default is the first), then init."""
+    return pod.containers + (pod.init_containers or [])
+
+
 def _with_log_notes(text: str, statuses: list["ContainerStatus"],
                     container_name: Optional[str], *, pod_name: Optional[str] = None,
                     previous: bool = False) -> str:
@@ -1143,7 +1189,7 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
     text = _read_pod_log(pod_name, namespace, container_name, tail=tail,
                          since_seconds=since_seconds, previous=previous)
     try:
-        statuses = get_pod_container_statuses(pod_name, namespace)
+        statuses = _all_statuses(get_pod_container_statuses(pod_name, namespace))
     except Exception as e:  # notes are best-effort; the log itself was readable
         logging.debug(f"get_logs_for_pod_and_container: no status for notes: {e}")
         statuses = []
@@ -3497,10 +3543,14 @@ def print_cluster_info() -> None:
 class _Compact(BaseModel):
     """Serializes without empty fields: these results are one line per workload,
     and the MCP server sends a result twice (as text and as structured content)."""
+    #: Fields kept when empty, where ``[]`` means "none" and None (still dropped)
+    #: means "not known": dropping ``[]`` too would make the two look the same.
+    _keep_empty: ClassVar[frozenset[str]] = frozenset()
 
     @model_serializer(mode="wrap")
     def _drop_empty(self, handler):
-        return {k: v for k, v in handler(self).items() if v not in (None, [], {})}
+        return {k: v for k, v in handler(self).items()
+                if v is not None and (k in self._keep_empty or v not in ([], {}))}
 
 
 
@@ -3579,6 +3629,8 @@ class ContainerEssentials(_Compact):
     #: e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or
     #: "none configured".
     probes: list[str] = Field(default_factory=list)
+    #: True for a native sidecar (an init container with restartPolicy Always).
+    sidecar: Optional[bool] = None
 
 
 class Instance(_Compact):
@@ -3633,11 +3685,17 @@ class LastChange(_Compact):
 
 
 class WorkloadReport(_Compact):
+    _keep_empty: ClassVar[frozenset[str]] = frozenset({"init_containers"})
     workload: str
     ready: int
     desired: int
     containers: list[ContainerEssentials] = Field(default_factory=list)
+    #: Init containers of the focus pod's spec; [] when it has none.
+    init_containers: Optional[list[ContainerEssentials]] = None
     instances: list[Instance] = Field(default_factory=list)
+    #: Init container instances that haven't completed (exited 0), in every pod.
+    #: Omitted when all have; see notes when their statuses weren't recorded.
+    init_instances: list[Instance] = Field(default_factory=list)
     events: list[EventLine] = Field(default_factory=list)
     logs: list[LogTail] = Field(default_factory=list)
     last_change: Optional[LastChange] = None

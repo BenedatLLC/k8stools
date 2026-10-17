@@ -242,7 +242,7 @@ def test_replayed_captured_at_is_on_the_same_clock_as_everything_else(frozen):
                   "container_statuses": [status]}]})),
         frozen=frozen, server_start_time=start)
     captured_at = state.get_cluster_info().captured_at
-    finished_at = state.get_pod_container_statuses("p", "default")[0].last_state.finished_at
+    finished_at = state.get_pod_container_statuses("p", "default").containers[0].last_state.finished_at
     assert captured_at == start
     assert captured_at - finished_at == datetime.timedelta(seconds=297)
     assert state.captured_at == recorded   # the file's own date stays available

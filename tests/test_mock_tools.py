@@ -106,14 +106,14 @@ class TestMockPods:
 class TestMockPodContainerStatuses:
     """Test mock get_pod_container_statuses function."""
     
-    def test_get_pod_container_statuses_returns_list(self):
-        """Test that get_pod_container_statuses returns a list."""
+    def test_get_pod_container_statuses_returns_the_pod_model(self):
         statuses = mock_tools.get_pod_container_statuses("ad-647b4947cc-s5mpm", "default")
-        assert isinstance(statuses, list)
+        assert isinstance(statuses, k8s_tools.PodContainerStatuses)
+        assert statuses.init_containers == []  # recorded, and none
         
     def test_get_pod_container_statuses_ad_pod(self):
         """Test container statuses for the specific ad pod."""
-        statuses = mock_tools.get_pod_container_statuses("ad-647b4947cc-s5mpm", "default")
+        statuses = mock_tools.get_pod_container_statuses("ad-647b4947cc-s5mpm", "default").containers
         assert len(statuses) == 1
         
         status = statuses[0]
@@ -127,7 +127,7 @@ class TestMockPodContainerStatuses:
         
     def test_get_pod_container_statuses_generic_pod(self):
         """Test container statuses for a generic pod."""
-        statuses = mock_tools.get_pod_container_statuses("test-pod-123", "default")
+        statuses = mock_tools.get_pod_container_statuses("test-pod-123", "default").containers
         assert len(statuses) == 2  # test-pod-123 has 2 containers
         
         for status in statuses:
@@ -136,9 +136,9 @@ class TestMockPodContainerStatuses:
             assert status.namespace == "default"
             
     def test_get_pod_container_statuses_nonexistent_pod(self):
-        """Test container statuses for a non-existent pod."""
-        statuses = mock_tools.get_pod_container_statuses("nonexistent-pod", "default")
-        assert statuses == []
+        """A pod not in the capture does not exist."""
+        with pytest.raises(k8s_tools.K8sApiError):
+            mock_tools.get_pod_container_statuses("nonexistent-pod", "default")
 
 
 class TestMockPodEvents:

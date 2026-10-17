@@ -460,12 +460,21 @@ class MockState:
 
     @_pinned_query
     def get_pod_container_statuses(self, pod_name: str,
-                                   namespace: str = "default") -> list[k8s_tools.ContainerStatus]:
+                                   namespace: str = "default") -> k8s_tools.PodContainerStatuses:
+        """The captured statuses. A capture made before init container statuses
+        were recorded has no ``init_container_statuses`` key, and replays them as
+        None (not recorded), never as [] (none)."""
         record = self._pods.get((namespace, pod_name))
         if record is None:
-            return []
-        return [decode_model(k8s_tools.ContainerStatus, cs, self._clock)
-                for cs in record.get("container_statuses", [])]
+            raise k8s_tools.K8sApiError(
+                f"Error fetching pod '{pod_name}' in namespace '{namespace}': not found.")
+        init = record.get("init_container_statuses")
+        return k8s_tools.PodContainerStatuses(
+            pod_name=pod_name, namespace=namespace,
+            containers=[decode_model(k8s_tools.ContainerStatus, cs, self._clock)
+                        for cs in record.get("container_statuses", [])],
+            init_containers=None if init is None else [
+                decode_model(k8s_tools.ContainerStatus, cs, self._clock) for cs in init])
 
     @_pinned_query
     def get_pod_spec(self, pod_name: str, namespace: str = "default") -> dict[str, Any]:
@@ -571,7 +580,8 @@ class MockState:
                                   seconds=self._clock.elapsed()))
         # Notes from the replayed state, as the live tool adds them from the live one.
         return k8s_tools._with_log_notes(
-            text, self.get_pod_container_statuses(pod_name, namespace), container_name,
+            text, k8s_tools._all_statuses(self.get_pod_container_statuses(pod_name, namespace)),
+            container_name,
             pod_name=pod_name, previous=previous)
 
     @_pinned_query

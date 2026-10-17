@@ -168,7 +168,7 @@ out-of-memory kill".
 | Tool | What it answers | T | I |
 |---|---|:-:|:-:|
 | `get_pod_summaries` | The pods, like `kubectl get pods -o wide`, with each pod's controlling owner (e.g. `DaemonSet/otel-collector-agent`) | | ✓ |
-| `get_pod_container_statuses` | Each container's state in a pod: running, waiting or terminated, restarts, last termination | | ✓ |
+| `get_pod_container_statuses` | Each container's state in a pod: running, waiting or terminated, restarts, last termination. Init containers are listed separately (`[]` when there are none); native sidecars are listed with the app containers. | | ✓ |
 | `get_pod_spec` | A pod's full spec | | ✓ |
 | `get_pod_events` | The events for one pod | | |
 | `get_logs_for_pod_and_container` | A container's logs, with `tail`, `since_seconds` and `previous` (the instance before the last restart). See [Previous-instance log semantics](#previous-instance-log-semantics). | | ✓ |
@@ -537,7 +537,8 @@ application, with problems for an agent to find:
 * a Deployment whose HPA is at its maximum;
 * an Ingress with one rule to a missing Service;
 * a cert-manager `Certificate` that isn't Ready;
-* a DaemonSet, a CronJob and its Job, a StatefulSet with PVCs, and events.
+* a DaemonSet, a CronJob and its Job, a StatefulSet with PVCs and a completed
+  init container, and events.
 
 The mock serves a *capture* (a JSON snapshot of one cluster) rather than a set of
 canned answers per tool, so the tools agree with each other: a pod that is not in the
@@ -626,7 +627,7 @@ Everything the tools can read, so that every tool answers on replay:
 | Cluster-wide | namespaces, nodes, custom resource definitions and their instances' conditions (up to 500 per type), and resource usage (one metrics-server sample of containers and nodes, or why metrics weren't available) |
 | Per namespace | deployments, replica sets, services and their endpoints, ingresses, statefulsets, daemonsets, HPAs, cronjobs, jobs, PVCs, events, and each workload's change history (`get_workload_history`'s result, so no env values are written) |
 | ConfigMaps | summary **and** full contents, so `get_configmap` works too |
-| Per pod | summary, labels, container statuses, spec, and per-container logs |
+| Per pod | summary, labels, container and init container statuses, spec, and per-container logs (init containers included) |
 
 A cluster is selected exactly as for the MCP server (see [Selecting a
 cluster](#selecting-a-cluster)), and a selection that cannot be loaded fails the

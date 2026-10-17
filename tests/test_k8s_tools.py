@@ -175,22 +175,39 @@ class MockK8S:
             resource_limits={},
             allocated_resources={}
         )
+        def init_status(name, state):
+            return SimpleNamespace(name=name, image="busybox:1.36", ready=name == "proxy",
+                                   restart_count=0, started=None, stop_signal=None,
+                                   state=state, last_state=None, volume_mounts=[],
+                                   resources=None, allocated_resources=None)
+        completed = SimpleNamespace(running=None, waiting=None, terminated=SimpleNamespace(
+            exit_code=0, reason="Completed", message=None,
+            started_at=now - datetime.timedelta(days=1, seconds=5),
+            finished_at=now - datetime.timedelta(days=1, seconds=3)))
+        running = SimpleNamespace(running=SimpleNamespace(started_at=now - datetime.timedelta(days=1)),
+                                  waiting=None, terminated=None)
         container1 = SimpleNamespace(name="container-1", image="nginx:latest")
         container2 = SimpleNamespace(name="container-2", image="busybox:latest")
-        spec1 = SimpleNamespace(containers=[container1], node_name="node-1")
+        spec1 = SimpleNamespace(containers=[container1], node_name="node-1", init_containers=[
+            SimpleNamespace(name="init-db", restart_policy=None),
+            SimpleNamespace(name="proxy", restart_policy="Always")])
         spec1.to_dict = spec_to_dict.__get__(spec1)
         pod1 = SimpleNamespace(
             metadata=SimpleNamespace(name="pod-1", namespace="default", creation_timestamp=now - datetime.timedelta(days=1)),
             spec=spec1,
-            status=SimpleNamespace(container_statuses=[container_status], pod_ip="10.244.1.10"),
+            status=SimpleNamespace(container_statuses=[container_status], pod_ip="10.244.1.10",
+                                   init_container_statuses=[init_status("init-db", completed),
+                                                            init_status("proxy", running)]),
             to_dict=lambda self: dict(self)
         )
-        spec2 = SimpleNamespace(containers=[container1, container2], node_name="node-2")
+        spec2 = SimpleNamespace(containers=[container1, container2], node_name="node-2",
+                                init_containers=None)
         spec2.to_dict = spec_to_dict.__get__(spec2)
         pod2 = SimpleNamespace(
             metadata=SimpleNamespace(name="pod-2", namespace="test", creation_timestamp=now - datetime.timedelta(hours=12)),
             spec=spec2,
-            status=SimpleNamespace(container_statuses=[container_status, container_status], pod_ip="10.244.2.20"),
+            status=SimpleNamespace(container_statuses=[container_status, container_status], pod_ip="10.244.2.20",
+                                   init_container_statuses=None),
             to_dict=lambda self: dict(self)
         )
         return SimpleNamespace(items=[pod1, pod2])
@@ -416,12 +433,16 @@ def test_get_pod_summaries():
     assert pods[1].node == "node-2"
 
 def test_get_pod_container_statuses():
-    # Adjusted for new return type: should be instance of k8s_tools.ContainerStatus
     with patch.object(k8s_tools.client, "V1Pod", SimpleNamespace):
-        statuses = k8s_tools.get_pod_container_statuses("pod-1", "default")
-        assert isinstance(statuses, list)
-        assert len(statuses) == 1
-        cs = statuses[0]
+        pod = k8s_tools.get_pod_container_statuses("pod-1", "default")
+        assert isinstance(pod, k8s_tools.PodContainerStatuses)
+        # The app container, then the native sidecar; the init container apart.
+        assert [(c.container_name, c.sidecar) for c in pod.containers] == \
+            [("container-1", False), ("proxy", True)]
+        assert [c.container_name for c in pod.init_containers] == ["init-db"]
+        assert pod.init_containers[0].state.exit_code == 0
+        assert pod.notes == []  # every init container completed
+        cs = pod.containers[0]
         assert isinstance(cs, k8s_tools.ContainerStatus)
         assert cs.container_name == "container-1"
         assert cs.ready is True
@@ -430,6 +451,13 @@ def test_get_pod_container_statuses():
         assert isinstance(cs.last_state, k8s_tools.ContainerStateTerminated)
         assert cs.last_state.reason == "OOMKilled"
         assert cs.last_state.ran_for == datetime.timedelta(hours=1)
+
+def test_a_pod_without_init_containers_reports_none_not_unknown():
+    with patch.object(k8s_tools.client, "V1Pod", SimpleNamespace):
+        pod = k8s_tools.get_pod_container_statuses("pod-2", "test")
+    assert pod.init_containers == [] and pod.notes == []
+    assert len(pod.containers) == 2
+
 
 def test_get_pod_events():
     events = k8s_tools.get_pod_events("pod-1", "default")

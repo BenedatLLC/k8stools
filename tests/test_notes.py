@@ -142,6 +142,11 @@ def test_a_log_with_nothing_to_note_is_unchanged():
     assert k8s_tools._with_log_notes("line\n", [], None) == "line\n"
 
 
+def _pod(*statuses):
+    return k8s_tools.PodContainerStatuses(pod_name="ad-1", namespace="default",
+                                          containers=list(statuses), init_containers=[])
+
+
 class _FakeCore:
     def read_namespaced_pod_log(self, **kw):
         return SimpleNamespace(data=b"2026-10-07T00:00:00Z Terminating due to OOM\n")
@@ -154,7 +159,7 @@ def test_the_live_log_tool_adds_notes_and_capture_reads_raw(monkeypatch, waiting
     state = ContainerStateWaiting(reason="CrashLoopBackOff") if waiting \
         else ContainerStateRunning(started_at=NOW)
     monkeypatch.setattr(k8s_tools, "get_pod_container_statuses",
-                        lambda pod, ns: [_status(state, _terminated(), 67)])
+                        lambda pod, ns: _pod(_status(state, _terminated(), 67)))
     text = k8s_tools.get_logs_for_pod_and_container("ad-1", "default", previous=True)
     assert text.startswith(LOG_NOTE_PREFIX) == waiting
     assert text.endswith("Terminating due to OOM\n")
@@ -168,7 +173,7 @@ def test_the_live_log_tools_raise_for_a_reclaimed_log(monkeypatch, reader):
         read_namespaced_pod_log=lambda **kw: SimpleNamespace(data=KUBELET_GONE.encode())))
     monkeypatch.setattr(k8s_tools, "_decode_log_response", lambda resp: resp.data.decode())
     monkeypatch.setattr(k8s_tools, "get_pod_container_statuses",
-                        lambda pod, ns: [_status(ContainerStateRunning(started_at=NOW), _terminated(), 3)])
+                        lambda pod, ns: _pod(_status(ContainerStateRunning(started_at=NOW), _terminated(), 3)))
     monkeypatch.setattr(k8s_tools, "_latest_pod_name_for_selector", lambda ns, sel: "ad-1")
     with pytest.raises(k8s_tools.K8sLogReclaimed):
         if reader == "pod":
@@ -243,5 +248,5 @@ def test_the_mock_fixture_shows_the_notes():
     assert mock_tools.get_node_summaries()[0].notes
     backoff = [e for e in mock_tools.get_events() if e.reason == "BackOff"][0]
     assert k8s_tools.NOTE_EVENT_BACKOFF in backoff.notes
-    [ad] = mock_tools.get_pod_container_statuses("ad-647b4947cc-s5mpm", "default")
+    [ad] = mock_tools.get_pod_container_statuses("ad-647b4947cc-s5mpm", "default").containers
     assert ad.notes == [k8s_tools.NOTE_CONTAINER_RAN_FOR]

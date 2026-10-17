@@ -112,7 +112,8 @@ def test_get_pod_container_statuses():
         pytest.skip("No pods found in namespace 'default'.")
     pod_name = pod_list[0].metadata.name
     statuses = k8s_tools.get_pod_container_statuses(pod_name, "default")
-    assert isinstance(statuses, list)
+    assert isinstance(statuses, k8s_tools.PodContainerStatuses)
+    assert statuses.init_containers is not None  # live, so always recorded
 
 def test_terminated_containers_state_how_long_they_ran():
     """Every terminated container state on a real cluster gets a ran_for equal to
@@ -123,7 +124,8 @@ def test_terminated_containers_state_how_long_they_ran():
     now = datetime.datetime.now(datetime.timezone.utc)
     found = []
     for pod in k8s_tools.get_pod_summaries():
-        for cs in k8s_tools.get_pod_container_statuses(pod.name, pod.namespace):
+        # Init containers included: a completed one is a terminated state too.
+        for cs in k8s_tools._all_statuses(k8s_tools.get_pod_container_statuses(pod.name, pod.namespace)):
             for which in ("state", "last_state"):
                 s = getattr(cs, which)
                 if isinstance(s, k8s_tools.ContainerStateTerminated) \
@@ -144,7 +146,8 @@ def test_terminated_containers_state_how_long_they_ran():
     replay = MockState(json.loads(json.dumps(capture)), frozen=False,
                        server_start_time=now - datetime.timedelta(days=1))
     for pod, cs, which, s in found:
-        back = next(c for c in replay.get_pod_container_statuses(pod.name, pod.namespace)
+        back = next(c for c in k8s_tools._all_statuses(
+                        replay.get_pod_container_statuses(pod.name, pod.namespace))
                     if c.container_name == cs.container_name)
         assert getattr(back, which).ran_for == s.ran_for
 

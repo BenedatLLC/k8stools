@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Ten models have a
+them when they matter instead of carrying them on every turn. Eleven models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -22,6 +22,8 @@ notes existed) give the same notes; captures don't store them.
 | `PodSummary` | it has restarts and isn't fully ready | last_restart is when a container last terminated (in CrashLoopBackOff, its last crash), not when it was restarted. |
 | `ContainerStatus` | waiting after a restart | Waiting with no running instance: its logs, with previous=False or True, are the last terminated instance's. |
 | `ContainerStatus` | `last_state` has `ran_for` | last_state.ran_for is how long that instance ran; restarts are further apart, by the back-off between its finished_at and the next start. |
+| `PodContainerStatuses` | `init_containers` is None | Init container statuses weren't recorded (the capture predates them, or they couldn't be read). That doesn't mean there are none: the pod spec lists any. |
+| `PodContainerStatuses` | an init container hasn't exited 0 | An init container hasn't completed. App containers don't start until every init container has exited 0. |
 | `DaemonSetSummary` | no `node_selector` | No nodeSelector, but affinity or tolerations may still limit its nodes; desired_number_scheduled is the actual count. |
 | `HpaSummary` | at `max_replicas` | At maxReplicas: it can't add replicas, whatever its metrics say. See the ScalingLimited condition. |
 | `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
@@ -107,7 +109,7 @@ the record, not the current rhythm.
 #### Returns
 
 - **`namespace`** (`str`)
-- **`workloads`** (`list[WorkloadHealth]`): the unhealthy workloads, by name. A workload is healthy when all desired pods are ready, no container is waiting, and (for a Job) no exit failed. Each has:
+- **`workloads`** (`list[WorkloadHealth]`): the unhealthy workloads, by name. A workload is healthy when all desired pods are ready, no container is waiting, every init container has completed, and (for a Job) no exit failed. A completed init container's exit 0 is not a termination; one that hasn't completed is, and the entry's `notes` name it (e.g. "Init container 'migrate': Waiting (CrashLoopBackOff)"). Native sidecars count as app containers. Each has:
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
   - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
   - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
@@ -153,8 +155,10 @@ those tools, so it answers the same way from a replayed capture.
 #### Returns
 
 - **`workload`**, **`ready`**, **`desired`**
-- **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured").
+- **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured"). Native sidecars come after the app containers, with `sidecar: true`.
+- **`init_containers`** (`list[ContainerEssentials]`): the focus pod's init containers, from its spec. Always present: `[]` means it has none.
 - **`instances`** (`list[Instance]`): every pod's containers now: `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
+- **`init_instances`** (`list[Instance]`): init container instances, in every pod, that haven't completed (exited 0), with a note; omitted when all have. When a capture didn't record init statuses, a note says so rather than this reading as "all completed". The logs of the focus pod's pending init containers are included in `logs`.
 - **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
 - **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; `available` is omitted when the log was read.
 - **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
@@ -251,10 +255,11 @@ A list of PodSummary objects, each providing a summary of a pod's status with th
 ### `get_pod_container_statuses`
 
 ```python
-get_pod_container_statuses(pod_name: str, namespace: str = 'default') -> list[ContainerStatus]
+get_pod_container_statuses(pod_name: str, namespace: str = 'default') -> PodContainerStatuses
 ```
 
-Get the status for all containers in a specified Kubernetes pod.
+The status of every container in a pod, with init containers kept apart from app
+containers.
 
 #### Parameters
 
@@ -263,8 +268,16 @@ Get the status for all containers in a specified Kubernetes pod.
 
 #### Returns
 
-list of ContainerStatus
-List of container status objects for the specified pod. Each ContainerStatus has the following fields:
+`PodContainerStatuses`:
+
+- **`pod_name`**, **`namespace`** (`str`)
+- **`containers`** (`list[ContainerStatus]`): the app containers, then any native sidecars (init containers with `restartPolicy: Always`, which run beside the app containers for the pod's life), marked `sidecar: true`. Kubernetes reports sidecars among the init containers; they're listed here because they behave like app containers.
+- **`init_containers`** (`Optional[list[ContainerStatus]]`): init containers, which run to completion, in order, before the app containers start. `[]` when the pod has none. None only when replaying a capture that didn't record them, with a note: that is "unknown", not "none". A completed init container's state is Terminated with exit code 0; that is not a crash.
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+Raises `K8sApiError` when the pod doesn't exist.
+
+Each ContainerStatus has the following fields:
 
 - **`pod_name`** (`str`): Name of the pod.
 - **`namespace`** (`str`): Namespace of the pod.
@@ -280,6 +293,7 @@ List of container status objects for the specified pod. Each ContainerStatus has
 - **`resource_requests`** (`dict[str, str]`): Describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits.
 - **`resource_limits`** (`dict[str, str]`): Describes the maximum amount of compute resources allowed.
 - **`allocated_resources`** (`dict[str, str]`): Compute resources allocated for this container by the node.
+- **`sidecar`** (`bool`): True for a native sidecar.
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
 
 ### `get_pod_events`

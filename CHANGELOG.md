@@ -11,6 +11,11 @@ dates are release-tag dates.
   where 3.x returned the kubelet's `unable to retrieve container logs for ...`
   text with a note above it. Code that already catches `K8sApiError` needs no
   change.
+- **`get_pod_container_statuses` returns a `PodContainerStatuses`**, not a list:
+  `containers` (app containers, then native sidecars) and `init_containers`. Use
+  `.containers` where you iterated the list. It raises `K8sApiError` for a pod
+  that doesn't exist (live, it leaked the client's `ApiException`; replay
+  returned `[]`).
 
 ### Changed
 - **Reclaimed logs are absent, not text** (issue #24). Agents read the kubelet's
@@ -20,6 +25,22 @@ dates are release-tag dates.
   that this is not a tool failure. In `get_workload_report`, that log tail has
   `available: false`, a `reason`, and no lines. Captures still record the
   kubelet's text, and replay raises the same error.
+- **Init containers are reported** (issue #24). Answers said "no init
+  containers" when there was one, because no tool showed them.
+  - `get_pod_container_statuses` lists them in `init_containers`, apart from the
+    app containers, so a completed init container's exit 0 can't be read as an
+    app container's termination. `[]` means none; None (with a note) means a
+    replayed capture didn't record them. Native sidecars (`restartPolicy:
+    Always`) are listed with the app containers, with `sidecar: true`, in every
+    tool.
+  - `get_namespace_health` treats an init container that hasn't completed as
+    unhealthy and names it, and ignores completed ones.
+  - `get_workload_report` adds `init_containers`, always present (`[]` when
+    none), and `init_instances` for those that haven't completed, whose logs it
+    includes.
+  - Captures record init container statuses and logs; older captures replay
+    them as not recorded. The `--mock` fixture's `postgres-0` has a completed
+    init container.
 - **Nothing claims how long event records last** (issue #24). `get_events`,
   `get_pod_events` and `get_workload_report`'s event note said records expire
   about an hour after their last update. That is the API server's default
