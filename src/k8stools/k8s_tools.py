@@ -23,6 +23,7 @@ from typing import Optional, Union, Literal, Any, Annotated, ClassVar
 from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
 import yaml
 
+import urllib3
 from kubernetes import client, config
 from kubernetes.client import V1PodSpec, ApiException
 from kubernetes.client.models.v1_container_status import V1ContainerStatus
@@ -65,6 +66,35 @@ class K8sLogReclaimed(K8sApiError):
     file is gone: the kubelet answered 200 with "unable to retrieve container logs
     for ...". Raised rather than returned, so that nothing where log content goes
     can be read as the container's output. Not a fault in the tool or the cluster."""
+
+
+def _api_error_text(e: BaseException) -> str:
+    """A Kubernetes client failure as one readable line (#25).
+
+    ``str(ApiException)`` is the status line, every response header (audit ids,
+    flow-schema uids, the date) and the raw JSON body, ~500-700 characters around
+    the one sentence that matters: ``404 Not Found: pods "x" not found``. A
+    connection failure's text names a urllib3 connection object by its address;
+    this says which server couldn't be reached, and why.
+    """
+    if isinstance(e, ApiException):
+        message = None
+        body = e.body.decode(errors="replace") if isinstance(e.body, bytes) else e.body
+        if body:
+            try:
+                message = json.loads(body).get("message")
+            except (ValueError, AttributeError):
+                message = body.strip()[:300]
+        head = " ".join(str(part) for part in (e.status, e.reason) if part)
+        return f"{head}: {message}" if message else head or "API error"
+    if isinstance(e, urllib3.exceptions.HTTPError):
+        pool = getattr(e, "pool", None)
+        where = f" at {pool.scheme}://{pool.host}:{pool.port}" if pool is not None else ""
+        reason = getattr(e, "reason", None) or e
+        # "<urllib3.connection.HTTPSConnection object at 0x7f..>: Failed to ..."
+        why = re.sub(r"^<[^>]*object at 0x[0-9a-f]+>: ", "", str(reason))
+        return f"can't reach the Kubernetes API server{where}: {why}"
+    return str(e)
 
 
 #: Environment variable naming the kubeconfig context to use, for deployments that
@@ -429,7 +459,7 @@ def get_node_summaries() -> list[NodeSummary]:
     try:
         nodes = K8S.list_node().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching nodes: {e}") from e
+        raise K8sApiError(f"Error fetching nodes: {_api_error_text(e)}") from e
     
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
     node_summaries: list[NodeSummary] = []
@@ -611,7 +641,7 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             # List pods across all namespaces
             pods = K8S.list_pod_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching pods: {e}") from e
+        raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e
 
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
 
@@ -968,7 +998,7 @@ def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> Pod
     try:
         pod = K8S.read_namespaced_pod(name=pod_name, namespace=namespace)
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching pod '{pod_name}' in namespace '{namespace}': {e}") from e
+        raise K8sApiError(f"Error fetching pod '{pod_name}' in namespace '{namespace}': {_api_error_text(e)}") from e
     # Only proceed if pod is a V1Pod instance
     if not isinstance(pod, client.V1Pod):
         raise K8sApiError(f"Unexpected type for pod: {type(pod)}")
@@ -1048,7 +1078,7 @@ def get_pod_spec(pod_name: str, namespace: str = "default") -> dict[str,Any]:
                 f"Error getting pod '{pod_name}' in namespace '{namespace}': {e}"
             ) from e
     except Exception as e:
-        raise K8sApiError(f"Unexpected error getting pod spec: {e}") from e
+        raise K8sApiError(f"Unexpected error getting pod spec: {_api_error_text(e)}") from e
 
 def print_pod_spec(pod_name: str, namespace: str = "default") -> None:
     """Pretty prints the spec for the specified pod as valid YAML."""
@@ -1120,9 +1150,9 @@ def _read_pod_log(pod_name: str, namespace: str = "default",
         # is '', never None - callers treat the two the same.
         return _decode_log_response(resp)
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching logs: {e}") from e
+        raise K8sApiError(f"Error fetching logs: {_api_error_text(e)}") from e
     except Exception as e:
-        raise K8sApiError(f"An unexpected error occurred: {e}") from e
+        raise K8sApiError(f"Error fetching logs: {_api_error_text(e)}") from e
 
 
 #: Marks a line k8stools adds to the top of a log; it is not the container's output.
@@ -1241,7 +1271,7 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
         else:
             deployments = APPS_V1_API.list_deployment_for_all_namespaces()
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching deployments: {e}") from e
+        raise K8sApiError(f"Error fetching deployments: {_api_error_text(e)}") from e
     
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
     
@@ -1314,7 +1344,7 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
         else:
             replicasets = APPS_V1_API.list_replica_set_for_all_namespaces()
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching replica sets: {e}") from e
+        raise K8sApiError(f"Error fetching replica sets: {_api_error_text(e)}") from e
 
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
 
@@ -1705,7 +1735,7 @@ def _read_workload(kind: str, name: str, namespace: str):
         if e.status == 404:
             raise K8sApiError(
                 f"{kind} '{name}' not found in namespace '{namespace}'.") from e
-        raise K8sApiError(f"Error fetching {kind} '{name}': {e}") from e
+        raise K8sApiError(f"Error fetching {kind} '{name}': {_api_error_text(e)}") from e
 
 
 def _owned_by(obj, kind: str, name: str) -> bool:
@@ -1721,7 +1751,7 @@ def _raw_revisions(kind: str, name: str, namespace: str):
         else:
             items = APPS_V1_API.list_namespaced_controller_revision(namespace=namespace).items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching revisions of {kind} '{name}': {e}") from e
+        raise K8sApiError(f"Error fetching revisions of {kind} '{name}': {_api_error_text(e)}") from e
     revisions = []
     for item in items:
         if not _owned_by(item, kind, name):
@@ -1756,7 +1786,7 @@ def _configmap_reference(ref: ConfigReference, namespace: str,
     except client.ApiException as e:
         if e.status == 404:
             return ref.model_copy(update={"exists": False})
-        raise K8sApiError(f"Error fetching ConfigMap '{ref.name}': {e}") from e
+        raise K8sApiError(f"Error fetching ConfigMap '{ref.name}': {_api_error_text(e)}") from e
     times = [m.time for m in (cm.metadata.managed_fields or []) if getattr(m, "time", None)]
     created = cm.metadata.creation_timestamp
     return ref.model_copy(update={
@@ -1905,7 +1935,7 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
             # List services across all namespaces
             services = K8S.list_service_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching services: {e}") from e
+        raise K8sApiError(f"Error fetching services: {_api_error_text(e)}") from e
 
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
     # One more list call, so "does this Service have backends?" needs no second
@@ -2042,7 +2072,7 @@ def get_endpoint_summaries(namespace: Optional[str] = None) -> list[EndpointSumm
         else:
             slices = DISCOVERY_V1_API.list_endpoint_slice_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching endpoint slices: {e}") from e
+        raise K8sApiError(f"Error fetching endpoint slices: {_api_error_text(e)}") from e
 
     merged: dict[tuple[str, str], EndpointSummary] = {}
     seen: dict[tuple[str, str], set] = {}
@@ -2203,7 +2233,7 @@ def get_ingress_summaries(namespace: Optional[str] = None) -> list[IngressSummar
             ingresses = NETWORKING_V1_API.list_ingress_for_all_namespaces().items
             services = K8S.list_service_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching ingresses: {e}") from e
+        raise K8sApiError(f"Error fetching ingresses: {_api_error_text(e)}") from e
     by_namespace: dict[str, dict[str, Any]] = {}
     for svc in services:
         by_namespace.setdefault(svc.metadata.namespace, {})[svc.metadata.name] = svc
@@ -2297,7 +2327,7 @@ def get_configmap_summaries(namespace: Optional[str] = None) -> list[ConfigMapSu
         else:
             config_maps = K8S.list_config_map_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching config maps: {e}") from e
+        raise K8sApiError(f"Error fetching config maps: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[ConfigMapSummary] = []
@@ -2386,7 +2416,7 @@ def get_statefulset_summaries(namespace: Optional[str] = None) -> list[StatefulS
         else:
             stateful_sets = APPS_V1_API.list_stateful_set_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching stateful sets: {e}") from e
+        raise K8sApiError(f"Error fetching stateful sets: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[StatefulSetSummary] = []
@@ -2466,7 +2496,7 @@ def get_daemonset_summaries(namespace: Optional[str] = None) -> list[DaemonSetSu
         else:
             daemon_sets = APPS_V1_API.list_daemon_set_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching daemon sets: {e}") from e
+        raise K8sApiError(f"Error fetching daemon sets: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[DaemonSetSummary] = []
@@ -2630,7 +2660,7 @@ def get_hpa_summaries(namespace: Optional[str] = None) -> list[HpaSummary]:
         else:
             hpas = AUTOSCALING_V2_API.list_horizontal_pod_autoscaler_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching horizontal pod autoscalers: {e}") from e
+        raise K8sApiError(f"Error fetching horizontal pod autoscalers: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[HpaSummary] = []
@@ -2829,7 +2859,7 @@ def _list_metrics(plural: str, namespace: Optional[str] = None) -> list[dict]:
             raise K8sMetricsUnavailable(
                 f"The metrics API (metrics.k8s.io) isn't available ({e.status} {e.reason}): "
                 "metrics-server is not installed or not running.") from e
-        raise K8sApiError(f"Error fetching {plural} metrics: {e}") from e
+        raise K8sApiError(f"Error fetching {plural} metrics: {_api_error_text(e)}") from e
     return body.get("items", []) if isinstance(body, dict) else []
 
 
@@ -2856,7 +2886,7 @@ def get_container_metrics(namespace: Optional[str] = None) -> list[ContainerUsag
         pods = (K8S.list_namespaced_pod(namespace=namespace) if namespace
                 else K8S.list_pod_for_all_namespaces()).items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching pods: {e}") from e
+        raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     readings = {(i["metadata"]["namespace"], i["metadata"]["name"]): i for i in items}
@@ -2910,7 +2940,7 @@ def get_node_metrics() -> list[NodeUsage]:
     try:
         nodes = {n.metadata.name: n for n in K8S.list_node().items}
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching nodes: {e}") from e
+        raise K8sApiError(f"Error fetching nodes: {_api_error_text(e)}") from e
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for item in items:
@@ -3014,7 +3044,7 @@ def get_custom_resource_definitions() -> list[CrdSummary]:
     try:
         crds = APIEXTENSIONS_V1_API.list_custom_resource_definition().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching custom resource definitions: {e}") from e
+        raise K8sApiError(f"Error fetching custom resource definitions: {_api_error_text(e)}") from e
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for crd in crds:
@@ -3058,7 +3088,7 @@ def get_custom_resource_status(group: str, plural: str, version: Optional[str] =
         except client.ApiException as e:
             if e.status == 404:
                 raise K8sApiError(f"No custom resource '{plural}.{group}' in this cluster.") from e
-            raise K8sApiError(f"Error fetching custom resource definition: {e}") from e
+            raise K8sApiError(f"Error fetching custom resource definition: {_api_error_text(e)}") from e
         version = next((v.name for v in (crd.spec.versions or []) if v.storage), None) \
             or crd.spec.versions[0].name
     api = client.CustomObjectsApi(_binding().api_client)
@@ -3070,7 +3100,7 @@ def get_custom_resource_status(group: str, plural: str, version: Optional[str] =
     except client.ApiException as e:
         if e.status == 404:
             raise K8sApiError(f"No custom resource '{plural}.{group}/{version}' in this cluster.") from e
-        raise K8sApiError(f"Error fetching {plural}.{group}: {e}") from e
+        raise K8sApiError(f"Error fetching {plural}.{group}: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
@@ -3171,7 +3201,7 @@ def get_cronjob_summaries(namespace: Optional[str] = None) -> list[CronJobSummar
         else:
             cron_jobs = BATCH_V1_API.list_cron_job_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching cron jobs: {e}") from e
+        raise K8sApiError(f"Error fetching cron jobs: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[CronJobSummary] = []
@@ -3252,7 +3282,7 @@ def get_job_summaries(namespace: Optional[str] = None) -> list[JobSummary]:
         else:
             jobs = BATCH_V1_API.list_job_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching jobs: {e}") from e
+        raise K8sApiError(f"Error fetching jobs: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     summaries: list[JobSummary] = []
@@ -3311,7 +3341,7 @@ def _latest_pod_name_for_selector(namespace: str, label_selector: str) -> Option
     try:
         pods = K8S.list_namespaced_pod(namespace=namespace, label_selector=label_selector).items
     except client.ApiException as e:
-        raise K8sApiError(f"Error listing pods for selector '{label_selector}': {e}") from e
+        raise K8sApiError(f"Error listing pods for selector '{label_selector}': {_api_error_text(e)}") from e
     if not pods:
         return None
     pods_with_ts = [p for p in pods if p.metadata.creation_timestamp]
@@ -3352,7 +3382,7 @@ def get_logs_for_cronjob(cronjob_name: str, namespace: str = "default",
     try:
         jobs = BATCH_V1_API.list_namespaced_job(namespace=namespace).items
     except client.ApiException as e:
-        raise K8sApiError(f"Error listing jobs for cronjob '{cronjob_name}': {e}") from e
+        raise K8sApiError(f"Error listing jobs for cronjob '{cronjob_name}': {_api_error_text(e)}") from e
     owned = [j for j in jobs if _cronjob_owner(j.metadata) == cronjob_name and j.metadata.creation_timestamp]
     if not owned:
         return None
@@ -3389,7 +3419,7 @@ def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
         else:
             claims = K8S.list_persistent_volume_claim_for_all_namespaces().items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching persistent volume claims: {e}") from e
+        raise K8sApiError(f"Error fetching persistent volume claims: {_api_error_text(e)}") from e
 
     # Build a map of (namespace, claim_name) -> [pod names] by scanning pod volumes.
     claim_to_pods: dict[tuple[str, str], list[str]] = {}
@@ -3483,7 +3513,7 @@ def get_events(namespace: Optional[str] = None,
         else:
             events = K8S.list_event_for_all_namespaces(field_selector=field_selector).items
     except client.ApiException as e:
-        raise K8sApiError(f"Error fetching events: {e}") from e
+        raise K8sApiError(f"Error fetching events: {_api_error_text(e)}") from e
 
     now = datetime.datetime.now(datetime.timezone.utc)
     results: list[EventSummary] = []

@@ -14,19 +14,58 @@
 This will run with either the stdio transport or the streamable http transport.
 """
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 import argparse
+import functools
 import logging
 import sys
 from pathlib import Path
 
-from .redaction import redaction_enabled, wrap_with_redaction
+import urllib3
+
+from .k8s_tools import K8sApiError, K8sConfigError, _api_error_text
+from .redaction import redact_object, redaction_enabled, wrap_with_redaction
 
 
 def get_tool_for_function(fn) -> Tool:
     tool = Tool.from_function(fn, structured_output=True)
     #return_type = fn.__annotations__['return']
     return tool
+
+
+def report_anticipated_errors(fn, redact: bool):
+    """Raise a tool's anticipated failures as ``ToolError``, keeping their text (#25).
+
+    The MCP library passes an exception's message to the client only for a
+    ``ToolError``; anything else is treated as a crash, and the client sees just
+    "Error executing tool <name>". Every ``K8sApiError`` (a missing pod, a
+    forbidden list, no metrics-server, a reclaimed log, a capture that predates a
+    field), a ``K8sConfigError`` (no usable cluster configuration) and a failure
+    to reach the API server is anticipated, and an agent needs its reason to act
+    on it. The message goes through redaction like a result, since it can carry an
+    API error body. Anything else stays a crash: generic to the client, with its
+    traceback in the server log. Python callers still get the original exceptions.
+    """
+    def client_message(text: str) -> str:
+        return redact_object(text)[0] if redact else text
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (K8sApiError, K8sConfigError) as e:
+            raise ToolError(client_message(str(e))) from e
+        except urllib3.exceptions.HTTPError as e:
+            raise ToolError(client_message(_api_error_text(e))) from e
+    return wrapper
+
+
+def build_tools(selected: list, redact: bool) -> list[Tool]:
+    """The MCP tools for ``selected`` functions: results redacted when ``redact``,
+    anticipated failures reported with their reason."""
+    fns = [wrap_with_redaction(fn) for fn in selected] if redact else list(selected)
+    return [get_tool_for_function(report_anticipated_errors(fn, redact)) for fn in fns]
 
 def main():
     parser = argparse.ArgumentParser(description="Run the MCP server.")
@@ -130,11 +169,9 @@ def main():
     if redact:
         logging.info("Secret redaction of tool output is ENABLED (use --no-redact or "
                      "K8STOOLS_REDACT=0 to disable)")
-        fns = [wrap_with_redaction(fn) for fn in selected]
     else:
         logging.warning("Secret redaction of tool output is DISABLED")
-        fns = list(selected)
-    wrapped_tools = [get_tool_for_function(fn) for fn in fns]
+    wrapped_tools = build_tools(selected, redact)
 
     mcp = MCPServer(
         name="k8stools-"+args.transport,

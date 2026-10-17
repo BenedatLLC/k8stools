@@ -20,6 +20,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "rich>=14.0.0",
+    "urllib3>=2.0",
 ]
 
 urls = { "Homepage" = "https://github.com/BenedatLLC/k8stools", "Changelog" = "https://github.com/BenedatLLC/k8stools/blob/main/CHANGELOG.md" }

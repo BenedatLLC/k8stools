@@ -3,6 +3,35 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.0.1 — unreleased
+
+### Issues fixed
+- [#25](https://github.com/BenedatLLC/k8stools/issues/25): MCP server hides every
+  K8sApiError's message: clients see only 'Error executing tool <name>'.
+
+### Fixed
+- **MCP clients see why a tool call failed** (issue #25). The MCP library passes
+  an exception's text to the client only for its `ToolError`, and reports
+  anything else as a crash, so every anticipated k8stools failure reached
+  agents as `Error executing tool <name>`: a missing pod, a forbidden list,
+  metrics-server absent, a capture that predates a field, and 4.0's reclaimed
+  log, whose explanation exists for agents. The server now reports
+  `K8sApiError`, `K8sConfigError` and failures to reach the API server with
+  their message, redacted like a result. Unexpected exceptions stay generic.
+  This was true of every earlier release; Python callers are unaffected.
+- **Kubernetes API errors are one line.** Messages built from the client's
+  exception carried its whole text, ~500-700 characters of response headers
+  and raw JSON around one sentence. They now read e.g. `Error fetching pod
+  'x' in namespace 'default': 404 Not Found: pods "x" not found`.
+- **An unreachable API server is named**: `can't reach the Kubernetes API
+  server at https://...: Failed to establish a new connection: [Errno 111]
+  Connection refused`, instead of a connection object's repr. The log readers
+  reported it as "An unexpected error occurred"; it's now "Error fetching logs".
+
+### Changed
+- `urllib3` is a declared dependency (it was already installed by `kubernetes`),
+  since k8stools now imports it directly.
+
 ## 4.0.0 — 2026-10-17
 
 ### Issues fixed

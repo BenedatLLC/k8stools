@@ -42,6 +42,7 @@ tests/
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
+  test_mcp_errors.py         - Anticipated failures reach MCP clients with their reason; crashes stay generic; one-line API errors
   test_version.py            - Asserts pyproject and package __version__ agree
 ```
 
@@ -219,9 +220,22 @@ cadence). Moving one out of a description is fine; dropping it isn't.
 ## Error handling
 
 ```python
-raise K8sConfigError("Could not load kube config")   # config/connection problems
-raise K8sApiError(f"Error fetching pods: {e}")        # API operation failures
+raise K8sConfigError("Could not load kube config")                   # config/connection problems
+raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e  # API operation failures
 ```
+
+Build a message from a Kubernetes client exception with `_api_error_text(e)`, never
+`{e}`: `str(ApiException)` is ~700 characters of response headers and raw JSON
+around the one sentence that matters (`404 Not Found: pods "x" not found`), and a
+urllib3 connection error names an object by its address. (#25)
+
+**These messages reach agents.** The MCP library passes an exception's text to the
+client only for its `ToolError`; anything else is reported as a crash, "Error
+executing tool <name>". `mcp_server.report_anticipated_errors` turns `K8sApiError`,
+`K8sConfigError` and urllib3 connection errors into `ToolError` (message redacted
+when redaction is on) and leaves every other exception a crash. So raise a
+`K8sApiError` subclass for any failure an agent should read and act on, and write
+its message for that reader. Python callers get the original exceptions.
 
 ## Cluster binding and the global API clients
 

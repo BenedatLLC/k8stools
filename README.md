@@ -326,6 +326,15 @@ Environment variables:
 | `K8STOOLS_CONTEXT` | Kubeconfig context, when `--context` isn't given |
 | `K8STOOLS_REDACT=0` | Turns redaction off, like `--no-redact` |
 
+### When a tool call fails
+
+A failed call comes back to the client as an error result with the reason, for
+example `404 Not Found: pods "x" not found`, a permission error naming what the
+account can't list, `can't reach the Kubernetes API server at ...`, or why a
+log can't be read, so an agent can correct itself instead of retrying blindly.
+The reason is redacted like any result. An unexpected failure (a bug) shows
+only `Error executing tool <name>`, and its details go to the server log.
+
 ### Selecting a cluster
 
 Each server answers from exactly one cluster, chosen at startup:

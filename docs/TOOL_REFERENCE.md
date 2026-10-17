@@ -54,6 +54,24 @@ Captures store logs without these lines, and replay adds them for the replayed
 state. Strip lines starting with `[k8stools] note: ` (the constant
 `k8s_tools.LOG_NOTE_PREFIX`) to get the container's output alone.
 
+## Errors
+
+A tool that can't answer raises an exception. In Python that is a `K8sApiError`
+(including `K8sLogReclaimed` and `K8sMetricsUnavailable`) or a `K8sConfigError`.
+A failure to reach the API server propagates as the HTTP client's error, except
+from the log readers, which raise `K8sApiError`.
+
+Over MCP, these come back as an error result (`is_error: true`) whose text is the
+reason, after the library's `Error executing tool <name>: ` prefix, e.g.:
+
+- `Error fetching pod 'x' in namespace 'default': 404 Not Found: pods "x" not found`
+- `Error fetching pods: 403 Forbidden: pods is forbidden: User "agent" cannot list resource "pods" ...`
+- `can't reach the Kubernetes API server at https://10.0.0.1:6443: Failed to establish a new connection: [Errno 111] Connection refused`
+- the reclaimed-log explanation (see above).
+
+The text is redacted like a result. An unexpected exception (a bug) shows only
+`Error executing tool <name>`, with the traceback in the server's log.
+
 ## Tools
 
 The sections below began as the tools' long descriptions (2.4.0) and are
