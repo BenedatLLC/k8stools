@@ -199,6 +199,15 @@ def test_capture_records_init_statuses_and_their_logs(monkeypatch):
     assert record["logs"]["migrate"] and record["previous_logs"]["migrate"]
 
 
+def test_capture_skips_a_completed_init_containers_previous_log(monkeypatch):
+    """Live, all 6 'missing previous logs' were completed init containers."""
+    done = _completed("wait-for-kafka").model_copy(update={"restart_count": 16})
+    record = _capture_one_pod(monkeypatch, lambda p, ns: PodContainerStatuses(
+        pod_name=p, namespace=ns, containers=[_running_app()], init_containers=[done]))
+    assert record["logs"]["wait-for-kafka"]
+    assert "wait-for-kafka" not in record.get("previous_logs", {})
+
+
 def test_an_unreadable_pod_records_no_init_statuses_rather_than_none(monkeypatch):
     def fail(p, ns):
         raise k8s_tools.K8sApiError("forbidden")

@@ -56,7 +56,9 @@ dates are release-tag dates.
   - `get_workload_report` adds `init_containers`, always present (`[]` when
     none), and `init_instances` for those that haven't completed, whose logs it
     includes.
-  - Captures record init container statuses and logs; older captures replay
+  - Captures record init container statuses and logs (previous logs only for
+    init containers that haven't completed: a completed one's is rarely kept,
+    and asking for it filled the capture summary with missing logs); older captures replay
     them as not recorded. The `--mock` fixture's `postgres-0` has a completed
     init container.
 - **Restart history is said to be missing, not estimated** (issue #24). Answers

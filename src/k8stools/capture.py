@@ -381,7 +381,11 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
                 if logs is not None:
                     record["logs"][status.container_name] = redactor(logs)
                     stats.logs_captured += 1
-            if include_previous_logs and status.restart_count > 0:
+            # A completed init container's previous instance is rarely kept, and
+            # isn't evidence of anything: one that is failing, like an app
+            # container, is where the diagnosis is.
+            completed_init = status in (init_statuses or []) and k8s_tools._init_completed(status)
+            if include_previous_logs and status.restart_count > 0 and not completed_init:
                 # A missing previous instance is expected - it may have been
                 # garbage-collected - so this is non-fatal, but it is counted.
                 previous = _safe(k8s_tools._read_pod_log, summary.name,
