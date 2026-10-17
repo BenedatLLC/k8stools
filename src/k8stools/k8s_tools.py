@@ -619,13 +619,20 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
         pod_name = pod.metadata.name
         pod_namespace = pod.metadata.namespace
         
-        total_containers = len(pod.spec.containers)
+        # Native sidecars (init containers with restartPolicy Always) count as
+        # containers, as kubectl counts them: they run for the pod's life, and
+        # their restarts are the pod's restarts.
+        sidecars = {c.name for c in pod.spec.init_containers or []
+                    if c.restart_policy == "Always"}
+        total_containers = len(pod.spec.containers) + len(sidecars)
         ready_containers = 0
         total_restarts = 0
         latest_restart_time: Optional[datetime.datetime] = None
 
-        if pod.status and pod.status.container_statuses:
-            for container_status in pod.status.container_statuses:
+        if pod.status:
+            statuses = (pod.status.container_statuses or []) + \
+                [s for s in pod.status.init_container_statuses or [] if s.name in sidecars]
+            for container_status in statuses:
                 if container_status.ready:
                     ready_containers += 1
                 

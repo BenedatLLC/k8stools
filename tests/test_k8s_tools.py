@@ -175,11 +175,15 @@ class MockK8S:
             resource_limits={},
             allocated_resources={}
         )
-        def init_status(name, state):
+        def init_status(name, state, restarts=0, last_state=None):
             return SimpleNamespace(name=name, image="busybox:1.36", ready=name == "proxy",
-                                   restart_count=0, started=None, stop_signal=None,
-                                   state=state, last_state=None, volume_mounts=[],
+                                   restart_count=restarts, started=None, stop_signal=None,
+                                   state=state, last_state=last_state, volume_mounts=[],
                                    resources=None, allocated_resources=None)
+        proxy_crashed = SimpleNamespace(running=None, waiting=None, terminated=SimpleNamespace(
+            exit_code=1, reason="Error", message=None,
+            started_at=now - datetime.timedelta(minutes=31),
+            finished_at=now - datetime.timedelta(minutes=30)))
         completed = SimpleNamespace(running=None, waiting=None, terminated=SimpleNamespace(
             exit_code=0, reason="Completed", message=None,
             started_at=now - datetime.timedelta(days=1, seconds=5),
@@ -197,7 +201,8 @@ class MockK8S:
             spec=spec1,
             status=SimpleNamespace(container_statuses=[container_status], pod_ip="10.244.1.10",
                                    init_container_statuses=[init_status("init-db", completed),
-                                                            init_status("proxy", running)]),
+                                                            init_status("proxy", running, 2,
+                                                                        proxy_crashed)]),
             to_dict=lambda self: dict(self)
         )
         spec2 = SimpleNamespace(containers=[container1, container2], node_name="node-2",
@@ -421,9 +426,11 @@ def test_get_pod_summaries():
     assert pods[1].name == "pod-2"
     assert pods[0].namespace == "default"
     assert pods[1].namespace == "test"
-    assert pods[0].total_containers == 1
+    # pod-1: its app container and its native sidecar, as kubectl counts them; the
+    # init container that ran to completion is not counted.
+    assert pods[0].total_containers == 2
     assert pods[1].total_containers == 2
-    assert pods[0].ready_containers == 1
+    assert pods[0].ready_containers == 2
     assert pods[1].ready_containers == 2
     assert isinstance(pods[0].age, datetime.timedelta)
     # Test the new fields
@@ -431,6 +438,13 @@ def test_get_pod_summaries():
     assert pods[1].ip == "10.244.2.20"
     assert pods[0].node == "node-1"
     assert pods[1].node == "node-2"
+
+def test_a_sidecars_restarts_are_the_pods_restarts():
+    """A crash-looping sidecar used to leave restarts 0 and last_restart None."""
+    pod = k8s_tools.get_pod_summaries("default")[0]
+    assert pod.restarts == 1 + 2  # the app container's, then the sidecar's
+    assert pod.last_restart == datetime.timedelta(minutes=30)  # the sidecar's crash, the latest
+
 
 def test_get_pod_container_statuses():
     with patch.object(k8s_tools.client, "V1Pod", SimpleNamespace):

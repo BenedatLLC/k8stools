@@ -251,9 +251,9 @@ A list of PodSummary objects, each providing a summary of a pod's status with th
 
 - **`name`** (`str`): Name of the pod.
 - **`namespace`** (`str`): Namespace in which the pod is running.
-- **`total_containers`** (`int`): Total number of containers in the pod.
-- **`ready_containers`** (`int`): Number of containers currently in ready state.
-- **`restarts`** (`int`): Total number of restarts for all containers in the pod.
+- **`total_containers`** (`int`): Total number of containers in the pod: app containers plus native sidecars (init containers with `restartPolicy: Always`), as `kubectl get pods` counts them. Init containers that run to completion are not counted.
+- **`ready_containers`** (`int`): Number of those containers currently in ready state.
+- **`restarts`** (`int`): Total number of restarts for all those containers, sidecars included.
 - **`last_restart`** (`Optional[datetime.timedelta]`): Time since a container of this pod last terminated - the most recent last_state.finished_at across its containers - or None if none has. For a container waiting in CrashLoopBackOff this is its last crash, not a restart: it has not been started again yet. Taken from the kubelet's status, so it is current, unlike event records.
 - **`age`** (`datetime.timedelta`): Age of the pod (current time minus creation timestamp).
 - **`ip`** (`Optional[str]`): Pod IP address (None if not assigned).

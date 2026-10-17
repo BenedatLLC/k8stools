@@ -145,8 +145,9 @@ def _pod(name, *owner_references):
         metadata=SimpleNamespace(name=name, namespace="default",
                                  creation_timestamp=_ago(days=1),
                                  owner_references=list(owner_references) or None),
-        spec=SimpleNamespace(containers=[SimpleNamespace(name="c")], node_name="minikube"),
-        status=SimpleNamespace(container_statuses=None, pod_ip=None))
+        spec=SimpleNamespace(containers=[SimpleNamespace(name="c")], init_containers=None,
+                             node_name="minikube"),
+        status=SimpleNamespace(container_statuses=None, init_container_statuses=None, pod_ip=None))
 
 
 @pytest.fixture

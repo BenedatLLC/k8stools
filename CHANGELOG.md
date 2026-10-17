@@ -89,6 +89,13 @@ dates are release-tag dates.
   log's `?contextKeys=telescopes` came back `contextKeys=[REDACTED]`, 41 times in
   one capture, none a credential. Plural `tokens` and `credentials` still count,
   and so does `keys` in env-var and field names (`API_KEYS`).
+- **`PodSummary` counts native sidecars**, as `kubectl get pods` does:
+  `total_containers`, `ready_containers`, `restarts` and `last_restart` include
+  init containers with `restartPolicy: Always`. Before, a crash-looping sidecar
+  left the pod's `restarts` at 0 and `last_restart` empty, so
+  `get_namespace_health` could show a workload with `restarts: 0` beside a last
+  termination from that sidecar, and a pod nothing owns looked ready with an
+  unready sidecar. Captures keep the counts as recorded.
 - `get_service_summaries` and `get_ingress_summaries` treat an EndpointSlice
   client that can't be set up (`K8sConfigError`) like an unreadable EndpointSlice
   API: endpoint counts and backend readiness are None (unknown), rather than the
