@@ -405,7 +405,9 @@ NOTE_DAEMONSET_SELECTOR = (
 NOTE_RESTART_HISTORY = (
     "Kubernetes keeps only each container's restart count and last termination: "
     "earlier terminations, and when restarts began, aren't available from its API. "
-    "For restart history, see your metrics (e.g. Prometheus' "
+    "A restart count has no times in it: the restarts happened at some point since "
+    "the pod was created, not spread over its age, so a count over that age is not "
+    "a rate. For restart history, see your metrics (e.g. Prometheus' "
     "kube_pod_container_status_restarts_total) or centralized logs.")
 NOTE_RECOVERING = (
     "recovering: ready now, but a container restarted within the last 24h (its last "
@@ -3628,9 +3630,6 @@ class WorkloadHealth(_Compact):
     desired: int
     #: None when none of its pods could be found (see notes), rather than 0.
     restarts: Optional[int] = None
-    #: restarts divided by the summed age of its pods, in days: a raw count
-    #: favours old pods. A ratio of two facts, not a rate of recent restarts.
-    restarts_per_day: Optional[float] = None
     healthy: bool = False
     last_termination: Optional[Termination] = None
     #: e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit".
@@ -3691,7 +3690,7 @@ class Instance(_Compact):
     """One container instance of one pod, now."""
     pod: str
     container: str
-    #: Time since the pod was created. Its restart count covers this span.
+    #: Time since the pod was created. When its restarts happened isn't recorded.
     pod_age: Optional[Duration] = None
     state: str
     #: Time since the current instance started (if running).

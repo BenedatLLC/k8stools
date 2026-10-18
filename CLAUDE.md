@@ -176,7 +176,9 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 - **State where history stops; don't estimate past it** (#24). The API keeps one
   termination per container. Pod age (`Instance.pod_age`) and the restart count
   are facts; onset, average cadence and anything computed from event spans are
-  not offered. `NOTE_RESTART_HISTORY` points to metrics or logs instead.
+  not offered. Nor is any figure derived from a restart count and a span (#26):
+  4.0's `restarts_per_day` (restarts over pod age) was read as a steady rate and
+  so as a timeline ("crash-looping for 163 days"), though a count has no times. `NOTE_RESTART_HISTORY` points to metrics or logs instead.
 - **Ready is not healthy** (#24): a ready workload with a restart (a container
   running again after a termination) within `_RECOVERING_WINDOW` (24h) goes in
   `recovering`, in full, most recent first, capped at 10 (`recovering_more` lines

@@ -360,10 +360,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     def entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
               readings, init_pending) -> WorkloadHealth:
         pod_names = {p.name for p in pods}
-        pod_days = sum(p.age.total_seconds() for p in pods) / 86400
         w = WorkloadHealth(
             workload=label, ready=ready, desired=desired, restarts=restarts,
-            restarts_per_day=round(restarts / pod_days, 1) if restarts and pod_days else None,
             last_termination=last, memory=_memory_shape(first_pod),
             template_changed=_template_changed(api, kind, name, namespace) if kind else None,
             autoscaler=_autoscaler_line(hpa) if hpa else None,

@@ -270,7 +270,6 @@ def test_a_ready_workload_that_restarted_recently_is_recovering_not_healthy():
     assert (w.last_termination.exit_code, w.last_termination.reason) == (137, "OOMKilled")
     assert w.last_termination.finished == datetime.timedelta(minutes=10)
     assert w.memory == "limit 120Mi = request"
-    assert w.restarts_per_day == 578.0  # its one pod is a day old
     assert h.healthy == ["Deployment/cart 1/1, 3 restarts"]  # restarted, but not within 24h
     assert h.workloads == [] and k8s_tools.NOTE_RECOVERING in h.notes
 
@@ -306,6 +305,18 @@ def test_restart_history_is_said_to_be_missing_not_estimated():
     assert i.pod_age == datetime.timedelta(days=1) and i.restarts == 578
     quiet = namespace_health(_ready_state(_ready_workload("cart", datetime.timedelta(days=2), 0)))
     assert k8s_tools.NOTE_RESTART_HISTORY not in quiet.notes
+
+
+def test_no_rate_is_derived_from_a_restart_count():
+    """#26: restarts over pod age was read as a steady rate, so as a timeline
+    ("crash-looping for 163 days"). A count has no times in it; say so instead."""
+    from k8stools import mock_tools
+    h = mock_tools.get_namespace_health("default")
+    [ad] = [w for w in h.workloads if w.workload == "Deployment/ad"]
+    assert ad.restarts and "per_day" not in json.dumps(ad.model_dump(mode="json"))
+    assert k8s_tools.NOTE_RESTART_HISTORY in h.notes
+    assert "not spread over its age" in k8s_tools.NOTE_RESTART_HISTORY
+    assert "not a rate" in k8s_tools.NOTE_RESTART_HISTORY
 
 
 def test_namespace_health_is_bounded():

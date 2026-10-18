@@ -127,7 +127,8 @@ the record, not the current rhythm.
 Restart history isn't estimated. Kubernetes keeps only each container's restart
 count and last termination, so when any workload has restarts, both composite
 tools add a fixed note (`NOTE_RESTART_HISTORY`) saying that earlier terminations
-and when restarts began aren't available from the API, and pointing to metrics
+and when restarts began aren't available from the API, that a restart count
+over the pod's age is not a rate, and pointing to metrics
 (e.g. `kube_pod_container_status_restarts_total`) or centralized logs.
 
 #### Returns
@@ -137,7 +138,6 @@ and when restarts began aren't available from the API, and pointing to metrics
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
   - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
   - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
-  - **`restarts_per_day`** (`float`): `restarts` divided by the summed age of its pods, in days. A raw count favours old pods; this is a ratio of two facts, not the rate of recent restarts.
   - **`last_termination`** (`Termination`): the most recent termination across its pods and containers:
     - **`pod`**, **`container`**
     - **`exit_code`** and **`exit_meaning`**: the code's fixed meaning, e.g. 137 is "killed by SIGKILL (128+9)".
@@ -184,7 +184,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`workload`**, **`ready`**, **`desired`**
 - **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured"). Native sidecars come after the app containers, with `sidecar: true`.
 - **`init_containers`** (`list[ContainerEssentials]`): the focus pod's init containers, from its spec. Always present: `[]` means it has none.
-- **`instances`** (`list[Instance]`): every pod's containers now: `pod_age` (time since the pod was created, the span its restart count covers), `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
+- **`instances`** (`list[Instance]`): every pod's containers now: `pod_age` (time since the pod was created; when its restarts happened isn't recorded), `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
 - **`init_instances`** (`list[Instance]`): init container instances, in every pod, that haven't completed (exited 0), with a note; omitted when all have. When a capture didn't record init statuses, a note says so rather than this reading as "all completed". The logs of the focus pod's pending init containers are included in `logs`.
 - **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
 - **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; `available` is omitted when the log was read.

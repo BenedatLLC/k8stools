@@ -3,6 +3,22 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.0.2 — unreleased
+
+### Issues fixed
+- [#26](https://github.com/BenedatLLC/k8stools/issues/26): restarts_per_day is
+  read as a restart history.
+
+### Changed
+- **`WorkloadHealth.restarts_per_day` is removed** (issue #26). Restarts over
+  pod age, added in 4.0.0, was read as a steady rate and so as a timeline:
+  "3200 restarts at 19.5/day: crash-looping continuously for 163 days since the
+  rollout". A restart count has no times in it (a container looping
+  continuously restarts ~288 times a day at the 5-minute back-off cap, so that
+  figure itself showed it wasn't). `restarts` and `pod_age` remain. The
+  restart-history note now says the restarts' times aren't recorded and that a
+  count over the pod's age is not a rate.
+
 ## 4.0.1 — 2026-10-17
 
 ### Issues fixed
