@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.0.2 — unreleased
+## 4.0.2 — 2026-10-17
 
 ### Issues fixed
 - [#26](https://github.com/BenedatLLC/k8stools/issues/26): restarts_per_day is

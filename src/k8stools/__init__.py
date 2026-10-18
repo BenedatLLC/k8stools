@@ -98,4 +98,4 @@ the built-in OTel Demo snapshot by default, or your own via load_mock_state() or
 the server's --state-file option.
 """
 
-__version__ = "4.0.1"
+__version__ = "4.0.2"
