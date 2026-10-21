@@ -184,7 +184,7 @@ def test_a_capture_from_before_endpoints_has_none_and_unknown_counts():
 def test_the_composites_show_services_and_their_backends():
     health = mock_tools.get_namespace_health("default")
     assert health.services_without_ready_endpoints == ["Service/ad: 0 ready, 1 not ready"]
-    [ad] = health.workloads
+    [ad] = [w for w in health.workloads if w.workload == "Deployment/ad"]
     assert ad.services == ["Service/ad: 0 ready, 1 not ready"]
     report = mock_tools.get_workload_report("test-deployment")
     assert [(e.service, e.ready) for e in report.services] == [("test-service", 3)]

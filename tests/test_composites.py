@@ -332,7 +332,7 @@ def test_namespace_health_on_the_mock_fixture():
     [accounting] = h.recovering  # 1/1 ready, but OOM-killed 40m ago: not healthy (#24)
     assert accounting.workload == "Deployment/accounting" and accounting.restarts == 578
     assert not any(line.startswith("Deployment/accounting") for line in h.healthy)
-    [ad] = h.workloads
+    [ad, checkout] = h.workloads
     assert ad.workload == "Deployment/ad" and not ad.healthy
     assert ad.last_termination.reason == "OOMKilled"
     assert ad.template_changed == datetime.timedelta(hours=7, minutes=34)

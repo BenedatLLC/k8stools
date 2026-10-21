@@ -969,6 +969,133 @@
       "previous_logs": {
         "accounting": "unable to retrieve container logs for containerd://4f1c2b9e7a6d"
       }
+    },
+    {
+      "summary": {
+        "name": "checkout-7b8c6d5f4-q9w2r",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 1,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 691190.0,
+        "ip": "10.244.0.15",
+        "node": "minikube",
+        "owner": "ReplicaSet/checkout-7b8c6d5f4"
+      },
+      "labels": {
+        "app": "checkout",
+        "pod-template-hash": "7b8c6d5f4"
+      },
+      "container_statuses": [
+        {
+          "pod_name": "checkout-7b8c6d5f4-q9w2r",
+          "namespace": "default",
+          "container_name": "checkout",
+          "image": "ghcr.io/open-telemetry/demo:2.2.0-checkout",
+          "ready": true,
+          "restart_count": 0,
+          "started": true,
+          "stop_signal": null,
+          "state": {
+            "state_name": "Running",
+            "started_at_offset_seconds": 691180.0
+          },
+          "last_state": null,
+          "volume_mounts": [],
+          "resource_requests": {
+            "memory": "64Mi",
+            "cpu": "50m"
+          },
+          "resource_limits": {
+            "memory": "64Mi"
+          },
+          "allocated_resources": {
+            "memory": "64Mi",
+            "cpu": "50m"
+          }
+        }
+      ],
+      "init_container_statuses": [],
+      "spec": {
+        "containers": [
+          {
+            "name": "checkout",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-checkout",
+            "ports": [
+              {
+                "container_port": 5050,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "64Mi"
+              },
+              "requests": {
+                "memory": "64Mi",
+                "cpu": "50m"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_name": "minikube"
+      },
+      "logs": {
+        "checkout": "2026-09-13T01:31:02.492704000Z {\"level\":\"info\",\"msg\":\"payment went through\",\"transaction_id\":\"4f8a2c1e\"}\n2026-09-13T01:31:02.612704000Z {\"level\":\"info\",\"msg\":\"order confirmation email sent\"}\n"
+      },
+      "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "checkout-5f6d8c9b7-h4n7t",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 0,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 7200.0,
+        "ip": null,
+        "node": null,
+        "owner": "ReplicaSet/checkout-5f6d8c9b7",
+        "unscheduled": "Unschedulable: 0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling."
+      },
+      "labels": {
+        "app": "checkout",
+        "pod-template-hash": "5f6d8c9b7"
+      },
+      "container_statuses": [],
+      "init_container_statuses": [],
+      "spec": {
+        "containers": [
+          {
+            "name": "checkout",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-checkout",
+            "ports": [
+              {
+                "container_port": 5050,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "64Mi"
+              },
+              "requests": {
+                "memory": "64Mi",
+                "cpu": "50m"
+              }
+            }
+          }
+        ],
+        "restart_policy": "Always",
+        "node_selector": {
+          "disktype": "ssd"
+        }
+      },
+      "logs": {},
+      "previous_logs": {}
     }
   ],
   "deployments": [
@@ -979,7 +1106,23 @@
       "ready_replicas": 0,
       "up_to_date_relicas": 1,
       "available_replicas": 0,
-      "age_seconds": 691200.0
+      "age_seconds": 691200.0,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "False",
+          "reason": "MinimumReplicasUnavailable",
+          "message": "Deployment does not have minimum availability.",
+          "since_seconds": 27180.0
+        },
+        {
+          "type": "Progressing",
+          "status": "False",
+          "reason": "ProgressDeadlineExceeded",
+          "message": "ReplicaSet \"ad-647b4947cc\" has timed out progressing.",
+          "since_seconds": 26640.0
+        }
+      ]
     },
     {
       "name": "test-deployment",
@@ -988,7 +1131,23 @@
       "ready_replicas": 3,
       "up_to_date_relicas": 3,
       "available_replicas": 3,
-      "age_seconds": 7200.0
+      "age_seconds": 7200.0,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "True",
+          "reason": "MinimumReplicasAvailable",
+          "message": "Deployment has minimum availability.",
+          "since_seconds": 7150.0
+        },
+        {
+          "type": "Progressing",
+          "status": "True",
+          "reason": "NewReplicaSetAvailable",
+          "message": "ReplicaSet \"test-deployment-7d4b9c85f\" has successfully progressed.",
+          "since_seconds": 7150.0
+        }
+      ]
     },
     {
       "name": "accounting",
@@ -997,7 +1156,48 @@
       "ready_replicas": 1,
       "up_to_date_relicas": 1,
       "available_replicas": 1,
-      "age_seconds": 691200.0
+      "age_seconds": 691200.0,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "True",
+          "reason": "MinimumReplicasAvailable",
+          "message": "Deployment has minimum availability.",
+          "since_seconds": 2380.0
+        },
+        {
+          "type": "Progressing",
+          "status": "True",
+          "reason": "NewReplicaSetAvailable",
+          "message": "ReplicaSet \"accounting-6c9f8b7d4\" has successfully progressed.",
+          "since_seconds": 691150.0
+        }
+      ]
+    },
+    {
+      "name": "checkout",
+      "namespace": "default",
+      "total_replicas": 1,
+      "ready_replicas": 1,
+      "up_to_date_relicas": 1,
+      "available_replicas": 1,
+      "age_seconds": 691200.0,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "True",
+          "reason": "MinimumReplicasAvailable",
+          "message": "Deployment has minimum availability.",
+          "since_seconds": 691150.0
+        },
+        {
+          "type": "Progressing",
+          "status": "False",
+          "reason": "ProgressDeadlineExceeded",
+          "message": "ReplicaSet \"checkout-5f6d8c9b7\" has timed out progressing.",
+          "since_seconds": 6600.0
+        }
+      ]
     }
   ],
   "replicasets": [
@@ -1052,6 +1252,32 @@
         "ghcr.io/open-telemetry/demo:2.2.0-accounting"
       ],
       "age_seconds": 691199.0
+    },
+    {
+      "name": "checkout-7b8c6d5f4",
+      "namespace": "default",
+      "owner_deployment": "checkout",
+      "revision": 1,
+      "desired_replicas": 1,
+      "current_replicas": 1,
+      "ready_replicas": 1,
+      "images": [
+        "ghcr.io/open-telemetry/demo:2.2.0-checkout"
+      ],
+      "age_seconds": 691199.0
+    },
+    {
+      "name": "checkout-5f6d8c9b7",
+      "namespace": "default",
+      "owner_deployment": "checkout",
+      "revision": 2,
+      "desired_replicas": 1,
+      "current_replicas": 1,
+      "ready_replicas": 0,
+      "images": [
+        "ghcr.io/open-telemetry/demo:2.2.0-checkout"
+      ],
+      "age_seconds": 7200.0
     }
   ],
   "services": [
@@ -1566,6 +1792,57 @@
         "Env var values are never shown, only names. Secret contents and change times are not read.",
         "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
       ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "checkout",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 2,
+          "source": "ReplicaSet/checkout-5f6d8c9b7",
+          "age_seconds": 7200.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-checkout"
+          ],
+          "compared_with": 1,
+          "changes": [
+            {
+              "field": "node_selector[disktype]",
+              "change": "added",
+              "before": null,
+              "after": "ssd"
+            }
+          ],
+          "metadata_changes": [],
+          "rollout_restart": false
+        },
+        {
+          "revision": 1,
+          "source": "ReplicaSet/checkout-7b8c6d5f4",
+          "age_seconds": 691199.0,
+          "current": false,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-checkout"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ReplicaSet was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
     }
   ],
   "cronjobs": [
@@ -1680,6 +1957,30 @@
       "involved_name": "ad-647b4947cc-s5mpm",
       "object": "Pod/ad-647b4947cc-s5mpm",
       "message": "Container image already present on machine"
+    },
+    {
+      "last_seen_seconds": 7200.0,
+      "first_seen_seconds": 7200.0,
+      "count": 1,
+      "type": "Normal",
+      "reason": "ScalingReplicaSet",
+      "namespace": "default",
+      "involved_kind": "Deployment",
+      "involved_name": "checkout",
+      "object": "Deployment/checkout",
+      "message": "Scaled up replica set checkout-5f6d8c9b7 from 0 to 1"
+    },
+    {
+      "last_seen_seconds": 312.0,
+      "first_seen_seconds": 7200.0,
+      "count": 26,
+      "type": "Warning",
+      "reason": "FailedScheduling",
+      "namespace": "default",
+      "involved_kind": "Pod",
+      "involved_name": "checkout-5f6d8c9b7-h4n7t",
+      "object": "Pod/checkout-5f6d8c9b7-h4n7t",
+      "message": "0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling."
     }
   ],
   "metrics": {
@@ -1904,6 +2205,28 @@
         "restarts": 578,
         "last_termination_reason": "OOMKilled",
         "last_terminated_seconds": 2400.0
+      },
+      {
+        "pod": "checkout-7b8c6d5f4-q9w2r",
+        "namespace": "default",
+        "container": "checkout",
+        "cpu_millicores": 4,
+        "memory_bytes": 25165824,
+        "cpu": "4m",
+        "memory": "24Mi",
+        "cpu_request_millicores": 50,
+        "cpu_limit_millicores": null,
+        "memory_request_bytes": 67108864,
+        "memory_limit_bytes": 67108864,
+        "memory_percent_of_limit": 37.5,
+        "cpu_percent_of_request": 8.0,
+        "cpu_percent_of_limit": null,
+        "sampled_seconds": 30.0,
+        "window_seconds": 15.0,
+        "started_seconds": 691180.0,
+        "restarts": 0,
+        "last_termination_reason": null,
+        "last_terminated_seconds": null
       }
     ],
     "nodes": [

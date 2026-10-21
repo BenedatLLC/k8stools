@@ -134,9 +134,11 @@ over the pod's age is not a rate, and pointing to metrics
 #### Returns
 
 - **`namespace`** (`str`)
-- **`workloads`** (`list[WorkloadHealth]`): the unhealthy workloads, by name. A workload is healthy when all desired pods are ready, no container is waiting, every init container has completed, and (for a Job) no exit failed. A completed init container's exit 0 is not a termination; one that hasn't completed is, and the entry's `notes` name it (e.g. "Init container 'migrate': Waiting (CrashLoopBackOff)"). Native sidecars count as app containers. Each has:
+- **`workloads`** (`list[WorkloadHealth]`): the unhealthy workloads, by name. A workload is healthy when all desired pods are ready, no container is waiting, every init container has completed, every pod has a node, (for a Deployment) no condition is failing, and (for a Job) no exit failed. A completed init container's exit 0 is not a termination; one that hasn't completed is, and the entry's `notes` name it (e.g. "Init container 'migrate': Waiting (CrashLoopBackOff)"). Native sidecars count as app containers. Each has:
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
-  - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded.
+  - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded. Mid-rollout this counts the pods serving, which may be the old revision's.
+  - **`unscheduled`** (`list[str]`): its pods that have no node, with how long and the scheduler's reason: "ad-7d9f-x2k: not scheduled for 3h12m: Unschedulable: 0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector." Such a pod has no containers, so it is in no other field. From a capture made before 4.1.0 the reason reads "reason not recorded"; a pod there counts as unscheduled when it has neither a node nor any container status.
+  - **`conditions`** (`list[str]`): a Deployment's failing conditions in its controller's words: `Progressing=False` (e.g. `ProgressDeadlineExceeded`: the rollout made no progress within `progressDeadlineSeconds`, 10 minutes by default) or `ReplicaFailure=True` (e.g. `FailedCreate`: a ResourceQuota or an admission webhook rejected its pods, so there may be no pod to show).
   - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
   - **`last_termination`** (`Termination`): the most recent termination across its pods and containers:
     - **`pod`**, **`container`**
@@ -156,7 +158,7 @@ over the pod's age is not a rate, and pointing to metrics
 - **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
 - **`recovering`** (`list[WorkloadHealth]`): workloads that pass the healthy rule (all ready, nothing waiting) but have a container that restarted within the last 24 hours: its last termination finished then, and it is running again. Same fields as `workloads`, with `last_termination` the most recent restart. Most recent first, at most 10. A Job's finished container and a completed init container are not restarts. "Ready" is not "healthy": a workload that restarts and recovers would otherwise be listed as healthy, and answers quote that word.
 - **`recovering_more`** (`list[str]`): recovering workloads past the first 10, one line each, e.g. "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)".
-- **`healthy`** (`list[str]`): one line per healthy workload (ready, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
+- **`healthy`** (`list[str]`): one line per healthy workload (as defined under `workloads`, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
 - **`common_failures`** (`list[FailureGroup]`): two or more unhealthy workloads whose last terminations share an exit code, reason and memory shape. The signature also gives their instance lifetimes ("lifetimes 2s-20s"), which are shown rather than required to match: one workload's instances can live 7s, 20s and 2m on successive restarts. A shared signature is a fact worth checking for a common cause, not a conclusion.
 - **`notes`** (`list[str]`)
 
@@ -182,6 +184,7 @@ those tools, so it answers the same way from a replayed capture.
 #### Returns
 
 - **`workload`**, **`ready`**, **`desired`**
+- **`unscheduled`**, **`conditions`** (`list[str]`): as in `get_namespace_health`.
 - **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured"). Native sidecars come after the app containers, with `sidecar: true`.
 - **`init_containers`** (`list[ContainerEssentials]`): the focus pod's init containers, from its spec. Always present: `[]` means it has none.
 - **`instances`** (`list[Instance]`): every pod's containers now: `pod_age` (time since the pod was created; when its restarts happened isn't recorded), `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
@@ -276,6 +279,7 @@ A list of PodSummary objects, each providing a summary of a pod's status with th
 - **`age`** (`datetime.timedelta`): Age of the pod (current time minus creation timestamp).
 - **`ip`** (`Optional[str]`): Pod IP address (None if not assigned).
 - **`node`** (`Optional[str]`): Name of the node where the pod is running (None if not scheduled).
+- **`unscheduled`** (`Optional[str]`): For a pod with no node, why: its `PodScheduled` condition's reason and message, e.g. "Unschedulable: 0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector.", or "no scheduling decision recorded yet" (`NOT_YET_SCHEDULED`). None once it has a node, and in captures made before 4.1.0.
 - **`owner`** (`Optional[str]`): The pod's controlling owner, as "Kind/name" - the object that created and manages it, e.g. "DaemonSet/otel-collector-agent", "StatefulSet/valkey-cart", "Job/backup-29318400". None for a bare pod nobody manages. This is the direct owner only: a Deployment's pods are owned by one of its replica sets ("ReplicaSet/ad-7d9f8c6b5"), whose `owner_deployment` (`get_replicaset_summaries`) names the Deployment; likewise a Job's `owner` names its CronJob. Static (mirror) pods such as the control plane's report "Node/<node name>". Group pods into workloads by this field rather than by stripping name suffixes.
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
 
@@ -439,6 +443,7 @@ A list of DeploymentSummary objects, each providing a summary of a deployment's 
 - **`up_to_date_replicas`** (`int`): Number of replicas that are up to date.
 - **`available_replicas`** (`int`): Number of replicas that are available.
 - **`age`** (`datetime.timedelta`): Age of the deployment (current time minus creation timestamp).
+- **`conditions`** (`Optional[list[ResourceCondition]]`): Its status conditions, each with `type`, `status`, `reason`, `message` and `since` (time since its status last changed): `Available`; `Progressing` (`True` while a rollout progresses or once it completed, `False` with reason `ProgressDeadlineExceeded` when it stopped progressing); `ReplicaFailure` (`True` when pods couldn't be created, e.g. `FailedCreate` from a ResourceQuota). Mid-rollout `ready_replicas` counts the old revision's pods too, so these say whether the rollout itself is moving. None when a replayed capture didn't record them (made before 4.1.0).
 
 ### `get_replicaset_summaries`
 

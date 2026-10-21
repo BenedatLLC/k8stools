@@ -601,6 +601,9 @@ class PodSummary(BaseModel):
     ip: Optional[str] = None
     node: Optional[str] = None
     owner: Optional[str] = None  # controlling owner as "Kind/name"
+    #: Why a pod with no node isn't scheduled, from its PodScheduled condition:
+    #: "Unschedulable: 0/3 nodes are available: ...". None once it has a node.
+    unscheduled: Optional[str] = None
     notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -610,6 +613,19 @@ class PodSummary(BaseModel):
         failing = self.ready_containers < self.total_containers
         self.notes = [NOTE_POD_LAST_RESTART] if failing and self.restarts and self.last_restart else []
         return self
+
+
+#: PodSummary.unscheduled for a pod the scheduler hasn't reported on yet.
+NOT_YET_SCHEDULED = "no scheduling decision recorded yet"
+
+
+def _unscheduled_reason(status) -> str:
+    """Why a pod has no node, from its PodScheduled condition."""
+    for c in (status.conditions if status else None) or []:
+        if c.type == "PodScheduled" and c.status == "False":
+            return ": ".join(part.strip() for part in (c.reason, c.message) if part) \
+                or "PodScheduled=False"
+    return NOT_YET_SCHEDULED
 
 
 def _controller_owner(metadata) -> Optional[str]:
@@ -622,8 +638,8 @@ def _controller_owner(metadata) -> Optional[str]:
 
 def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
     """Pods, like `kubectl get pods -o wide`: ready containers, restarts,
-    last_restart (time since a container last terminated), age, IP, node, and the
-    controlling owner ("ReplicaSet/x", "StatefulSet/x", "DaemonSet/x", "Job/x"; a
+    last_restart (time since a container last terminated), age, IP, node (or why
+    it has none: unscheduled), and the controlling owner ("ReplicaSet/x", "StatefulSet/x", "DaemonSet/x", "Job/x"; a
     Deployment's pods name its ReplicaSet, whose owner_deployment names the
     Deployment). Group pods by owner, not by name. namespace: one, or all."""
     global K8S
@@ -702,6 +718,7 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
             ip=pod_ip,
             node=node_name,
             owner=_controller_owner(pod.metadata),
+            unscheduled=None if node_name else _unscheduled_reason(pod.status),
         )
         pod_summaries.append(pod_summary)
     
@@ -1245,6 +1262,16 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
                            previous=previous)
 
 
+class ResourceCondition(BaseModel):
+    """A status condition, as most operators report health (Ready, Synced, ...)."""
+    type: str
+    status: str
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    #: Time since its status last changed.
+    since: Optional[Duration] = None
+
+
 class DeploymentSummary(BaseModel):
     """A summary of a deployment's status like returned by `kubectl get deployments`"""
     name: str
@@ -1254,10 +1281,16 @@ class DeploymentSummary(BaseModel):
     up_to_date_relicas: int
     available_replicas: int
     age: Duration
+    #: Its status conditions: Available, Progressing (False with reason
+    #: ProgressDeadlineExceeded when a rollout stopped progressing) and
+    #: ReplicaFailure (pods it couldn't create). None when a replayed capture
+    #: didn't record them.
+    conditions: Optional[list[ResourceCondition]] = None
 
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]:
     """Deployments, like `kubectl get deployments`: desired, ready, up-to-date
-    and available replicas, and age. namespace: one, or all if omitted."""
+    and available replicas, age, and conditions (e.g. Progressing=False when a
+    rollout passed its deadline). namespace: one, or all if omitted."""
     global APPS_V1_API
     
     # Load Kubernetes configuration and initialize client only once
@@ -1299,7 +1332,11 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
             ready_replicas=ready_replicas,
             up_to_date_relicas=up_to_date_replicas,
             available_replicas=available_replicas,
-            age=age
+            age=age,
+            conditions=[ResourceCondition(
+                type=c.type, status=c.status, reason=c.reason, message=c.message,
+                since=current_time_utc - c.last_transition_time if c.last_transition_time else None)
+                for c in getattr(deployment.status, "conditions", None) or []],
         )
         deployment_summaries.append(deployment_summary)
     
@@ -2999,16 +3036,6 @@ class CrdSummary(BaseModel):
     age: Duration
 
 
-class ResourceCondition(BaseModel):
-    """A status condition, as most operators report health (Ready, Synced, ...)."""
-    type: str
-    status: str
-    reason: Optional[str] = None
-    message: Optional[str] = None
-    #: Time since its status last changed.
-    since: Optional[Duration] = None
-
-
 class CustomResourceStatus(BaseModel):
     """One custom resource's health: its conditions and whether its controller
     has caught up with its spec. No spec, no other status."""
@@ -3631,6 +3658,12 @@ class WorkloadHealth(_Compact):
     #: None when none of its pods could be found (see notes), rather than 0.
     restarts: Optional[int] = None
     healthy: bool = False
+    #: Its pods that have no node, e.g. "ad-7d9f-x2k: not scheduled for 3h12m:
+    #: Unschedulable: 0/3 nodes are available: ...". Not counted in ready.
+    unscheduled: list[str] = Field(default_factory=list)
+    #: A Deployment's failing conditions, as its controller states them:
+    #: "Progressing=False (ProgressDeadlineExceeded): ...", "ReplicaFailure=True ...".
+    conditions: list[str] = Field(default_factory=list)
     last_termination: Optional[Termination] = None
     #: e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit".
     memory: Optional[str] = None
@@ -3744,6 +3777,9 @@ class WorkloadReport(_Compact):
     workload: str
     ready: int
     desired: int
+    #: As in get_namespace_health: pods with no node, and failing Deployment conditions.
+    unscheduled: list[str] = Field(default_factory=list)
+    conditions: list[str] = Field(default_factory=list)
     containers: list[ContainerEssentials] = Field(default_factory=list)
     #: Init containers of the focus pod's spec; [] when it has none.
     init_containers: Optional[list[ContainerEssentials]] = None
@@ -3772,7 +3808,8 @@ def get_namespace_health(namespace: str = "default") -> NamespaceHealth:
     (Deployment, StatefulSet, DaemonSet, Job, or a pod nothing owns) in full:
     ready/desired, restarts, the last termination (exit code and its meaning
     beside Kubernetes' recorded reason), instance lifetime and restart gap,
-    memory limit vs request, when the pod template last changed. Ready ones
+    memory limit vs request, when the pod template last changed, pods not
+    scheduled, a Deployment's failing conditions. Ready ones
     that restarted within 24h as recovering, the same way; healthy ones in a
     line each. Workloads failing the same way are grouped. Facts only."""
     from .composites import namespace_health

@@ -228,4 +228,5 @@ class TestMockConsistency:
                 continue
             current = owned[-1]
             assert current.desired_replicas == deployment.total_replicas
-            assert current.ready_replicas == deployment.ready_replicas
+            # Mid-rollout (checkout), older replica sets still hold ready pods.
+            assert sum(r.ready_replicas for r in owned) == deployment.ready_replicas

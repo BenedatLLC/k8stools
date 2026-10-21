@@ -49,7 +49,8 @@ def test_builtin_loads_and_is_a_coherent_cluster():
     assert any(p.name == "ad-647b4947cc-s5mpm" for p in pods)
     # Every pod in the capture answers the per-pod tools.
     for pod in pods:
-        assert state.get_pod_container_statuses(pod.name, pod.namespace).containers
+        assert state.get_pod_container_statuses(pod.name, pod.namespace).containers \
+            or pod.unscheduled  # no node, so no containers yet
         assert state.get_pod_spec(pod.name, pod.namespace)
 
 

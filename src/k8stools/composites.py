@@ -88,19 +88,56 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _workloads(api, namespace: str) -> list[tuple[str, str, int, int]]:
-    """(kind, name, ready, desired) for each workload in the namespace."""
+def _workloads(api, namespace: str) -> list[tuple[str, str, int, int, list[str]]]:
+    """(kind, name, ready, desired, failing conditions) for each workload in the
+    namespace."""
     out = []
     for d in api.get_deployment_summaries(namespace):
-        out.append(("Deployment", d.name, d.ready_replicas, d.total_replicas))
+        out.append(("Deployment", d.name, d.ready_replicas, d.total_replicas,
+                     _failing_conditions(d.conditions or [])))
     for s in api.get_statefulset_summaries(namespace):
-        out.append(("StatefulSet", s.name, s.ready_replicas, s.total_replicas))
+        out.append(("StatefulSet", s.name, s.ready_replicas, s.total_replicas, []))
     for d in api.get_daemonset_summaries(namespace):
-        out.append(("DaemonSet", d.name, d.number_ready, d.desired_number_scheduled))
+        out.append(("DaemonSet", d.name, d.number_ready, d.desired_number_scheduled, []))
     for j in api.get_job_summaries(namespace):
         # A Job is "ready" when it has succeeded; desired is 1 run.
-        out.append(("Job", j.name, 1 if j.succeeded else 0, 1))
+        out.append(("Job", j.name, 1 if j.succeeded else 0, 1, []))
     return out
+
+
+#: Deployment conditions in the state that means a rollout can't make progress:
+#: past its progress deadline, or unable to create pods (quota, admission).
+_FAILING_CONDITIONS = {("Progressing", "False"), ("ReplicaFailure", "True")}
+
+
+def _failing_conditions(conditions) -> list[str]:
+    """A Deployment's failing conditions in its controller's words, e.g.
+    'Progressing=False (ProgressDeadlineExceeded): ReplicaSet "x" has timed out
+    progressing.'"""
+    return [f"{c.type}={c.status}" + (f" ({c.reason})" if c.reason else "")
+            + (f": {c.message[:200]}" if c.message else "")
+            for c in conditions if (c.type, c.status) in _FAILING_CONDITIONS]
+
+
+#: WorkloadHealth.unscheduled when a capture recorded no reason (before 4.1.0).
+_REASON_NOT_RECORDED = "reason not recorded (the capture predates k8stools 4.1.0)"
+
+
+def _unscheduled(pod, statuses) -> Optional[str]:
+    """Why a pod isn't scheduled, or None if it is.
+
+    A pod is unscheduled when it has no node. Captures before 4.1.0 recorded no
+    reason; there, a pod with no node and no container statuses at all hasn't
+    been scheduled either (a scheduled pod's kubelet reports its containers).
+    """
+    if pod.node is not None or (pod.unscheduled is None
+                                and (statuses.containers or statuses.init_containers)):
+        return None
+    return pod.unscheduled or _REASON_NOT_RECORDED
+
+
+def _unscheduled_line(pod, reason: str) -> str:
+    return f"{pod.name}: not scheduled for {_human(pod.age)}: {reason}"
 
 
 #: Generated pod-name suffixes: a ReplicaSet's, Job's or DaemonSet's pods are
@@ -115,20 +152,20 @@ NOTE_MATCHED_BY_NAME = (
 
 
 def _match_by_name(pod_name: str, rs_owner: dict[str, str],
-                   workloads: list[tuple[str, str, int, int]]) -> Optional[tuple[str, str]]:
+                   workloads: list[tuple]) -> Optional[tuple[str, str]]:
     """The workload a pod's generated name points to, for a pod with no owner."""
     for rs, deployment in rs_owner.items():
         if deployment and re.fullmatch(re.escape(rs) + _RANDOM_SUFFIX, pod_name):
             return ("Deployment", deployment)
     for kind, suffix in (("StatefulSet", _ORDINAL_SUFFIX), ("Job", _RANDOM_SUFFIX),
                          ("DaemonSet", _RANDOM_SUFFIX)):
-        for k, name, _, _ in workloads:
+        for k, name, *_ in workloads:
             if k == kind and re.fullmatch(re.escape(name) + suffix, pod_name):
                 return (kind, name)
     return None
 
 
-def _pods_by_workload(api, namespace: str, workloads: list[tuple[str, str, int, int]]
+def _pods_by_workload(api, namespace: str, workloads: list[tuple]
                       ) -> tuple[dict[tuple[str, str], list], list, bool]:
     """Pods grouped by their workload; pods no workload owns; and whether any
     pod was matched by name.
@@ -309,11 +346,16 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     entries: list[WorkloadHealth] = []
     recovering: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
+    unschedulable: dict[str, list[str]] = {}  # workloads by why their pods aren't scheduled
 
-    def assess(label, kind, name, ready, desired, pods):
-        terminations, first_pod, waiting, init_pending = [], [], False, []
+    def assess(label, kind, name, ready, desired, pods, conditions):
+        terminations, first_pod, waiting, init_pending, unscheduled = [], [], False, [], {}
         for i, pod in enumerate(pods):
             statuses = api.get_pod_container_statuses(pod.name, namespace)
+            # A pod with no node has no containers to wait on: without this, the
+            # old pods of a rollout that can't schedule its new one read healthy.
+            if reason := _unscheduled(pod, statuses):
+                unscheduled[_unscheduled_line(pod, reason)] = reason
             for s in statuses.containers:
                 if i == 0:
                     first_pod.append(s)
@@ -337,7 +379,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         hpa = autoscalers.get(label)
         pod_names = {p.name for p in pods}
         readings = [u for u in usage or [] if u.pod in pod_names]
-        if ready >= desired and not waiting and not failed_job:
+        if ready >= desired and not (waiting or failed_job or unscheduled or conditions):
             # A restart: a container running again after a termination (not a
             # Job's container that finished, nor a completed init container).
             restart = _latest([t for t in terminations if t.restart_gap is not None])
@@ -354,8 +396,12 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                                  + (f", memory at {peak}% of limit"
                                     if peak is not None and peak >= _NEAR_LIMIT_PERCENT else ""))
             return
-        entries.append(entry(label, kind, name, ready, desired, pods, restarts, last,
-                             first_pod, hpa, readings, init_pending))
+        w = entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
+                  readings, init_pending)
+        w.unscheduled, w.conditions = list(unscheduled), conditions
+        for reason in set(unscheduled.values()):
+            unschedulable.setdefault(reason, []).append(label)
+        entries.append(w)
 
     def entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
               readings, init_pending) -> WorkloadHealth:
@@ -380,11 +426,12 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
             last.notes = []
         return w
 
-    for kind, name, ready, desired in workloads:
-        assess(f"{kind}/{name}", kind, name, ready, desired, grouped.get((kind, name), []))
+    for kind, name, ready, desired, conditions in workloads:
+        assess(f"{kind}/{name}", kind, name, ready, desired, grouped.get((kind, name), []),
+               conditions)
     for pod in standalone:
         assess(f"Pod/{pod.name}", None, pod.name, pod.ready_containers,
-               pod.total_containers, [pod])
+               pod.total_containers, [pod], [])
 
     entries.sort(key=lambda w: w.workload)
     recovering.sort(key=lambda w: w.last_termination.finished)
@@ -408,6 +455,11 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
                            f"{memory or 'unknown'}, "
                            f"{_lifetimes([m.last_termination for m in members])}"),
                 workloads=[m.workload for m in members]))
+    # Pods that can't be scheduled for the same reason (a node selector no node
+    # matches, set on several workloads at once) are one failure too.
+    failures += [FailureGroup(signature=f"not scheduled: {reason}", workloads=sorted(members))
+                 for reason, members in unschedulable.items()
+                 if len(members) > 1 and reason != _REASON_NOT_RECORDED]
     result = NamespaceHealth(
         namespace=namespace, workloads=entries, recovering=recovering[:_MAX_RECOVERING],
         recovering_more=recovering_more, healthy=healthy_lines,
@@ -446,7 +498,7 @@ _MAX_EVENTS = 20
 
 
 def _find_kind(api, name: str, namespace: str) -> str:
-    found = [kind for kind, n, _, _ in _workloads(api, namespace) if n == name]
+    found = [kind for kind, n, *_ in _workloads(api, namespace) if n == name]
     if not found:
         raise K8sApiError(f"No Deployment, StatefulSet, DaemonSet or Job named '{name}' "
                           f"in namespace '{namespace}'.")
@@ -589,13 +641,14 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         raise K8sApiError(f"Unsupported kind '{kind}': expected one of {', '.join(_KINDS)}.")
     kind = kind or _find_kind(api, name, namespace)
     workloads = _workloads(api, namespace)
-    matches = [(r, d) for k, n, r, d in workloads if (k, n) == (kind, name)]
+    matches = [(r, d, c) for k, n, r, d, c in workloads if (k, n) == (kind, name)]
     if not matches:
         raise K8sApiError(f"{kind} '{name}' not found in namespace '{namespace}'.")
-    ready, desired = matches[0]
+    ready, desired, conditions = matches[0]
     grouped, _, by_name = _pods_by_workload(api, namespace, workloads)
     pods = grouped.get((kind, name), [])
-    report = WorkloadReport(workload=f"{kind}/{name}", ready=ready, desired=desired)
+    report = WorkloadReport(workload=f"{kind}/{name}", ready=ready, desired=desired,
+                            conditions=conditions)
     if by_name and pods and all(p.owner is None for p in pods):
         report.notes.append(NOTE_MATCHED_BY_NAME)
 
@@ -616,6 +669,8 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                 if not _init_completed(s)]
 
     for pod in pods:
+        if reason := _unscheduled(pod, statuses_by_pod[pod.name]):
+            report.unscheduled.append(_unscheduled_line(pod, reason))
         report.instances.extend(instance(pod, s) for s in statuses_by_pod[pod.name].containers)
         report.init_instances.extend(instance(pod, s) for s in pending_init(pod))
     if any(st.init_containers is None for st in statuses_by_pod.values()):

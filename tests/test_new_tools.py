@@ -342,4 +342,4 @@ def test_mock_tools_new_functions():
     # The capture keeps one flat event list, so a cluster-wide sweep also sees the
     # pod-scoped events that get_pod_events returns - including Normal ones.
     normal = mock_tools.get_events(event_type="Normal")
-    assert [e.reason for e in normal] == ["Pulled"]
+    assert sorted(e.reason for e in normal) == ["Pulled", "ScalingReplicaSet"]

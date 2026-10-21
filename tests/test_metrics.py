@@ -244,7 +244,7 @@ def test_capture_records_unavailable_metrics_and_fails_on_other_errors(monkeypat
 def test_the_composites_show_usage_and_its_caveats():
     mock_tools.load_mock_state()  # the built-in fixture, whatever an earlier test loaded
     health = mock_tools.get_namespace_health("default")
-    [ad] = health.workloads
+    [ad] = [w for w in health.workloads if w.workload == "Deployment/ad"]
     assert ad.usage == ["ad: memory 140Mi of 300Mi (46.7%), cpu 850m"]
     assert any("this sample is from the current one, started 58s ago" in n for n in ad.notes)
     report = mock_tools.get_workload_report("test-deployment")

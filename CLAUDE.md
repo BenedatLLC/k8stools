@@ -35,6 +35,7 @@ tests/
   test_notes.py              - Description budgets, notes on results and logs, notes in replay
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
+  test_stuck_rollouts.py     - Unscheduled pods and failing Deployment conditions make a workload unhealthy (#27)
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
@@ -183,6 +184,14 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   running again after a termination) within `_RECOVERING_WINDOW` (24h) goes in
   `recovering`, in full, most recent first, capped at 10 (`recovering_more` lines
   after). A fixed window, stated in `NOTE_RECOVERING`; no "abnormal" threshold.
+- **Not scheduled is not healthy** (#27): a pod with no node has no container
+  statuses, so nothing in it waits, and mid-rollout the old pods keep `ready >=
+  desired`. A pod with no node makes its workload unhealthy, with the
+  scheduler's reason (`PodSummary.unscheduled`), and so does a Deployment's
+  `Progressing=False` or `ReplicaFailure=True` (the latter with no pod at all).
+  `ready` stays the count of pods serving. Captures before 4.1.0 have no reason:
+  there a pod with no node and no container status counts, with "reason not
+  recorded" (not node alone: test captures leave running pods' node unset).
 - **Init containers apart** (#24): a completed init container (exit 0) is never
   a termination; one that hasn't completed makes the workload unhealthy and is
   named. `WorkloadReport.init_containers` is always serialized (`_keep_empty`), so

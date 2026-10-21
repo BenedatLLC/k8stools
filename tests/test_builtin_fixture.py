@@ -56,6 +56,8 @@ def test_every_owner_is_in_the_fixture_and_runs_the_pods_images(state):
     assert {p.owner.partition("/")[0] for p in owned} >= {"ReplicaSet", "DaemonSet", "Job"}
     for pod in owned:
         images = [s.image for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers]
+        if pod.unscheduled:  # no node, so no containers yet: its spec names the images
+            images = [c["image"] for c in state.get_pod_spec(pod.name, pod.namespace)["containers"]]
         expected = _owned_images(state, pod)
         assert expected is None or images == expected, pod.name
 
@@ -67,13 +69,14 @@ def _ready_pods(state, namespace, owner):
 
 def test_every_workload_has_its_pods(state):
     for deployment in state.get_deployment_summaries():
-        current = state.get_replicaset_summaries(
-            deployment.namespace, deployment=deployment.name)[-1]
-        owner = f"ReplicaSet/{current.name}"
-        assert len([p for p in state.get_pod_summaries(deployment.namespace)
-                    if p.owner == owner]) == current.current_replicas, deployment.name
-        assert _ready_pods(state, deployment.namespace, owner) == \
-            deployment.ready_replicas == current.ready_replicas, deployment.name
+        # Mid-rollout (checkout), the old replica set's pods are the ready ones.
+        owned = state.get_replicaset_summaries(deployment.namespace, deployment=deployment.name)
+        for rs in owned:
+            owner = f"ReplicaSet/{rs.name}"
+            assert len([p for p in state.get_pod_summaries(deployment.namespace)
+                        if p.owner == owner]) == rs.current_replicas, rs.name
+            assert _ready_pods(state, deployment.namespace, owner) == rs.ready_replicas, rs.name
+        assert sum(rs.ready_replicas for rs in owned) == deployment.ready_replicas, deployment.name
     for sts in state.get_statefulset_summaries():
         assert _ready_pods(state, sts.namespace, f"StatefulSet/{sts.name}") == \
             sts.ready_replicas, sts.name
@@ -87,6 +90,8 @@ def test_spec_and_status_name_the_same_containers(state):
         spec = [c["name"] for c in state.get_pod_spec(pod.name, pod.namespace)["containers"]]
         statuses = [s.container_name
                     for s in state.get_pod_container_statuses(pod.name, pod.namespace).containers]
+        if pod.unscheduled:  # the kubelet reports a pod's containers once it has a node
+            statuses = spec if statuses == [] and pod.node is None else None
         assert spec == statuses and len(spec) == pod.total_containers, pod.name
 
 

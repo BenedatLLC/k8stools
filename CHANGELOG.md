@@ -3,6 +3,39 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.1.0 — unreleased
+
+### Issues fixed
+- [#27](https://github.com/BenedatLLC/k8stools/issues/27): get_namespace_health
+  counts a workload with a stuck rollout as healthy.
+
+### Changed
+- **A rollout that can't progress is not healthy** (issue #27). A Deployment
+  whose new pod couldn't be scheduled (an invalid nodeSelector on the ITBench
+  otel-demo) was listed healthy: its old pod was still ready, and a pod with no
+  node has no containers to be waiting. `get_namespace_health` now counts a
+  workload with a pod that has no node as unhealthy, and so is a Deployment
+  whose `Progressing` condition is `False` (e.g. `ProgressDeadlineExceeded`)
+  or whose `ReplicaFailure` is `True` (e.g. a ResourceQuota rejected its pods,
+  so there's no pod to find). `ready` still counts the pods serving.
+  Workloads not scheduled for the same reason are grouped in `common_failures`.
+
+### Added
+- `PodSummary.unscheduled`: why a pod has no node, from its `PodScheduled`
+  condition.
+- `DeploymentSummary.conditions`: `Available`, `Progressing` and
+  `ReplicaFailure`, with reason, message and how long ago each changed.
+- `WorkloadHealth` and `WorkloadReport` gain `unscheduled` (one line per pod:
+  how long, and the scheduler's reason) and `conditions` (a Deployment's
+  failing conditions, in its controller's words). `get_workload_report`
+  previously showed an unscheduled pod nowhere, since it has no instances.
+- The `--mock` fixture has a `checkout` Deployment whose new pod can't be
+  scheduled, past its progress deadline, and every Deployment has conditions.
+
+Captures made before 4.1.0 have neither field: an unscheduled pod is still
+found (no node and no container statuses), with its reason "not recorded", and
+`DeploymentSummary.conditions` is None.
+
 ## 4.0.2 — 2026-10-17
 
 ### Issues fixed
