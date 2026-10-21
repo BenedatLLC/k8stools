@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.1.0 — unreleased
+## 4.1.0 — 2026-10-21
 
 ### Issues fixed
 - [#27](https://github.com/BenedatLLC/k8stools/issues/27): get_namespace_health
