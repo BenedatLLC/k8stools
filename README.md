@@ -919,7 +919,21 @@ uv run pytest -v
 
 # Integration tests against a real cluster (skipped automatically if unreachable)
 KUBECONFIG=~/.kube/your-config.yaml uv run pytest tests/test_k8s_tools_realk8s.py -v
+
+# Integration tests that write to the cluster (skipped unless asked)
+K8STOOLS_LIVE_WRITE=1 KUBECONFIG=~/.kube/your-config.yaml uv run pytest tests/test_live_writes.py -v
 ```
+
+The integration tests above only read what the cluster has. The ones in
+`tests/test_live_writes.py` create the failures they check, such as a claim on a
+storage class that doesn't exist or a rollout whose new pod can't be scheduled,
+and compare the tools' output with the cluster's own messages. Each test creates
+a `k8stools-test-<random>` namespace and deletes it afterwards, so it needs
+permission to create and delete namespaces, Deployments and
+PersistentVolumeClaims. The tests pull `registry.k8s.io/pause`. Use a test
+cluster such as Minikube or kind. They take about 30 seconds. If a run is
+interrupted, remove what it left with
+`kubectl get ns -o name | grep k8stools-test- | xargs -r kubectl delete`.
 
 Planned and deferred work is in
 [docs/ROADMAP.md](https://github.com/BenedatLLC/k8stools/blob/main/docs/ROADMAP.md).
