@@ -1096,6 +1096,67 @@
       },
       "logs": {},
       "previous_logs": {}
+    },
+    {
+      "summary": {
+        "name": "quote-6c9d7f8b4-k2m8p",
+        "namespace": "default",
+        "total_containers": 1,
+        "ready_containers": 0,
+        "restarts": 0,
+        "last_restart_seconds": null,
+        "age_seconds": 1200.0,
+        "ip": null,
+        "node": null,
+        "owner": "ReplicaSet/quote-6c9d7f8b4",
+        "unscheduled": "Unschedulable: 0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. not found"
+      },
+      "labels": {
+        "app": "quote",
+        "pod-template-hash": "6c9d7f8b4"
+      },
+      "container_statuses": [],
+      "init_container_statuses": [],
+      "spec": {
+        "containers": [
+          {
+            "name": "quote",
+            "image": "ghcr.io/open-telemetry/demo:2.2.0-quote",
+            "ports": [
+              {
+                "container_port": 8090,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "memory": "40Mi"
+              },
+              "requests": {
+                "memory": "40Mi",
+                "cpu": "20m"
+              }
+            },
+            "volume_mounts": [
+              {
+                "name": "cache",
+                "mount_path": "/var/cache/quote"
+              }
+            ]
+          }
+        ],
+        "restart_policy": "Always",
+        "volumes": [
+          {
+            "name": "cache",
+            "persistent_volume_claim": {
+              "claim_name": "quote-cache"
+            }
+          }
+        ]
+      },
+      "logs": {},
+      "previous_logs": {}
     }
   ],
   "deployments": [
@@ -1198,6 +1259,31 @@
           "since_seconds": 6600.0
         }
       ]
+    },
+    {
+      "name": "quote",
+      "namespace": "default",
+      "total_replicas": 1,
+      "ready_replicas": 0,
+      "up_to_date_relicas": 1,
+      "available_replicas": 0,
+      "age_seconds": 1200.0,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "False",
+          "reason": "MinimumReplicasUnavailable",
+          "message": "Deployment does not have minimum availability.",
+          "since_seconds": 1200.0
+        },
+        {
+          "type": "Progressing",
+          "status": "False",
+          "reason": "ProgressDeadlineExceeded",
+          "message": "ReplicaSet \"quote-6c9d7f8b4\" has timed out progressing.",
+          "since_seconds": 600.0
+        }
+      ]
     }
   ],
   "replicasets": [
@@ -1278,6 +1364,19 @@
         "ghcr.io/open-telemetry/demo:2.2.0-checkout"
       ],
       "age_seconds": 7200.0
+    },
+    {
+      "name": "quote-6c9d7f8b4",
+      "namespace": "default",
+      "owner_deployment": "quote",
+      "revision": 1,
+      "desired_replicas": 1,
+      "current_replicas": 1,
+      "ready_replicas": 0,
+      "images": [
+        "ghcr.io/open-telemetry/demo:2.2.0-quote"
+      ],
+      "age_seconds": 1200.0
     }
   ],
   "services": [
@@ -1843,6 +1942,36 @@
         "Env var values are never shown, only names. Secret contents and change times are not read.",
         "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
       ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "quote",
+      "namespace": "default",
+      "revisions": [
+        {
+          "revision": 1,
+          "source": "ReplicaSet/quote-6c9d7f8b4",
+          "age_seconds": 1200.0,
+          "current": true,
+          "reused": false,
+          "images": [
+            "ghcr.io/open-telemetry/demo:2.2.0-quote"
+          ],
+          "compared_with": null,
+          "changes": [],
+          "metadata_changes": [],
+          "rollout_restart": false
+        }
+      ],
+      "config": [],
+      "complete": true,
+      "limits": [
+        "Only pod-template changes are recorded. Replica counts, autoscaling and the update strategy are not, and neither are changes outside the cluster (feature flags, traffic, dependencies).",
+        "Kubernetes keeps 10 old revisions (revisionHistoryLimit); older ones are deleted, so the oldest listed revision is not necessarily the first.",
+        "A revision's age is when its ReplicaSet was created. A rollback reuses an older one (reused=true), which then went live later than its age says.",
+        "Env var values are never shown, only names. Secret contents and change times are not read.",
+        "A ConfigMap's last_written is its latest write of any kind, including label-only changes such as a Helm upgrade: it does not show that the data changed."
+      ]
     }
   ],
   "cronjobs": [
@@ -1930,7 +2059,9 @@
         "ReadWriteOnce"
       ],
       "storage_class": "fast-ssd",
-      "mounted_by": [],
+      "mounted_by": [
+        "quote-6c9d7f8b4-k2m8p"
+      ],
       "age_seconds": 1200.0
     }
   ],
@@ -1994,6 +2125,42 @@
       "involved_name": "checkout-5f6d8c9b7-h4n7t",
       "object": "Pod/checkout-5f6d8c9b7-h4n7t",
       "message": "0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling."
+    },
+    {
+      "last_seen_seconds": 1200.0,
+      "first_seen_seconds": 1200.0,
+      "count": 1,
+      "type": "Normal",
+      "reason": "ScalingReplicaSet",
+      "namespace": "default",
+      "involved_kind": "Deployment",
+      "involved_name": "quote",
+      "object": "Deployment/quote",
+      "message": "Scaled up replica set quote-6c9d7f8b4 from 0 to 1"
+    },
+    {
+      "last_seen_seconds": 1200.0,
+      "first_seen_seconds": 1200.0,
+      "count": 1,
+      "type": "Normal",
+      "reason": "SuccessfulCreate",
+      "namespace": "default",
+      "involved_kind": "ReplicaSet",
+      "involved_name": "quote-6c9d7f8b4",
+      "object": "ReplicaSet/quote-6c9d7f8b4",
+      "message": "Created pod: quote-6c9d7f8b4-k2m8p"
+    },
+    {
+      "last_seen_seconds": 95.0,
+      "first_seen_seconds": 1200.0,
+      "count": 5,
+      "type": "Warning",
+      "reason": "FailedScheduling",
+      "namespace": "default",
+      "involved_kind": "Pod",
+      "involved_name": "quote-6c9d7f8b4-k2m8p",
+      "object": "Pod/quote-6c9d7f8b4-k2m8p",
+      "message": "0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. not found"
     },
     {
       "last_seen_seconds": 25.0,

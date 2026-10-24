@@ -18,7 +18,9 @@ dates are release-tag dates.
   unbound, and none when all are bound. Replays fill it from the capture's
   events, so older captures replay it too; captures don't store it.
 - The `--mock` fixture has an unbound claim, `quote-cache`, whose storage
-  class doesn't exist.
+  class doesn't exist, and a new `quote` Deployment whose only pod waits on
+  it. The scheduler's, PV controller's and Deployment controller's messages
+  for it were recorded from a real cluster with the same objects.
 - `WorkloadHealth.claims` and `WorkloadReport.claims`: the unbound claims an
   unscheduled pod mounts, each with its storage class and newest event, as
   'PersistentVolumeClaim/cache: Pending, storage class fast-ssd;
@@ -26,6 +28,11 @@ dates are release-tag dates.
   scheduler's reason, "pod has unbound immediate PersistentVolumeClaims", said
   the pod waited on a claim but not why; the claim's events do. The composites
   read claims only when some pod is unscheduled.
+
+### Changed
+- `get_namespace_health` on the `--mock` fixture lists three unhealthy
+  workloads, not two: `Deployment/quote` (0/1) is new. Tests that pin the
+  mock's output will see it.
 
 ### Fixed
 - The live test of replica set ordering failed on a cluster where a

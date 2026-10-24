@@ -332,13 +332,23 @@ def test_namespace_health_on_the_mock_fixture():
     [accounting] = h.recovering  # 1/1 ready, but OOM-killed 40m ago: not healthy (#24)
     assert accounting.workload == "Deployment/accounting" and accounting.restarts == 578
     assert not any(line.startswith("Deployment/accounting") for line in h.healthy)
-    [ad, checkout] = h.workloads
+    [ad, checkout, quote] = h.workloads
     assert ad.workload == "Deployment/ad" and not ad.healthy
     assert ad.last_termination.reason == "OOMKilled"
     assert ad.template_changed == datetime.timedelta(hours=7, minutes=34)
     assert h.healthy == ["DaemonSet/otel-collector-agent 1/1", "Deployment/test-deployment 3/3, HPA at max 3",
                          "Job/cleanup-28999999 1/1", "Pod/test-pod-123 2/2", "StatefulSet/postgres 1/1"]
-    assert h.common_failures == []  # only one workload is failing
+    assert h.common_failures == []  # each fails differently
+    # A new Deployment whose only pod waits on a claim with no storage class.
+    assert (quote.workload, quote.ready, quote.desired) == ("Deployment/quote", 0, 1)
+    [line] = quote.unscheduled
+    assert "pod has unbound immediate PersistentVolumeClaims" in line
+    assert quote.claims == ["PersistentVolumeClaim/quote-cache: Pending, storage class fast-ssd; "
+                            'ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found']
+    assert quote.conditions[0].startswith("Progressing=False (ProgressDeadlineExceeded)")
+    report = mock_tools.get_workload_report("quote")
+    assert report.claims == quote.claims and report.instances == []
+    assert [e.reason for e in report.events if e.reason == "FailedScheduling"]
 
 
 # --- get_workload_report ----------------------------------------------------------------
