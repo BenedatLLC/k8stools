@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.2.0 — unreleased
+## 4.2.0 — 2026-10-24
 
 ### Issues fixed
 - [#28](https://github.com/BenedatLLC/k8stools/issues/28): get_pvc_summaries:
