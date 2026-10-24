@@ -3442,7 +3442,7 @@ class PVCSummary(BaseModel):
 PVC_EVENT_LIMIT = 5
 
 
-def newest_events(events: list[EventSummary], limit: int = PVC_EVENT_LIMIT) -> list[EventSummary]:
+def _newest_events(events: list[EventSummary], limit: int = PVC_EVENT_LIMIT) -> list[EventSummary]:
     """Newest first, by last_seen; a record with no time sorts last."""
     def key(e: EventSummary) -> float:
         return e.last_seen.total_seconds() if e.last_seen is not None else float("inf")
@@ -3486,6 +3486,26 @@ def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
         claim_to_pods = {}
 
     now = datetime.datetime.now(datetime.timezone.utc)
+    # The unbound claims' events, from one call for the whole scope rather than one
+    # per claim: a WaitForFirstConsumer claim with no pod stays Pending by design,
+    # so a cluster can have many.
+    claim_events: dict[tuple[str, str], list[EventSummary]] = {}
+    if any(not (c.status and c.status.phase == "Bound") for c in claims):
+        selector = "involvedObject.kind=PersistentVolumeClaim"
+        try:
+            if namespace:
+                found = K8S.list_namespaced_event(namespace, field_selector=selector).items
+            else:
+                found = K8S.list_event_for_all_namespaces(field_selector=selector).items
+            for e in found:
+                involved = e.involved_object
+                name = involved.name
+                ns = getattr(involved, "namespace", None) or e.metadata.namespace
+                claim_events.setdefault((ns, name), []).append(
+                    _event_summary(e, now, f"PersistentVolumeClaim/{name}"))
+        except client.ApiException:
+            # Best-effort, as mount resolution is: the claims are still listed.
+            claim_events = {}
     summaries: list[PVCSummary] = []
     for claim in claims:
         spec = claim.spec
@@ -3500,18 +3520,7 @@ def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
             age = now - claim.metadata.creation_timestamp
         key = (claim.metadata.namespace, claim.metadata.name)
         phase = status.phase if status and status.phase else "Unknown"
-        events: list[EventSummary] = []
-        if phase != "Bound":
-            selector = (f"involvedObject.kind=PersistentVolumeClaim,"
-                        f"involvedObject.name={claim.metadata.name}")
-            try:
-                found = K8S.list_namespaced_event(claim.metadata.namespace,
-                                                  field_selector=selector).items
-                obj = f"PersistentVolumeClaim/{claim.metadata.name}"
-                events = newest_events([_event_summary(e, now, obj) for e in found])
-            except client.ApiException:
-                # Best-effort, as mount resolution is: the claim is still listed.
-                events = []
+        events = [] if phase == "Bound" else _newest_events(claim_events.get(key, []))
         summaries.append(PVCSummary(
             name=claim.metadata.name,
             namespace=claim.metadata.namespace,

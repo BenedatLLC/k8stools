@@ -799,7 +799,7 @@ class MockState:
         the field replay it too)."""
         claims = self._decode_all("pvcs", k8s_tools.PVCSummary, namespace)
         for c in claims:
-            c.events = [] if c.status == "Bound" else k8s_tools.newest_events([
+            c.events = [] if c.status == "Bound" else k8s_tools._newest_events([
                 self._event_summary(r) for r in self._data.get("events", [])
                 if r.get("namespace") == c.namespace
                 and r.get("involved_kind") == "PersistentVolumeClaim"

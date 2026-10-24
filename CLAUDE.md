@@ -377,6 +377,10 @@ Invariants worth preserving when touching this code:
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
   synthesizes answers for unknown pod names, and `get_pod_container_statuses`
   raises for one, as live.
+- **An unbound claim's events are derived, not stored** (#28). Replay fills
+  `PVCSummary.events` from the capture's event records, so captures from before
+  the field replay it, and the capture drops it rather than store a copy that
+  could disagree with the event list.
 - **Init container statuses: absent means unknown, `[]` means none** (#24). A pod
   record's `init_container_statuses` key is written only when they were read;
   replay turns a missing key into `init_containers=None` with

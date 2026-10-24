@@ -5,13 +5,26 @@ dates are release-tag dates.
 
 ## 4.2.0 — unreleased
 
+### Issues fixed
+- [#28](https://github.com/BenedatLLC/k8stools/issues/28): get_pvc_summaries:
+  an unbound claim's events are not in its summary.
+
 ### Added
 - `PVCSummary.events`: for a claim that is not Bound, its events, newest
-  first, at most five. Why a claim waits (`ProvisioningFailed: storageclass
-  ... not found`, `WaitForFirstConsumer`) was in `get_events`, and the pods
-  that mount it in `get_pvc_summaries`, so no one result tied the reason to
-  the pod. Replays fill it from the capture's events, so older captures
-  replay it too.
+  first, at most five (issue #28). Why a claim waits (`ProvisioningFailed:
+  storageclass ... not found`, `WaitForFirstConsumer`) was in `get_events`,
+  and the pods that mount it in `get_pvc_summaries`, so no one result tied the
+  reason to the pod. The tool makes one extra events call when any claim is
+  unbound, and none when all are bound. Replays fill it from the capture's
+  events, so older captures replay it too; captures don't store it.
+- The `--mock` fixture has an unbound claim, `quote-cache`, whose storage
+  class doesn't exist.
+
+### Fixed
+- The live test of replica set ordering failed on a cluster where a
+  Deployment had been rolled back: a rollback reuses an older replica set
+  under the newest revision number. It now accepts that when
+  `get_workload_history` marks the revision `reused`.
 
 ## 4.1.0 — 2026-10-21
 

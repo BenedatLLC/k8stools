@@ -548,6 +548,7 @@ application, with problems for an agent to find:
 * a `checkout` rollout that can't finish: its new pod can't be scheduled (a node
   selector no node matches), while the old pod still serves;
 * a Deployment whose HPA is at its maximum;
+* a PersistentVolumeClaim that can't bind because its storage class doesn't exist;
 * an Ingress with one rule to a missing Service;
 * a cert-manager `Certificate` that isn't Ready;
 * a DaemonSet, a CronJob and its Job, a StatefulSet with PVCs and a completed

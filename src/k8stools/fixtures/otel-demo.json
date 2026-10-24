@@ -1919,6 +1919,19 @@
       "storage_class": "standard",
       "mounted_by": [],
       "age_seconds": 172800.0
+    },
+    {
+      "name": "quote-cache",
+      "namespace": "default",
+      "status": "Pending",
+      "volume_name": null,
+      "capacity": "1Gi",
+      "access_modes": [
+        "ReadWriteOnce"
+      ],
+      "storage_class": "fast-ssd",
+      "mounted_by": [],
+      "age_seconds": 1200.0
     }
   ],
   "events": [
@@ -1981,6 +1994,18 @@
       "involved_name": "checkout-5f6d8c9b7-h4n7t",
       "object": "Pod/checkout-5f6d8c9b7-h4n7t",
       "message": "0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling."
+    },
+    {
+      "last_seen_seconds": 25.0,
+      "first_seen_seconds": 1200.0,
+      "count": 62,
+      "type": "Warning",
+      "reason": "ProvisioningFailed",
+      "namespace": "default",
+      "involved_kind": "PersistentVolumeClaim",
+      "involved_name": "quote-cache",
+      "object": "PersistentVolumeClaim/quote-cache",
+      "message": "storageclass.storage.k8s.io \"fast-ssd\" not found"
     }
   ],
   "metrics": {

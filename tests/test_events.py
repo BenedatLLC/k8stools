@@ -198,3 +198,12 @@ def test_an_unbound_claim_replays_with_its_events_from_the_capture():
     by_name = {c.name: c for c in state.get_pvc_summaries()}
     assert [e.reason for e in by_name["cache"].events] == ["ProvisioningFailed"]
     assert by_name["data"].events == []
+
+
+def test_the_mock_fixtures_unbound_claim_says_why_it_waits():
+    state = MockState.from_builtin(frozen=True)
+    by_name = {c.name: c for c in state.get_pvc_summaries("default")}
+    [event] = by_name["quote-cache"].events
+    assert (event.reason, event.count) == ("ProvisioningFailed", 62)
+    assert "fast-ssd" in event.message
+    assert by_name["data-postgres-0"].events == []

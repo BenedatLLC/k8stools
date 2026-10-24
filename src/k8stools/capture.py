@@ -217,7 +217,10 @@ def capture_state(namespaces: Optional[list[str]] = None,
                     redactor(k8s_tools.get_workload_history(w.name, ns, kind)), captured_at))
         state["cronjobs"] += _encode_all(redactor(k8s_tools.get_cronjob_summaries(ns)), captured_at)
         state["jobs"] += _encode_all(redactor(k8s_tools.get_job_summaries(ns)), captured_at)
-        state["pvcs"] += _encode_all(redactor(k8s_tools.get_pvc_summaries(ns)), captured_at)
+        # Without their events: replay derives them from the capture's event
+        # records, so a stored copy would only duplicate those, unread.
+        state["pvcs"] += [{k: v for k, v in record.items() if k != "events"} for record in
+                          _encode_all(redactor(k8s_tools.get_pvc_summaries(ns)), captured_at)]
         state["configmaps"] += _capture_configmaps(ns, captured_at, redactor)
         state["events"] += _capture_events(ns, captured_at, redactor)
         state["pods"] += _capture_pods(ns, captured_at, include_logs, max_log_lines,

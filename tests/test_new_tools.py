@@ -157,7 +157,8 @@ class MockCoreV1:
             SimpleNamespace(
                 last_timestamp=NOW - datetime.timedelta(minutes=1), count=62,
                 type="Warning", reason="ProvisioningFailed",
-                involved_object=SimpleNamespace(kind="PersistentVolumeClaim", name="cache"),
+                involved_object=SimpleNamespace(kind="PersistentVolumeClaim", name="cache",
+                                                namespace="default"),
                 message='storageclass.storage.k8s.io "fast-ssd" not found',
             ),
         ]
@@ -330,13 +331,33 @@ def test_an_unbound_claim_carries_its_events_and_a_bound_one_none(mock_clients):
     assert by_name["data-postgres-0"].events == []
 
 
+def test_unbound_claims_events_come_from_one_call(mock_clients, monkeypatch):
+    """One events list for the scope, not one call per unbound claim; none at all
+    when every claim is bound."""
+    calls = []
+    real = mock_clients.list_event_for_all_namespaces
+    monkeypatch.setattr(mock_clients, "list_event_for_all_namespaces",
+                        lambda **kw: calls.append(kw) or real(**kw))
+    *bound, pending = mock_clients._pvcs()
+    twin = SimpleNamespace(**vars(pending) | {"metadata": _meta("cache", "other", days=0)})
+    monkeypatch.setattr(mock_clients, "_pvcs", lambda: [*bound, pending, twin])
+    by_key = {(p.namespace, p.name): p for p in k8s_tools.get_pvc_summaries()}
+    assert len(calls) == 1
+    assert [e.reason for e in by_key[("default", "cache")].events] == ["ProvisioningFailed"]
+    assert by_key[("other", "cache")].events == []  # same name, other namespace
+    calls.clear()
+    monkeypatch.setattr(mock_clients, "_pvcs", lambda: bound)
+    assert all(p.events == [] for p in k8s_tools.get_pvc_summaries())
+    assert calls == []
+
+
 def test_newest_events_first_and_capped():
     es = [k8s_tools.EventSummary(last_seen=datetime.timedelta(minutes=m), type="Warning",
                                  reason=f"R{m}", object="x", message="")
           for m in (5, 1, 9, 3, 7, 2)]
     es.append(k8s_tools.EventSummary(last_seen=None, type="Normal", reason="none",
                                      object="x", message=""))
-    assert [e.reason for e in k8s_tools.newest_events(es)] == ["R1", "R2", "R3", "R5", "R7"]
+    assert [e.reason for e in k8s_tools._newest_events(es)] == ["R1", "R2", "R3", "R5", "R7"]
 
 
 # --- Events -----------------------------------------------------------------

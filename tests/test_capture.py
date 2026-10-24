@@ -578,3 +578,23 @@ def test_pod_labels_are_redacted_at_capture_time(monkeypatch):
     records = capture._capture_pods("default", datetime.datetime.now(datetime.timezone.utc),
                                     False, 0, False, stats, _Redactor(True, stats))
     assert records[0]["labels"] == {"app": "x", "auth-token": "[REDACTED]"}
+
+
+def test_capture_stores_claims_without_their_events(monkeypatch):
+    """#28: replay derives an unbound claim's events from the capture's event
+    records, so the capture doesn't store a second copy."""
+    _FakeCluster().install(monkeypatch)
+    event = k8s_tools.EventSummary(
+        last_seen=datetime.timedelta(minutes=1), count=62, type="Warning",
+        reason="ProvisioningFailed", object="PersistentVolumeClaim/cache",
+        message='storageclass.storage.k8s.io "fast-ssd" not found')
+    monkeypatch.setattr(k8s_tools, "get_pvc_summaries", lambda ns=None: [
+        k8s_tools.PVCSummary(name="cache", namespace="default", status="Pending",
+                             storage_class="fast-ssd", age=datetime.timedelta(minutes=20),
+                             events=[event])])
+    monkeypatch.setattr(k8s_tools, "get_events", lambda **kw: [event])
+    state = capture_state(redact=True, stats=CaptureStats())
+    [record] = state["pvcs"]
+    assert "events" not in record
+    [claim] = _reload(state).get_pvc_summaries("default")
+    assert [(e.reason, e.count) for e in claim.events] == [("ProvisioningFailed", 62)]
