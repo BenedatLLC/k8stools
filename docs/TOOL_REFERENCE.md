@@ -138,6 +138,7 @@ over the pod's age is not a rate, and pointing to metrics
   - **`workload`** (`str`): "Kind/name", e.g. "Deployment/ad", or "Pod/name" for a pod nothing owns.
   - **`ready`**, **`desired`** (`int`): ready and desired pods; for a Job, 1/1 once it succeeded. Mid-rollout this counts the pods serving, which may be the old revision's.
   - **`unscheduled`** (`list[str]`): its pods that have no node, with how long and the scheduler's reason: "ad-7d9f-x2k: not scheduled for 3h12m: Unschedulable: 0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector." Such a pod has no containers, so it is in no other field. From a capture made before 4.1.0 the reason reads "reason not recorded"; a pod there counts as unscheduled when it has neither a node nor any container status.
+  - **`claims`** (`list[str]`): the claims those pods mount that aren't Bound, each with its status, storage class and newest event: 'PersistentVolumeClaim/cache: Pending, storage class fast-ssd; ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found'. The scheduler says only "pod has unbound immediate PersistentVolumeClaims"; why a claim is unbound is in the claim's events. A claim with none reads "no events recorded" (events expire, by default after an hour). Read from `get_pvc_summaries`, only when some pod is unscheduled; empty when claims can't be read or the capture has none.
   - **`conditions`** (`list[str]`): a Deployment's failing conditions in its controller's words: `Progressing=False` (e.g. `ProgressDeadlineExceeded`: the rollout made no progress within `progressDeadlineSeconds`, 10 minutes by default) or `ReplicaFailure=True` (e.g. `FailedCreate`: a ResourceQuota or an admission webhook rejected its pods, so there may be no pod to show).
   - **`restarts`** (`int`): container restarts across the workload's pods; absent when none of its pods could be found.
   - **`last_termination`** (`Termination`): the most recent termination across its pods and containers:
@@ -184,7 +185,7 @@ those tools, so it answers the same way from a replayed capture.
 #### Returns
 
 - **`workload`**, **`ready`**, **`desired`**
-- **`unscheduled`**, **`conditions`** (`list[str]`): as in `get_namespace_health`.
+- **`unscheduled`**, **`claims`**, **`conditions`** (`list[str]`): as in `get_namespace_health`.
 - **`containers`** (`list[ContainerEssentials]`): per container of the focus pod: `image`, `requests`, `limits`, and `probes` (e.g. "liveness: httpGet :8080/healthz every 10s, fails after 3", or "none configured"). Native sidecars come after the app containers, with `sidecar: true`.
 - **`init_containers`** (`list[ContainerEssentials]`): the focus pod's init containers, from its spec. Always present: `[]` means it has none.
 - **`instances`** (`list[Instance]`): every pod's containers now: `pod_age` (time since the pod was created; when its restarts happened isn't recorded), `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.

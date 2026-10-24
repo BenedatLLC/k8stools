@@ -26,6 +26,7 @@ over the record, not the current rhythm.
 """
 
 import datetime
+import functools
 import re
 import signal
 from typing import Any, Optional
@@ -36,7 +37,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
-                        NOTE_RECOVERING, NOTE_RESTART_HISTORY,
+                        NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
                         _to_whole_seconds)
 
@@ -138,6 +139,37 @@ def _unscheduled(pod, statuses) -> Optional[str]:
 
 def _unscheduled_line(pod, reason: str) -> str:
     return f"{pod.name}: not scheduled for {_human(pod.age)}: {reason}"
+
+
+def _claim_line(c: PVCSummary) -> str:
+    """An unbound claim and why it waits, in its newest event's words, e.g.
+    'PersistentVolumeClaim/cache: Pending, storage class fast-ssd; ProvisioningFailed:
+    storageclass.storage.k8s.io "fast-ssd" not found'."""
+    line = f"PersistentVolumeClaim/{c.name}: {c.status}" + (
+        f", storage class {c.storage_class}" if c.storage_class else "")
+    if not c.events:
+        return line + "; no events recorded (events expire, by default after an hour)"
+    e = c.events[0]
+    return line + f"; {e.reason}: {e.message[:200]}"
+
+
+def _unbound_claims(api, namespace: str) -> dict[str, list[str]]:
+    """The unbound claims each pod mounts, as _claim_line()s, by pod name.
+
+    The scheduler says only that a pod has unbound claims; why a claim is
+    unbound is in the claim's events. Best-effort: the claims are context for
+    a pod already reported unscheduled.
+    """
+    try:
+        claims = api.get_pvc_summaries(namespace)
+    except K8sApiError:
+        return {}
+    by_pod: dict[str, list[str]] = {}
+    for c in claims:
+        if c.status != "Bound":
+            for pod in c.mounted_by:
+                by_pod.setdefault(pod, []).append(_claim_line(c))
+    return by_pod
 
 
 #: Generated pod-name suffixes: a ReplicaSet's, Job's or DaemonSet's pods are
@@ -347,15 +379,19 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     recovering: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
     unschedulable: dict[str, list[str]] = {}  # workloads by why their pods aren't scheduled
+    # Read only when some pod is unscheduled, and then once.
+    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
 
     def assess(label, kind, name, ready, desired, pods, conditions):
         terminations, first_pod, waiting, init_pending, unscheduled = [], [], False, [], {}
+        claims: dict[str, None] = {}
         for i, pod in enumerate(pods):
             statuses = api.get_pod_container_statuses(pod.name, namespace)
             # A pod with no node has no containers to wait on: without this, the
             # old pods of a rollout that can't schedule its new one read healthy.
             if reason := _unscheduled(pod, statuses):
                 unscheduled[_unscheduled_line(pod, reason)] = reason
+                claims.update(dict.fromkeys(unbound_claims().get(pod.name, [])))
             for s in statuses.containers:
                 if i == 0:
                     first_pod.append(s)
@@ -398,7 +434,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
             return
         w = entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
                   readings, init_pending)
-        w.unscheduled, w.conditions = list(unscheduled), conditions
+        w.unscheduled, w.claims, w.conditions = list(unscheduled), list(claims), conditions
         for reason in set(unscheduled.values()):
             unschedulable.setdefault(reason, []).append(label)
         entries.append(w)
@@ -668,9 +704,12 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         return [s for s in statuses_by_pod[pod.name].init_containers or []
                 if not _init_completed(s)]
 
+    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
     for pod in pods:
         if reason := _unscheduled(pod, statuses_by_pod[pod.name]):
             report.unscheduled.append(_unscheduled_line(pod, reason))
+            report.claims.extend(c for c in unbound_claims().get(pod.name, [])
+                                 if c not in report.claims)
         report.instances.extend(instance(pod, s) for s in statuses_by_pod[pod.name].containers)
         report.init_instances.extend(instance(pod, s) for s in pending_init(pod))
     if any(st.init_containers is None for st in statuses_by_pod.values()):

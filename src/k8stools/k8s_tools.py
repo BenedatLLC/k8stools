@@ -3700,6 +3700,10 @@ class WorkloadHealth(_Compact):
     #: Its pods that have no node, e.g. "ad-7d9f-x2k: not scheduled for 3h12m:
     #: Unschedulable: 0/3 nodes are available: ...". Not counted in ready.
     unscheduled: list[str] = Field(default_factory=list)
+    #: The unbound claims those pods mount, each with its newest event, e.g.
+    #: 'PersistentVolumeClaim/cache: Pending, storage class fast-ssd;
+    #: ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found'.
+    claims: list[str] = Field(default_factory=list)
     #: A Deployment's failing conditions, as its controller states them:
     #: "Progressing=False (ProgressDeadlineExceeded): ...", "ReplicaFailure=True ...".
     conditions: list[str] = Field(default_factory=list)
@@ -3816,8 +3820,10 @@ class WorkloadReport(_Compact):
     workload: str
     ready: int
     desired: int
-    #: As in get_namespace_health: pods with no node, and failing Deployment conditions.
+    #: As in get_namespace_health: pods with no node, the unbound claims they
+    #: mount, and failing Deployment conditions.
     unscheduled: list[str] = Field(default_factory=list)
+    claims: list[str] = Field(default_factory=list)
     conditions: list[str] = Field(default_factory=list)
     containers: list[ContainerEssentials] = Field(default_factory=list)
     #: Init containers of the focus pod's spec; [] when it has none.

@@ -197,6 +197,9 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   `ready` stays the count of pods serving. Captures before 4.1.0 have no reason:
   there a pod with no node and no container status counts, with "reason not
   recorded" (not node alone: test captures leave running pods' node unset).
+  The unbound claims an unscheduled pod mounts go in `claims`, with the claim's
+  newest event: the scheduler's "unbound immediate PersistentVolumeClaims" says
+  nothing of why. Claims are read only when some pod is unscheduled.
 - **Init containers apart** (#24): a completed init container (exit 0) is never
   a termination; one that hasn't completed makes the workload unhealthy and is
   named. `WorkloadReport.init_containers` is always serialized (`_keep_empty`), so

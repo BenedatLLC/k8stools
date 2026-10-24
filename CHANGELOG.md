@@ -19,6 +19,13 @@ dates are release-tag dates.
   events, so older captures replay it too; captures don't store it.
 - The `--mock` fixture has an unbound claim, `quote-cache`, whose storage
   class doesn't exist.
+- `WorkloadHealth.claims` and `WorkloadReport.claims`: the unbound claims an
+  unscheduled pod mounts, each with its storage class and newest event, as
+  'PersistentVolumeClaim/cache: Pending, storage class fast-ssd;
+  ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found'. The
+  scheduler's reason, "pod has unbound immediate PersistentVolumeClaims", said
+  the pod waited on a claim but not why; the claim's events do. The composites
+  read claims only when some pod is unscheduled.
 
 ### Fixed
 - The live test of replica set ordering failed on a cluster where a
@@ -31,7 +38,9 @@ dates are release-tag dates.
   rollout whose new pod can't be scheduled, a claim on a missing storage
   class) in a namespace of its own on a real cluster, and checks the tools
   against the scheduler's and controllers' own messages. It writes to the
-  cluster, so it runs only with `K8STOOLS_LIVE_WRITE=1`.
+  cluster, so it runs only with `K8STOOLS_LIVE_WRITE=1`. A third test has a
+  Deployment's pod mount a claim on a missing storage class, and checks that
+  the composites name the claim and the PV controller's event.
 
 ## 4.1.0 — 2026-10-21
 

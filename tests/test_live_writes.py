@@ -83,6 +83,49 @@ def test_an_unbound_claim_says_why_it_waits(apis, namespace):
     assert event.object == "PersistentVolumeClaim/cache"
 
 
+def test_a_pod_waiting_on_an_unbound_claim_names_it(apis, namespace):
+    """The #28 follow-up: the scheduler says only that the pod has unbound claims;
+    get_namespace_health adds the claim and its event, which say why."""
+    core, apps = apis
+    core.create_namespaced_persistent_volume_claim(namespace, client.V1PersistentVolumeClaim(
+        metadata=client.V1ObjectMeta(name="cache"),
+        spec=client.V1PersistentVolumeClaimSpec(
+            access_modes=["ReadWriteOnce"], storage_class_name="k8stools-no-such-class",
+            resources=client.V1VolumeResourceRequirements(requests={"storage": "1Mi"}))))
+    labels = {"app": "db"}
+    apps.create_namespaced_deployment(namespace, client.V1Deployment(
+        metadata=client.V1ObjectMeta(name="db"),
+        spec=client.V1DeploymentSpec(
+            replicas=1, selector=client.V1LabelSelector(match_labels=labels),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels=labels),
+                spec=client.V1PodSpec(
+                    termination_grace_period_seconds=0,
+                    containers=[client.V1Container(
+                        name="pause", image=PAUSE_IMAGE,
+                        volume_mounts=[client.V1VolumeMount(name="cache", mount_path="/cache")])],
+                    volumes=[client.V1Volume(
+                        name="cache", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name="cache"))])))))
+
+    def waiting():
+        h = k8s_tools.get_namespace_health(namespace)
+        return next((w for w in h.workloads if w.workload == "Deployment/db"
+                     and w.unscheduled and w.claims
+                     and "storage class" in w.claims[0] and "ProvisioningFailed" in w.claims[0]),
+                    None)
+
+    db = _until(waiting, 90, "the pod to be reported waiting on its claim")
+    [line] = db.unscheduled
+    [claim] = db.claims
+    print(f"\nunscheduled: {line}\nclaims: {claim}")
+    assert "unbound immediate PersistentVolumeClaims" in line
+    assert claim.startswith("PersistentVolumeClaim/cache: Pending, storage class "
+                            "k8stools-no-such-class; ProvisioningFailed: ")
+    assert 'storageclass.storage.k8s.io "k8stools-no-such-class" not found' in claim
+    assert k8s_tools.get_workload_report("db", namespace).claims == db.claims
+
+
 def test_a_rollout_whose_new_pod_cant_be_scheduled(apis, namespace):
     """#27, against the scheduler's and the Deployment controller's own words."""
     _, apps = apis

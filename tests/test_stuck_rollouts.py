@@ -81,7 +81,7 @@ def _stuck(name, reason=NODE_SELECTOR, conditions=None):
 
 
 def _state(*parts):
-    keys = {"deployments": [], "replicasets": [], "pods": []}
+    keys = {"deployments": [], "replicasets": [], "pods": [], "pvcs": [], "events": []}
     for part in parts:
         for k, v in part.items():
             keys[k] = keys[k] + v
@@ -169,6 +169,84 @@ def test_the_mock_fixture_has_a_stuck_rollout():
     assert line.startswith("checkout-5f6d8c9b7-h4n7t: not scheduled for ")
     assert "didn't match Pod's node affinity/selector" in line
     assert checkout.conditions[0].startswith("Progressing=False (ProgressDeadlineExceeded)")
+
+
+# --- the claims an unscheduled pod waits on -------------------------------------------
+
+UNBOUND = "Unschedulable: 0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims."
+NO_CLASS = 'storageclass.storage.k8s.io "fast-ssd" not found'
+
+
+def _claim(name, mounted_by, status="Pending", storage_class="fast-ssd"):
+    return {"name": name, "namespace": "default", "status": status, "volume_name": None,
+            "capacity": "1Gi", "access_modes": ["ReadWriteOnce"], "storage_class": storage_class,
+            "mounted_by": mounted_by, "age_seconds": 7200.0}
+
+
+def _claim_event(claim, reason="ProvisioningFailed", message=NO_CLASS):
+    return {"last_seen_seconds": 30.0, "first_seen_seconds": 7200.0, "count": 40,
+            "type": "Warning", "reason": reason, "namespace": "default",
+            "involved_kind": "PersistentVolumeClaim", "involved_name": claim,
+            "object": f"PersistentVolumeClaim/{claim}", "message": message}
+
+
+def _waiting_on_claims(name="ad", claims=(), events=()):
+    part = _stuck(name, reason=UNBOUND)
+    part["pvcs"], part["events"] = list(claims), list(events)
+    return part
+
+
+def test_an_unscheduled_pod_names_the_unbound_claim_and_why_it_waits():
+    """The scheduler says only "unbound immediate PersistentVolumeClaims"; the
+    claim's own event says why."""
+    state = _state(_waiting_on_claims(claims=[_claim("cache", ["ad-2-bbbbb"])],
+                                      events=[_claim_event("cache")]))
+    [ad] = namespace_health(state, "default").workloads
+    assert ad.unscheduled == [f"ad-2-bbbbb: not scheduled for 2h0m: {UNBOUND}"]
+    assert ad.claims == [f"PersistentVolumeClaim/cache: Pending, storage class fast-ssd; "
+                         f"ProvisioningFailed: {NO_CLASS}"]
+    r = workload_report(state, "ad", "default")
+    assert r.claims == ad.claims
+
+
+def test_only_unbound_claims_of_unscheduled_pods_are_named():
+    claims = [_claim("cache", ["ad-2-bbbbb"]),
+              _claim("data", ["ad-2-bbbbb"], status="Bound"),
+              _claim("logs", ["ad-1-aaaaa"])]  # mounted only by the serving pod
+    state = _state(_waiting_on_claims(claims=claims))
+    [ad] = namespace_health(state, "default").workloads
+    assert ad.claims == ["PersistentVolumeClaim/cache: Pending, storage class fast-ssd; no "
+                         "events recorded (events expire, by default after an hour)"]
+
+
+def _counting_claim_reads(state, monkeypatch) -> list:
+    calls, real = [], state.get_pvc_summaries
+    monkeypatch.setattr(state, "get_pvc_summaries", lambda ns=None: calls.append(ns) or real(ns))
+    return calls
+
+
+def test_claims_are_read_once_and_only_for_an_unscheduled_pod(monkeypatch):
+    part = _waiting_on_claims(claims=[_claim("cache", [])])
+    part["pods"], part["replicasets"] = part["pods"][:1], part["replicasets"][:1]
+    state = _state(part)
+    calls = _counting_claim_reads(state, monkeypatch)
+    assert namespace_health(state, "default").healthy == ["Deployment/ad 1/1"]
+    assert calls == []
+
+    state = _state(_stuck("ad"), _stuck("cart"))
+    calls = _counting_claim_reads(state, monkeypatch)
+    namespace_health(state, "default")
+    assert calls == ["default"]  # two unscheduled pods, one read
+
+
+def test_a_capture_without_claims_names_none():
+    """Captures without a pvcs list (or a cluster that forbids reading claims)
+    leave the field empty; the scheduler's reason is still there."""
+    state = MockState(json.loads(json.dumps({
+        "version": CAPTURE_VERSION, "captured_at": NOW.isoformat(), "redacted": False,
+        **_stuck("ad", reason=UNBOUND)})), frozen=True)
+    [ad] = namespace_health(state, "default").workloads
+    assert ad.claims == [] and ad.unscheduled
 
 
 # --- the live tools -------------------------------------------------------------------
