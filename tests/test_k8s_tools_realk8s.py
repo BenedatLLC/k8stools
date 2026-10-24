@@ -748,10 +748,17 @@ def test_replicaset_revision_history_is_ordered_oldest_first():
         assert revisions == sorted(revisions)
         assert len(set(revisions)) == len(revisions), \
             f"{deployment} has duplicate revision numbers: {revisions}"
-        # The newest revision is the most recently created, so it is youngest.
+        # The newest revision is the most recently created, so it is youngest -
+        # unless it is a rollback, which reuses an older replica set under a new
+        # revision number. The history must then say so (reused), or an agent
+        # would read the replica set's age as when that revision went live.
         newest = history[-1]
-        assert all(newest.age <= rs.age for rs in history[:-1]), \
-            f"{deployment}: newest revision {newest.revision} is not the youngest"
+        if not all(newest.age <= rs.age for rs in history[:-1]):
+            current = [r for r in k8s_tools.get_workload_history(
+                deployment, namespace, "Deployment").revisions if r.current]
+            assert current and current[0].revision == newest.revision and current[0].reused, \
+                f"{deployment}: newest revision {newest.revision} is not the youngest, " \
+                f"and the history doesn't mark it reused"
 
 
 def test_replicaset_summaries_namespace_filter():
