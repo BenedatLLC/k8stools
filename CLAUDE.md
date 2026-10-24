@@ -24,6 +24,7 @@ tests/
   test_mock_state.py         - Unit tests for MockState (filters, replicaset ordering, logs, replay clock)
   test_capture.py            - Capture serialization round-trip and capture-time redaction
   test_k8s_tools_realk8s.py  - Integration tests (real cluster, auto-skipped if unreachable)
+  test_live_writes.py        - Integration tests that create the failure they check, in their own namespace (opt-in: K8STOOLS_LIVE_WRITE=1)
   test_mock_tools.py         - Tests for mock_tools module (incl. parity with k8s_tools.TOOLS)
   test_events.py             - Event aggregation (count/first_seen), incl. the events.k8s.io fallback
   test_cluster_binding.py    - Cluster selection: configure(), the shared binding, get_cluster_info, server flags
@@ -79,6 +80,10 @@ uv run pytest tests/test_k8s_tools.py tests/test_mock_tools.py -v
 
 # Integration tests against a real cluster (skipped automatically if unreachable)
 KUBECONFIG=~/.kube/your-config.yaml uv run pytest tests/test_k8s_tools_realk8s.py -v
+
+# Integration tests that create objects (an unbound claim, a stuck rollout) in a
+# k8stools-test-* namespace and delete it afterwards; skipped unless asked
+K8STOOLS_LIVE_WRITE=1 uv run pytest tests/test_live_writes.py -v
 
 # All tests
 uv run pytest -v

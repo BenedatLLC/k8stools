@@ -6,9 +6,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../s
 
 import pytest
 
-#: Test files allowed to resolve a real cluster binding: the integration tests,
+#: Test files allowed to resolve a real cluster binding: the integration tests
+#: (test_live_writes.py only with K8STOOLS_LIVE_WRITE=1),
 #: and the binding tests, which load kubeconfig files of their own (no network).
-_MAY_BIND = {"test_k8s_tools_realk8s.py", "test_cluster_binding.py", "test_mcp_client.py"}
+_MAY_BIND = {"test_k8s_tools_realk8s.py", "test_live_writes.py", "test_cluster_binding.py",
+             "test_mcp_client.py"}
 
 
 @pytest.fixture(autouse=True)

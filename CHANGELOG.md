@@ -26,6 +26,13 @@ dates are release-tag dates.
   under the newest revision number. It now accepts that when
   `get_workload_history` marks the revision `reused`.
 
+### Tests
+- `tests/test_live_writes.py` creates the failures #27 and #28 describe (a
+  rollout whose new pod can't be scheduled, a claim on a missing storage
+  class) in a namespace of its own on a real cluster, and checks the tools
+  against the scheduler's and controllers' own messages. It writes to the
+  cluster, so it runs only with `K8STOOLS_LIVE_WRITE=1`.
+
 ## 4.1.0 — 2026-10-21
 
 ### Issues fixed
