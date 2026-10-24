@@ -794,7 +794,17 @@ class MockState:
 
     @_pinned_query
     def get_pvc_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.PVCSummary]:
-        return self._decode_all("pvcs", k8s_tools.PVCSummary, namespace)
+        """The captured claims, each unbound one with its events from the capture's
+        own event records, as the real tool lists them (so captures taken before
+        the field replay it too)."""
+        claims = self._decode_all("pvcs", k8s_tools.PVCSummary, namespace)
+        for c in claims:
+            c.events = [] if c.status == "Bound" else k8s_tools.newest_events([
+                self._event_summary(r) for r in self._data.get("events", [])
+                if r.get("namespace") == c.namespace
+                and r.get("involved_kind") == "PersistentVolumeClaim"
+                and r.get("involved_name") == c.name])
+        return claims
 
     @_pinned_query
     def get_logs_for_job(self, job_name: str, namespace: str = "default",

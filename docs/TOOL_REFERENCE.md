@@ -1033,7 +1033,9 @@ namespace or all namespaces, similar to `kubectl get pvc`.
 
 For each PVC, this also resolves which pods currently mount it (by scanning pod
 volumes in the same scope), which is useful for spotting orphaned PVCs — claims
-with an empty `mounted_by` and no owning pod.
+with an empty `mounted_by` and no owning pod. A claim that is not Bound also
+carries its recent events, which say why it waits: they and the pods that
+mount it are in one result.
 
 #### Parameters
 
@@ -1053,6 +1055,7 @@ A list of PVCSummary objects, each with the following fields:
 - **`storage_class`** (`Optional[str]`): StorageClass backing the claim.
 - **`mounted_by`** (`list[str]`): Names of pods (in the same scope) currently mounting this PVC. Empty for orphaned/unmounted claims.
 - **`age`** (`datetime.timedelta`): Age of the PVC (current time minus creation timestamp).
+- **`events`** (`list[EventSummary]`): For a claim that is not Bound, its events, newest first, at most five (e.g. `ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found`, or `WaitForFirstConsumer`). Empty for a bound claim. In a replay, they come from the capture's event records.
 
 ### `get_events`
 

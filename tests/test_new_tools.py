@@ -76,7 +76,13 @@ class MockCoreV1:
                                  storage_class_name="standard", resources=None),
             status=SimpleNamespace(phase="Bound", capacity={"storage": "1Gi"}),
         )
-        return [bound, orphan]
+        pending = SimpleNamespace(
+            metadata=_meta("cache", "default", days=0),
+            spec=SimpleNamespace(volume_name=None, access_modes=["ReadWriteOnce"],
+                                 storage_class_name="fast-ssd", resources=None),
+            status=SimpleNamespace(phase="Pending", capacity=None),
+        )
+        return [bound, orphan, pending]
 
     # --- pods (for pvc mount resolution and latest-pod-for-selector) ---
     def list_pod_for_all_namespaces(self):
@@ -121,11 +127,24 @@ class MockCoreV1:
     # --- events ---
     def list_event_for_all_namespaces(self, field_selector=None):
         self.last_event_field_selector = field_selector
-        return SimpleNamespace(items=self._events())
+        return SimpleNamespace(items=self._selected(field_selector))
 
     def list_namespaced_event(self, namespace, field_selector=None):
         self.last_event_field_selector = field_selector
-        return SimpleNamespace(items=self._events())
+        return SimpleNamespace(items=self._selected(field_selector))
+
+    def _selected(self, field_selector):
+        """Enough of the server's field selector for these tests."""
+        events = self._events()
+        for term in (field_selector or "").split(","):
+            field, _, want = term.partition("=")
+            if field == "reason":
+                events = [e for e in events if e.reason == want]
+            elif field == "involvedObject.kind":
+                events = [e for e in events if e.involved_object.kind == want]
+            elif field == "involvedObject.name":
+                events = [e for e in events if e.involved_object.name == want]
+        return events
 
     def _events(self):
         return [
@@ -134,6 +153,12 @@ class MockCoreV1:
                 type="Warning", reason="Evicted",
                 involved_object=SimpleNamespace(kind="Pod", name="session-abc"),
                 message="node low on ephemeral-storage",
+            ),
+            SimpleNamespace(
+                last_timestamp=NOW - datetime.timedelta(minutes=1), count=62,
+                type="Warning", reason="ProvisioningFailed",
+                involved_object=SimpleNamespace(kind="PersistentVolumeClaim", name="cache"),
+                message='storageclass.storage.k8s.io "fast-ssd" not found',
             ),
         ]
 
@@ -294,6 +319,24 @@ def test_pvc_summaries_resolves_mounts():
     assert by_name["data-postgres-0"].mounted_by == ["postgres-0"]
     # the orphan PVC is mounted by nobody
     assert by_name["orphan-xyz"].mounted_by == []
+
+
+def test_an_unbound_claim_carries_its_events_and_a_bound_one_none(mock_clients):
+    by_name = {p.name: p for p in k8s_tools.get_pvc_summaries()}
+    (e,) = by_name["cache"].events
+    assert (e.reason, e.count, e.object) == ("ProvisioningFailed", 62,
+                                             "PersistentVolumeClaim/cache")
+    assert "involvedObject.kind=PersistentVolumeClaim" in mock_clients.last_event_field_selector
+    assert by_name["data-postgres-0"].events == []
+
+
+def test_newest_events_first_and_capped():
+    es = [k8s_tools.EventSummary(last_seen=datetime.timedelta(minutes=m), type="Warning",
+                                 reason=f"R{m}", object="x", message="")
+          for m in (5, 1, 9, 3, 7, 2)]
+    es.append(k8s_tools.EventSummary(last_seen=None, type="Normal", reason="none",
+                                     object="x", message=""))
+    assert [e.reason for e in k8s_tools.newest_events(es)] == ["R1", "R2", "R3", "R5", "R7"]
 
 
 # --- Events -----------------------------------------------------------------

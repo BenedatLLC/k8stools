@@ -3432,12 +3432,28 @@ class PVCSummary(BaseModel):
     storage_class: Optional[str] = None
     mounted_by: list[str] = Field(default_factory=list)
     age: Duration
+    #: For a claim that is not Bound, its events, newest first (at most
+    #: PVC_EVENT_LIMIT): why it waits is in them, as "storageclass ... not found"
+    #: or "waiting for first consumer". Empty for a bound claim.
+    events: list[EventSummary] = Field(default_factory=list)
+
+
+#: How many of an unbound claim's events get_pvc_summaries returns.
+PVC_EVENT_LIMIT = 5
+
+
+def newest_events(events: list[EventSummary], limit: int = PVC_EVENT_LIMIT) -> list[EventSummary]:
+    """Newest first, by last_seen; a record with no time sorts last."""
+    def key(e: EventSummary) -> float:
+        return e.last_seen.total_seconds() if e.last_seen is not None else float("inf")
+    return sorted(events, key=key)[:limit]
 
 
 def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
     """PersistentVolumeClaims, like `kubectl get pvc`: status, volume,
     capacity, access modes, storage class, age, and which pods mount each (an
-    empty mounted_by may be an orphaned claim)."""
+    empty mounted_by may be an orphaned claim). A claim that is not Bound
+    carries its recent events, which say why it waits."""
     global K8S
     if K8S is None:
         K8S = _get_api_client()
@@ -3483,16 +3499,30 @@ def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
         if claim.metadata.creation_timestamp:
             age = now - claim.metadata.creation_timestamp
         key = (claim.metadata.namespace, claim.metadata.name)
+        phase = status.phase if status and status.phase else "Unknown"
+        events: list[EventSummary] = []
+        if phase != "Bound":
+            selector = (f"involvedObject.kind=PersistentVolumeClaim,"
+                        f"involvedObject.name={claim.metadata.name}")
+            try:
+                found = K8S.list_namespaced_event(claim.metadata.namespace,
+                                                  field_selector=selector).items
+                obj = f"PersistentVolumeClaim/{claim.metadata.name}"
+                events = newest_events([_event_summary(e, now, obj) for e in found])
+            except client.ApiException:
+                # Best-effort, as mount resolution is: the claim is still listed.
+                events = []
         summaries.append(PVCSummary(
             name=claim.metadata.name,
             namespace=claim.metadata.namespace,
-            status=status.phase if status and status.phase else "Unknown",
+            status=phase,
             volume_name=spec.volume_name if spec and getattr(spec, "volume_name", None) else None,
             capacity=capacity,
             access_modes=list(spec.access_modes) if spec and getattr(spec, "access_modes", None) else [],
             storage_class=spec.storage_class_name if spec and getattr(spec, "storage_class_name", None) else None,
             mounted_by=claim_to_pods.get(key, []),
             age=age,
+            events=events,
         ))
     return summaries
 

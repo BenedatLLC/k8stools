@@ -203,7 +203,7 @@ out-of-memory kill".
 |---|---|:-:|:-:|
 | `get_configmap_summaries` | ConfigMaps, like `kubectl get configmaps` | | ✓ |
 | `get_configmap` | The full contents of one ConfigMap (redacted by the server) | | ✓ |
-| `get_pvc_summaries` | PersistentVolumeClaims, like `kubectl get pvc`, with the pods that mount each one | | ✓ |
+| `get_pvc_summaries` | PersistentVolumeClaims, like `kubectl get pvc`, with the pods that mount each one, and an unbound claim's events | | ✓ |
 
 ### Custom resources
 

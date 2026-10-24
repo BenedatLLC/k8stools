@@ -179,3 +179,22 @@ def test_a_capture_from_before_2_2_0_replays_the_new_fields_as_none():
     e = state.get_events()[0]
     assert (e.count, e.first_seen) == (None, None)
     assert e.last_seen == datetime.timedelta(seconds=120)
+
+
+def test_an_unbound_claim_replays_with_its_events_from_the_capture():
+    claim = {"name": "cache", "namespace": "default", "status": "Pending",
+             "volume_name": None, "capacity": "1Gi", "access_modes": ["ReadWriteOnce"],
+             "storage_class": "fast-ssd", "mounted_by": ["web-1"], "age_seconds": 1200.0}
+    bound = dict(claim, name="data", status="Bound", storage_class="standard")
+    events = [{"last_seen_seconds": 60.0, "count": 62, "type": "Warning",
+               "reason": "ProvisioningFailed", "namespace": "default",
+               "involved_kind": "PersistentVolumeClaim", "involved_name": "cache",
+               "object": "PersistentVolumeClaim/cache",
+               "message": 'storageclass.storage.k8s.io "fast-ssd" not found'},
+              {"last_seen_seconds": 30.0, "type": "Warning", "reason": "BackOff",
+               "namespace": "default", "involved_kind": "Pod", "involved_name": "cache",
+               "object": "Pod/cache", "message": "a pod that shares the claim's name"}]
+    state = MockState(dict(_capture(events), pvcs=[claim, bound]), frozen=True)
+    by_name = {c.name: c for c in state.get_pvc_summaries()}
+    assert [e.reason for e in by_name["cache"].events] == ["ProvisioningFailed"]
+    assert by_name["data"].events == []

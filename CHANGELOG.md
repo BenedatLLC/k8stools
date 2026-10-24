@@ -3,6 +3,16 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.2.0 — unreleased
+
+### Added
+- `PVCSummary.events`: for a claim that is not Bound, its events, newest
+  first, at most five. Why a claim waits (`ProvisioningFailed: storageclass
+  ... not found`, `WaitForFirstConsumer`) was in `get_events`, and the pods
+  that mount it in `get_pvc_summaries`, so no one result tied the reason to
+  the pod. Replays fill it from the capture's events, so older captures
+  replay it too.
+
 ## 4.1.0 — 2026-10-21
 
 ### Issues fixed
