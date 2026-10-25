@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.3.0 — unreleased
+## 4.3.0 — 2026-10-24
 
 ### Issues fixed
 - [#29](https://github.com/BenedatLLC/k8stools/issues/29): Composites: say how
