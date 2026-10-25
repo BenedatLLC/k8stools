@@ -3,6 +3,36 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.3.0 — unreleased
+
+### Issues fixed
+- [#29](https://github.com/BenedatLLC/k8stools/issues/29): Composites: say how
+  many nodes an unscheduled pod's nodeSelector and required affinity admit.
+
+### Added
+- `WorkloadHealth.placement` and `WorkloadReport.placement`: for each pod with
+  no node, how many nodes its nodeSelector and required node affinity admit,
+  out of all nodes, and how many of those have a NoSchedule or NoExecute taint
+  it doesn't tolerate, e.g. "ad-x: 0 of 5 nodes match its nodeSelector and
+  required node affinity". The scheduler's FailedScheduling message names only
+  the first filter that rejected each node, so a node it reports as tainted
+  may not match the selector either; answering that took `get_pod_spec` and
+  `get_node_summaries` together. The count is k8stools' own evaluation, and a
+  note says so. The composites read the nodes once per call, only when some
+  pod is unscheduled; when the nodes can't be read (a namespace-scoped role),
+  the line says "not evaluated" and why. Replays compute it from the
+  captured node labels and pod specs, so existing captures have it.
+
+### Changed
+- `get_namespace_health` and `get_workload_report` on the `--mock` fixture
+  have a `placement` line for each of the two unscheduled pods (`checkout`,
+  `quote`), and the namespace view a note. Tests that pin the mock's output
+  will see them.
+
+### Fixed
+- `get_pod_spec`'s error for a failure other than 404 carried the client
+  exception's whole text (headers and raw JSON) instead of its one sentence.
+
 ## 4.2.0 — 2026-10-24
 
 ### Issues fixed

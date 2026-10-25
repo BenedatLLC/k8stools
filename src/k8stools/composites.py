@@ -172,6 +172,121 @@ def _unbound_claims(api, namespace: str) -> dict[str, list[str]]:
     return by_pod
 
 
+NOTE_PLACEMENT = (
+    "placement is k8stools' own evaluation of each pod's nodeSelector, required node "
+    "affinity and tolerations against the nodes as read, not the scheduler's. The "
+    "scheduler names only the first filter that rejected each node; resources, ports, "
+    "volumes, topology spread and pod (anti-)affinity aren't in the count.")
+
+#: Taint effects that keep a pod off a node (PreferNoSchedule only discourages).
+_REPELLING_EFFECTS = ("NoSchedule", "NoExecute")
+
+
+def _matches_requirement(req: dict, value: Optional[str]) -> bool:
+    """A node selector requirement against one label (or field) value, None if
+    the node lacks it. Gt and Lt compare integers; a value that isn't one
+    doesn't match, as in the scheduler."""
+    op, values = req.get("operator"), req.get("values") or []
+    if op == "In":
+        return value is not None and value in values
+    if op == "NotIn":
+        return value is None or value not in values
+    if op == "Exists":
+        return value is not None
+    if op == "DoesNotExist":
+        return value is None
+    if op in ("Gt", "Lt"):
+        try:
+            have, bound = int(value), int(values[0])
+        except (TypeError, ValueError, IndexError):
+            return False
+        return have > bound if op == "Gt" else have < bound
+    return False
+
+
+def _matches_term(term: dict, node) -> bool:
+    """A nodeSelectorTerm: its expressions and fields ANDed. An empty term
+    matches no node."""
+    exprs = term.get("match_expressions") or []
+    fields = term.get("match_fields") or []
+    if not exprs and not fields:
+        return False
+    return (all(_matches_requirement(r, node.labels.get(r.get("key"))) for r in exprs)
+            and all(_matches_requirement(
+                r, node.name if r.get("key") == "metadata.name" else None) for r in fields))
+
+
+def _required_affinity(spec: dict) -> Optional[dict]:
+    return (((spec.get("affinity") or {}).get("node_affinity") or {})
+            .get("required_during_scheduling_ignored_during_execution"))
+
+
+def _admits(spec: dict, node) -> bool:
+    """Whether a pod's nodeSelector and required node affinity admit a node."""
+    if any(node.labels.get(k) != v for k, v in (spec.get("node_selector") or {}).items()):
+        return False
+    required = _required_affinity(spec)
+    if required is None:
+        return True
+    return any(_matches_term(t, node) for t in required.get("node_selector_terms") or [])
+
+
+def _tolerates(tolerations: list[dict], taint: str) -> bool:
+    """Whether a toleration matches a taint as NodeSummary writes it ("key=value:Effect")."""
+    rest, _, effect = taint.rpartition(":")
+    key, _, value = rest.partition("=")
+    for t in tolerations:
+        if t.get("effect") and t["effect"] != effect:
+            continue
+        if t.get("key") and t["key"] != key:
+            continue
+        if t.get("operator") == "Exists" or (t.get("value") or "") == value:
+            return True
+    return False
+
+
+def _repelled(spec: dict, node) -> bool:
+    """Whether a node has a NoSchedule or NoExecute taint the pod doesn't tolerate."""
+    tolerations = spec.get("tolerations") or []
+    return any(t.rpartition(":")[2] in _REPELLING_EFFECTS and not _tolerates(tolerations, t)
+               for t in node.taints)
+
+
+def _nodes(api):
+    """The nodes, or the reason they can't be read. Best-effort: placement is
+    context for a pod already reported unscheduled."""
+    try:
+        return api.get_node_summaries(), None
+    except K8sApiError as e:
+        return None, str(e)[:200]
+
+
+def _placement_line(api, pod, namespace: str, nodes) -> str:
+    """How many nodes an unscheduled pod's nodeSelector and required node affinity
+    admit, and how many of those repel it with a taint, e.g. "ad-x: 0 of 5 nodes
+    match its nodeSelector and required node affinity"."""
+    nodes, error = nodes
+    if error:
+        return f"{pod.name}: not evaluated, nodes could not be read: {error}"
+    if not nodes:
+        return f"{pod.name}: not evaluated, no nodes were read"
+    try:
+        spec = api.get_pod_spec(pod.name, namespace)
+    except K8sApiError as e:
+        return f"{pod.name}: not evaluated, its spec could not be read: {str(e)[:200]}"
+    admitted = [n for n in nodes if _admits(spec, n)]
+    if spec.get("node_selector") or _required_affinity(spec) is not None:
+        line = (f"{pod.name}: {len(admitted)} of {len(nodes)} nodes match its "
+                "nodeSelector and required node affinity")
+    else:
+        line = f"{pod.name}: no nodeSelector or required node affinity, so all nodes match ({len(nodes)})"
+    if admitted:
+        repelled = sum(_repelled(spec, n) for n in admitted)
+        line += (f"; of those, {repelled} {'has' if repelled == 1 else 'have'} a "
+                 "NoSchedule or NoExecute taint it doesn't tolerate")
+    return line
+
+
 #: Generated pod-name suffixes: a ReplicaSet's, Job's or DaemonSet's pods are
 #: "<name>-<5 chars>"; a StatefulSet's are "<name>-<ordinal>".
 _RANDOM_SUFFIX = r"-[a-z0-9]{5}"
@@ -381,10 +496,12 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     unschedulable: dict[str, list[str]] = {}  # workloads by why their pods aren't scheduled
     # Read only when some pod is unscheduled, and then once.
     unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
+    nodes = functools.cache(lambda: _nodes(api))
 
     def assess(label, kind, name, ready, desired, pods, conditions):
         terminations, first_pod, waiting, init_pending, unscheduled = [], [], False, [], {}
         claims: dict[str, None] = {}
+        placement = []
         for i, pod in enumerate(pods):
             statuses = api.get_pod_container_statuses(pod.name, namespace)
             # A pod with no node has no containers to wait on: without this, the
@@ -392,6 +509,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
             if reason := _unscheduled(pod, statuses):
                 unscheduled[_unscheduled_line(pod, reason)] = reason
                 claims.update(dict.fromkeys(unbound_claims().get(pod.name, [])))
+                placement.append(_placement_line(api, pod, namespace, nodes()))
             for s in statuses.containers:
                 if i == 0:
                     first_pod.append(s)
@@ -435,6 +553,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         w = entry(label, kind, name, ready, desired, pods, restarts, last, first_pod, hpa,
                   readings, init_pending)
         w.unscheduled, w.claims, w.conditions = list(unscheduled), list(claims), conditions
+        w.placement = placement
         for reason in set(unscheduled.values()):
             unschedulable.setdefault(reason, []).append(label)
         entries.append(w)
@@ -504,6 +623,8 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         ingress_problems=_ingress_lines(api.get_ingress_summaries(namespace), problems_only=True))
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
+    if any(w.placement for w in entries):
+        result.notes.append(NOTE_PLACEMENT)
     if recovering:
         result.notes.append(NOTE_RECOVERING)
     if usage_unavailable:
@@ -705,13 +826,17 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                 if not _init_completed(s)]
 
     unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
+    nodes = functools.cache(lambda: _nodes(api))
     for pod in pods:
         if reason := _unscheduled(pod, statuses_by_pod[pod.name]):
             report.unscheduled.append(_unscheduled_line(pod, reason))
             report.claims.extend(c for c in unbound_claims().get(pod.name, [])
                                  if c not in report.claims)
+            report.placement.append(_placement_line(api, pod, namespace, nodes()))
         report.instances.extend(instance(pod, s) for s in statuses_by_pod[pod.name].containers)
         report.init_instances.extend(instance(pod, s) for s in pending_init(pod))
+    if report.placement:
+        report.notes.append(NOTE_PLACEMENT)
     if any(st.init_containers is None for st in statuses_by_pod.values()):
         report.notes.append(NOTE_INIT_NOT_RECORDED)
     elif report.init_instances:

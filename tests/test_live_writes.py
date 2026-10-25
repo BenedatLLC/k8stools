@@ -169,3 +169,9 @@ def test_a_rollout_whose_new_pod_cant_be_scheduled(apis, namespace):
 
     assert without_age(report.unscheduled) == without_age(web.unscheduled)
     assert report.conditions == web.conditions
+
+    # #29: the selector names a label no node has, so it admits none of them.
+    nodes = len(k8s_tools.get_node_summaries())
+    assert web.placement == [f"{pending.name}: 0 of {nodes} nodes match its nodeSelector "
+                             "and required node affinity"]
+    assert report.placement == web.placement

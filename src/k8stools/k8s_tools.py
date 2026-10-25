@@ -1094,7 +1094,7 @@ def get_pod_spec(pod_name: str, namespace: str = "default") -> dict[str,Any]:
             ) from e
         else:
             raise K8sApiError(
-                f"Error getting pod '{pod_name}' in namespace '{namespace}': {e}"
+                f"Error getting pod '{pod_name}' in namespace '{namespace}': {_api_error_text(e)}"
             ) from e
     except Exception as e:
         raise K8sApiError(f"Unexpected error getting pod spec: {_api_error_text(e)}") from e
@@ -3704,6 +3704,10 @@ class WorkloadHealth(_Compact):
     #: 'PersistentVolumeClaim/cache: Pending, storage class fast-ssd;
     #: ProvisioningFailed: storageclass.storage.k8s.io "fast-ssd" not found'.
     claims: list[str] = Field(default_factory=list)
+    #: For each of those pods, how many nodes its nodeSelector and required node
+    #: affinity admit, and how many of those repel it with a taint, e.g. "ad-x: 0
+    #: of 5 nodes match its nodeSelector and required node affinity".
+    placement: list[str] = Field(default_factory=list)
     #: A Deployment's failing conditions, as its controller states them:
     #: "Progressing=False (ProgressDeadlineExceeded): ...", "ReplicaFailure=True ...".
     conditions: list[str] = Field(default_factory=list)
@@ -3821,9 +3825,10 @@ class WorkloadReport(_Compact):
     ready: int
     desired: int
     #: As in get_namespace_health: pods with no node, the unbound claims they
-    #: mount, and failing Deployment conditions.
+    #: mount, how many nodes admit them, and failing Deployment conditions.
     unscheduled: list[str] = Field(default_factory=list)
     claims: list[str] = Field(default_factory=list)
+    placement: list[str] = Field(default_factory=list)
     conditions: list[str] = Field(default_factory=list)
     containers: list[ContainerEssentials] = Field(default_factory=list)
     #: Init containers of the focus pod's spec; [] when it has none.

@@ -37,6 +37,7 @@ tests/
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
   test_stuck_rollouts.py     - Unscheduled pods and failing Deployment conditions make a workload unhealthy (#27)
+  test_placement.py          - Composites' placement: nodeSelector/required affinity/tolerations against the nodes (#29)
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
@@ -200,6 +201,14 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   The unbound claims an unscheduled pod mounts go in `claims`, with the claim's
   newest event: the scheduler's "unbound immediate PersistentVolumeClaims" says
   nothing of why. Claims are read only when some pod is unscheduled.
+- **Count the nodes a pod's constraints admit** (#29): the scheduler's message
+  names only each node's first failing filter, so a cited taint may be on a node
+  the selector rejects too. `placement` counts, per unscheduled pod, the nodes
+  its nodeSelector and required node affinity admit and how many of those have
+  an untolerated NoSchedule/NoExecute taint, by the API's matching rules
+  (`NOTE_PLACEMENT` says it's k8stools' evaluation). Nodes are read once, only
+  when some pod is unscheduled; unreadable nodes or spec say "not evaluated",
+  never drop the line.
 - **Init containers apart** (#24): a completed init container (exit 0) is never
   a termination; one that hasn't completed makes the workload unhealthy and is
   named. `WorkloadReport.init_containers` is always serialized (`_keep_empty`), so
