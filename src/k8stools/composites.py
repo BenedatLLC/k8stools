@@ -35,7 +35,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         IngressSummary,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
-                        K8sLogReclaimed, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
+                        K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
                         NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
@@ -89,18 +89,36 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _workloads(api, namespace: str) -> list[tuple[str, str, int, int, list[str]]]:
+def _recorded(unrecorded: Optional[list[str]], read, *args, default=()):
+    """read(*args), or ``default`` when a replayed capture doesn't record that
+    kind, which is then named in ``unrecorded`` (for NOTE_NOT_RECORDED). Live
+    tools never raise K8sNotRecorded."""
+    try:
+        return read(*args)
+    except K8sNotRecorded as e:
+        if unrecorded is not None and e.what and e.what not in unrecorded:
+            unrecorded.append(e.what)
+        return default
+
+
+def _not_recorded_note(unrecorded: list[str]) -> str:
+    return ("Not recorded in this capture, so unknown rather than absent: "
+            + ", ".join(unrecorded) + ".")
+
+
+def _workloads(api, namespace: str, unrecorded: Optional[list[str]] = None
+               ) -> list[tuple[str, str, int, int, list[str]]]:
     """(kind, name, ready, desired, failing conditions) for each workload in the
     namespace."""
     out = []
-    for d in api.get_deployment_summaries(namespace):
+    for d in _recorded(unrecorded, api.get_deployment_summaries, namespace):
         out.append(("Deployment", d.name, d.ready_replicas, d.total_replicas,
                      _failing_conditions(d.conditions or [])))
-    for s in api.get_statefulset_summaries(namespace):
+    for s in _recorded(unrecorded, api.get_statefulset_summaries, namespace):
         out.append(("StatefulSet", s.name, s.ready_replicas, s.total_replicas, []))
-    for d in api.get_daemonset_summaries(namespace):
+    for d in _recorded(unrecorded, api.get_daemonset_summaries, namespace):
         out.append(("DaemonSet", d.name, d.number_ready, d.desired_number_scheduled, []))
-    for j in api.get_job_summaries(namespace):
+    for j in _recorded(unrecorded, api.get_job_summaries, namespace):
         # A Job is "ready" when it has succeeded; desired is 1 run.
         out.append(("Job", j.name, 1 if j.succeeded else 0, 1, []))
     return out
@@ -153,7 +171,7 @@ def _claim_line(c: PVCSummary) -> str:
     return line + f"; {e.reason}: {e.message[:200]}"
 
 
-def _unbound_claims(api, namespace: str) -> dict[str, list[str]]:
+def _unbound_claims(api, namespace: str, unrecorded: list[str]) -> dict[str, list[str]]:
     """The unbound claims each pod mounts, as _claim_line()s, by pod name.
 
     The scheduler says only that a pod has unbound claims; why a claim is
@@ -161,7 +179,7 @@ def _unbound_claims(api, namespace: str) -> dict[str, list[str]]:
     a pod already reported unscheduled.
     """
     try:
-        claims = api.get_pvc_summaries(namespace)
+        claims = _recorded(unrecorded, api.get_pvc_summaries, namespace)
     except K8sApiError:
         return {}
     by_pod: dict[str, list[str]] = {}
@@ -312,7 +330,8 @@ def _match_by_name(pod_name: str, rs_owner: dict[str, str],
     return None
 
 
-def _pods_by_workload(api, namespace: str, workloads: list[tuple]
+def _pods_by_workload(api, namespace: str, workloads: list[tuple],
+                      unrecorded: Optional[list[str]] = None
                       ) -> tuple[dict[tuple[str, str], list], list, bool]:
     """Pods grouped by their workload; pods no workload owns; and whether any
     pod was matched by name.
@@ -323,7 +342,8 @@ def _pods_by_workload(api, namespace: str, workloads: list[tuple]
     ownerless and every workload would read zero restarts, which is wrong, not
     unknown.
     """
-    rs_owner = {r.name: r.owner_deployment for r in api.get_replicaset_summaries(namespace)}
+    rs_owner = {r.name: r.owner_deployment
+                for r in _recorded(unrecorded, api.get_replicaset_summaries, namespace)}
     grouped: dict[tuple[str, str], list] = {}
     standalone, by_name = [], False
     for pod in api.get_pod_summaries(namespace):
@@ -398,9 +418,9 @@ def _template_changed(api, kind: str, name: str, namespace: str) -> Optional[dat
     return current[0].age if current else None
 
 
-def _autoscalers(api, namespace: str) -> dict[str, HpaSummary]:
+def _autoscalers(api, namespace: str, unrecorded: list[str]) -> dict[str, HpaSummary]:
     """HPAs by the "Kind/name" they scale."""
-    return {h.scale_target: h for h in api.get_hpa_summaries(namespace)}
+    return {h.scale_target: h for h in _recorded(unrecorded, api.get_hpa_summaries, namespace)}
 
 
 def _endpoint_line(e: EndpointSummary) -> str:
@@ -485,17 +505,18 @@ def _lifetimes(terminations: list[Termination]) -> str:
 
 def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     now = _now()
-    workloads = _workloads(api, namespace)
-    grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads)
-    autoscalers = _autoscalers(api, namespace)
-    endpoints = api.get_endpoint_summaries(namespace)
+    unrecorded: list[str] = []
+    workloads = _workloads(api, namespace, unrecorded)
+    grouped, standalone, by_name = _pods_by_workload(api, namespace, workloads, unrecorded)
+    autoscalers = _autoscalers(api, namespace, unrecorded)
+    endpoints = _recorded(unrecorded, api.get_endpoint_summaries, namespace)
     usage, usage_unavailable = _usage(api, namespace)
     entries: list[WorkloadHealth] = []
     recovering: list[WorkloadHealth] = []
     healthy_lines: list[str] = []
     unschedulable: dict[str, list[str]] = {}  # workloads by why their pods aren't scheduled
     # Read only when some pod is unscheduled, and then once.
-    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
+    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace, unrecorded))
     nodes = functools.cache(lambda: _nodes(api))
 
     def assess(label, kind, name, ready, desired, pods, conditions):
@@ -620,7 +641,10 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         recovering_more=recovering_more, healthy=healthy_lines,
         common_failures=failures,
         services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready],
-        ingress_problems=_ingress_lines(api.get_ingress_summaries(namespace), problems_only=True))
+        ingress_problems=_ingress_lines(
+            _recorded(unrecorded, api.get_ingress_summaries, namespace), problems_only=True))
+    if unrecorded:
+        result.notes.append(_not_recorded_note(unrecorded))
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
     if any(w.placement for w in entries):
@@ -735,14 +759,15 @@ def _state_text(status, now) -> str:
     return "Unknown"
 
 
-def _events(api, namespace: str, names: list[str], kinds: set[str]) -> list[EventLine]:
+def _events(api, namespace: str, names: list[str], kinds: set[str],
+            unrecorded: list[str]) -> list[EventLine]:
     """Events for the named objects of the given kinds, merged where they differ
     only in which object they name (the same event recorded for each pod)."""
     merged: dict[tuple, EventLine] = {}
     name_rx = re.compile(r"(?<![\w.-])(" + "|".join(map(re.escape, sorted(names, key=len, reverse=True)))
                          + r")(?![\w.-])")
     for name in names:
-        for e in api.get_events(namespace=namespace, involved_name=name):
+        for e in _recorded(unrecorded, api.get_events, namespace, None, None, name):
             if e.object.partition("/")[0] not in kinds:
                 continue  # e.g. a Service that shares the workload's name
             message = name_rx.sub("<name>", e.message)
@@ -772,6 +797,9 @@ def _tail(api, pod: str, namespace: str, container: str, previous: bool,
     except K8sLogReclaimed:
         return LogTail(pod=pod, container=container, previous=previous, available=False,
                        reason=LOG_RECLAIMED_REASON)
+    except K8sNotRecorded as e:
+        return LogTail(pod=pod, container=container, previous=previous, available=False,
+                       reason=str(e))
     except K8sApiError:
         return None  # e.g. no previous instance
     notes, body = [], []
@@ -797,12 +825,16 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     if kind is not None and kind not in _KINDS:
         raise K8sApiError(f"Unsupported kind '{kind}': expected one of {', '.join(_KINDS)}.")
     kind = kind or _find_kind(api, name, namespace)
-    workloads = _workloads(api, namespace)
+    unrecorded: list[str] = []
+    workloads = _workloads(api, namespace, unrecorded)
     matches = [(r, d, c) for k, n, r, d, c in workloads if (k, n) == (kind, name)]
     if not matches:
+        if f"{kind}s" in unrecorded:
+            raise K8sNotRecorded(f"This capture doesn't record {kind}s, so {kind} "
+                                 f"'{name}' is unknown, not absent.", what=f"{kind}s")
         raise K8sApiError(f"{kind} '{name}' not found in namespace '{namespace}'.")
     ready, desired, conditions = matches[0]
-    grouped, _, by_name = _pods_by_workload(api, namespace, workloads)
+    grouped, _, by_name = _pods_by_workload(api, namespace, workloads, unrecorded)
     pods = grouped.get((kind, name), [])
     report = WorkloadReport(workload=f"{kind}/{name}", ready=ready, desired=desired,
                             conditions=conditions)
@@ -825,7 +857,7 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
         return [s for s in statuses_by_pod[pod.name].init_containers or []
                 if not _init_completed(s)]
 
-    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace))
+    unbound_claims = functools.cache(lambda: _unbound_claims(api, namespace, unrecorded))
     nodes = functools.cache(lambda: _nodes(api))
     for pod in pods:
         if reason := _unscheduled(pod, statuses_by_pod[pod.name]):
@@ -865,10 +897,10 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     else:
         report.notes.append("No pods: spec, instances and logs are unavailable.")
 
-    replicasets = [r.name for r in api.get_replicaset_summaries(namespace)
+    replicasets = [r.name for r in _recorded(unrecorded, api.get_replicaset_summaries, namespace)
                    if r.owner_deployment == name] if kind == "Deployment" else []
     report.events = _events(api, namespace, [name] + replicasets + [p.name for p in pods],
-                            {kind, "ReplicaSet", "Pod"})
+                            {kind, "ReplicaSet", "Pod"}, unrecorded)
     oldest = max((e.first_seen for e in report.events if e.first_seen is not None), default=None)
     if oldest is not None:
         report.notes.append(
@@ -876,8 +908,11 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
             "not necessarily when the problem did. Records expire after a retention "
             "period the API doesn't report.")
 
+    history = None
     if kind != "Job":
-        history = api.get_workload_history(name, namespace, kind)
+        history = _recorded(unrecorded, api.get_workload_history, name, namespace, kind,
+                            default=None)
+    if history is not None:
         current = next((r for r in history.revisions if r.current), None)
         if current:
             report.last_change = LastChange(
@@ -888,10 +923,13 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                 f"The pod template last changed {_human(current.age)} ago. That is when "
                 "it changed, not how long the workload has been healthy.")
         report.config = history.config
-    report.autoscaler = _autoscalers(api, namespace).get(f"{kind}/{name}")
-    report.services = _services_for(api.get_endpoint_summaries(namespace), {p.name for p in pods})
-    report.ingresses = _ingress_lines(api.get_ingress_summaries(namespace),
+    report.autoscaler = _autoscalers(api, namespace, unrecorded).get(f"{kind}/{name}")
+    report.services = _services_for(_recorded(unrecorded, api.get_endpoint_summaries, namespace),
+                                    {p.name for p in pods})
+    report.ingresses = _ingress_lines(_recorded(unrecorded, api.get_ingress_summaries, namespace),
                                       services={e.service for e in report.services})
+    if unrecorded:
+        report.notes.append(_not_recorded_note(unrecorded))
     usage, usage_unavailable = _usage(api, namespace)
     if usage_unavailable:
         report.notes.append(f"Usage unavailable: {usage_unavailable}")

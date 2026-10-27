@@ -95,9 +95,10 @@ def _pod(name, owner, status, restarts=0, ready=0, spec=None, logs=None, previou
 
 
 def _state(**keys):
+    """A capture holding only the kinds given, and pods (none, unless given)."""
     return MockState(json.loads(json.dumps({
         "version": CAPTURE_VERSION, "captured_at": NOW.isoformat(), "redacted": False,
-        **keys})), frozen=True)
+        "pods": [], **keys})), frozen=True)
 
 
 @pytest.fixture

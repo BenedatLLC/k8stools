@@ -37,6 +37,7 @@ tests/
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
   test_stuck_rollouts.py     - Unscheduled pods and failing Deployment conditions make a workload unhealthy (#27)
+  test_not_recorded.py       - What a capture didn't record replays as not recorded: missing kinds, unrecorded logs, composites (#30)
   test_placement.py          - Composites' placement: nodeSelector/required affinity/tolerations against the nodes (#29)
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
@@ -391,6 +392,13 @@ Invariants worth preserving when touching this code:
   `Interval`. Three cases stay distinct and all raise `K8sMetricsUnavailable`
   with different messages: recorded unavailable (as live), and no `metrics` key
   (the capture predates them). Never fill in a missing reading.
+- **Not recorded is not none** (#30). A top-level list the capture lacks
+  (`_RECORDED_KINDS`) makes its replay tool raise `K8sNotRecorded`, never
+  return `[]`: an older capture with no `endpoints` said no Service had a
+  backend. The same for a container missing from `logs`, and from
+  `previous_logs` when it restarted; a recorded `''` stays empty. One rule for
+  every capture, live or imported. The composites read such kinds through
+  `_recorded` and name them in one note. Live tools never raise it.
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
   synthesizes answers for unknown pod names, and `get_pod_container_statuses`
   raises for one, as live.

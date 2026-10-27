@@ -253,7 +253,7 @@ def test_the_composites_show_usage_and_its_caveats():
 
 def test_composites_say_when_usage_is_unavailable():
     from k8stools.composites import namespace_health, workload_report
-    state = MockState(_capture(deployments=[{
+    state = MockState(_capture(pods=[], deployments=[{
         "name": "x", "namespace": "default", "total_replicas": 0, "ready_replicas": 0,
         "up_to_date_relicas": 0, "available_replicas": 0, "age_seconds": 60.0}]), frozen=True)
     assert any("predates resource metrics" in n for n in namespace_health(state, "default").notes)

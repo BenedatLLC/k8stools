@@ -63,6 +63,16 @@ from . import k8s_tools
 #: Version of the capture file format this module reads and :mod:`k8stools.capture` writes.
 CAPTURE_VERSION = "1"
 
+#: What each top-level list holds, for the error when a capture has none.
+_RECORDED_KINDS = {
+    "namespaces": "namespaces", "nodes": "nodes", "pods": "pods",
+    "deployments": "Deployments", "replicasets": "ReplicaSets", "services": "Services",
+    "endpoints": "Service endpoints", "ingresses": "Ingresses", "configmaps": "ConfigMaps",
+    "statefulsets": "StatefulSets", "daemonsets": "DaemonSets", "hpas":
+    "HorizontalPodAutoscalers", "cronjobs": "CronJobs", "jobs": "Jobs",
+    "pvcs": "PersistentVolumeClaims", "events": "events",
+}
+
 #: Path of the built-in capture (the OTel Demo on Minikube snapshot).
 BUILTIN_STATE_FILE = Path(__file__).parent / "fixtures" / "otel-demo.json"
 
@@ -411,10 +421,22 @@ class MockState:
 
     # -- helpers ------------------------------------------------------------
 
+    def _records(self, key: str) -> list[dict[str, Any]]:
+        """A top-level list, or K8sNotRecorded when the capture has none: a
+        missing kind is unknown, not empty, whether the capture predates it or
+        didn't collect it."""
+        records = self._data.get(key)
+        if records is None:
+            raise k8s_tools.K8sNotRecorded(
+                f"This capture doesn't record {_RECORDED_KINDS.get(key, key)}: it has no "
+                f"'{key}' list (it predates them, or they weren't collected), so they "
+                "are unknown, not absent.", what=_RECORDED_KINDS.get(key, key))
+        return records
+
     def _decode_all(self, key: str, model: type[BaseModel],
                     namespace: Optional[str]) -> list[Any]:
         """Decode a top-level list, filtered by namespace the way the real tools do."""
-        records = self._data.get(key, [])
+        records = self._records(key)
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         return [decode_model(model, r, self._clock) for r in records]
@@ -453,7 +475,7 @@ class MockState:
 
     @_pinned_query
     def get_pod_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.PodSummary]:
-        records = [r.get("summary", {}) for r in self._data.get("pods", [])]
+        records = [r.get("summary", {}) for r in self._records("pods")]
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         return [decode_model(k8s_tools.PodSummary, r, self._clock) for r in records]
@@ -495,7 +517,7 @@ class MockState:
         the ``Kind/name`` form ``get_events`` uses.
         """
         results = []
-        for record in self._data.get("events", []):
+        for record in self._records("events"):
             if record.get("namespace") != namespace:
                 continue
             if record.get("involved_name") != pod_name:
@@ -510,7 +532,7 @@ class MockState:
                    involved_name: Optional[str] = None,
                    event_type: Optional[str] = None) -> list[k8s_tools.EventSummary]:
         results = []
-        for record in self._data.get("events", []):
+        for record in self._records("events"):
             if namespace is not None and record.get("namespace") != namespace:
                 continue
             if reason is not None and record.get("reason") != reason:
@@ -562,13 +584,26 @@ class MockState:
             elif logs:
                 container_name = next(iter(logs))
         if container_name not in logs:
-            if previous:
-                # No previous instance was captured for this container, which is
-                # what the real tool reports when there is none to read.
+            statuses = {s.get("container_name"): s
+                        for s in record.get("container_statuses", [])
+                        + record.get("init_container_statuses", [])}
+            containers = set(statuses) | {
+                c.get("name") for key in ("containers", "init_containers")
+                for c in (record.get("spec") or {}).get(key) or []}
+            if container_name not in containers:
+                raise k8s_tools.K8sApiError(
+                    f"Error fetching logs: container '{container_name}' is not valid "
+                    f"for pod '{pod_name}'.")
+            if previous and not (statuses.get(container_name) or {}).get("restart_count"):
+                # It never restarted: there is no previous instance, as live.
                 raise k8s_tools.K8sApiError(
                     f"Error fetching logs: previous terminated instance of container "
                     f"'{container_name}' in pod '{pod_name}' not found.")
-            text = ''
+            # Unread when captured, or never collected: unknown, not empty.
+            raise k8s_tools.K8sNotRecorded(
+                f"The {'previous instance' if previous else 'log'} of container "
+                f"'{container_name}' in pod '{pod_name}' wasn't recorded in this capture: "
+                "what it wrote is unknown.")
         elif k8s_tools._is_reclaimed_log(logs[container_name]):
             # The kubelet's message has no timestamp for since_seconds to filter on;
             # passed whole, it raises below as the live tool does.
@@ -607,7 +642,7 @@ class MockState:
         key = {"Deployment": "deployments", "StatefulSet": "statefulsets",
                "DaemonSet": "daemonsets"}[kind]
         if not any(r.get("name") == name and r.get("namespace") == namespace
-                   for r in self._data.get(key, [])):
+                   for r in self._records(key)):
             raise k8s_tools.K8sApiError(
                 f"{kind} '{name}' not found in namespace '{namespace}'.")
 
@@ -651,7 +686,7 @@ class MockState:
         `k8s_tools.get_replicaset_summaries`. See that function's docstring for
         what a missing revision means.
         """
-        records = self._data.get("replicasets", [])
+        records = self._records("replicasets")
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         if deployment is not None:
@@ -671,7 +706,7 @@ class MockState:
     @_pinned_query
     def get_configmap_summaries(self,
                                 namespace: Optional[str] = None) -> list[k8s_tools.ConfigMapSummary]:
-        records = self._data.get("configmaps", [])
+        records = self._records("configmaps")
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         summaries = []
@@ -688,7 +723,7 @@ class MockState:
 
     @_pinned_query
     def get_configmap(self, name: str, namespace: str = "default") -> dict[str, Any]:
-        for r in self._data.get("configmaps", []):
+        for r in self._records("configmaps"):
             if r.get("name") == name and r.get("namespace") == namespace:
                 return {
                     "name": r.get("name"),
@@ -733,10 +768,12 @@ class MockState:
 
     @_pinned_query
     def get_custom_resource_definitions(self) -> list[k8s_tools.CrdSummary]:
-        """Captures from before custom resources were captured replay none."""
+        """Captures from before custom resources were captured raise K8sNotRecorded."""
         record = self._data.get("custom_resources")
         if record is None:
-            return []
+            raise k8s_tools.K8sNotRecorded(
+                "This capture predates custom resources (recorded from k8stools 3.0.0): "
+                "they are unknown, not absent.", what="custom resources")
         if not record.get("available"):
             raise k8s_tools.K8sApiError(record.get("reason") or "Custom resources were not readable.")
         return [decode_model(k8s_tools.CrdSummary, r, self._clock)
@@ -765,7 +802,7 @@ class MockState:
 
     @_pinned_query
     def get_ingress_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
-        """Captures from before Ingresses were captured replay none."""
+        """Captures from before Ingresses were captured raise K8sNotRecorded."""
         return self._decode_all("ingresses", k8s_tools.IngressSummary, namespace)
 
     @_pinned_query
@@ -832,7 +869,7 @@ class MockState:
                              since_seconds: Optional[int] = None,
                              previous: bool = False) -> Optional[str]:
         """Logs of the CronJob's newest Job's newest pod, as the real tool resolves them."""
-        owned = [r for r in self._data.get("jobs", [])
+        owned = [r for r in self._records("jobs")
                  if r.get("namespace") == namespace and r.get("owner") == cronjob_name]
         if not owned:
             return None

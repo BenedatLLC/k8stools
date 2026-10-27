@@ -138,7 +138,8 @@ def test_round_trip_and_older_captures():
     [back] = MockState(json.loads(json.dumps(capture | {"ingresses": [record]})),
                        frozen=True).get_ingress_summaries("default")
     assert back == ing and back.notes == [k8s_tools.NOTE_INGRESS_BACKEND]
-    assert MockState(capture, frozen=True).get_ingress_summaries() == []
+    with pytest.raises(k8s_tools.K8sNotRecorded, match="doesn't record Ingresses"):
+        MockState(capture, frozen=True).get_ingress_summaries()
 
 
 def test_the_composites_show_rules_that_cant_reach_a_pod():

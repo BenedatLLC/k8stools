@@ -660,9 +660,20 @@ lines was 3.3 MB). Use `--max-log-lines` to trade size against history, or
 written and read gzipped; see [Compression, and what to check
 in](#compression-and-what-to-check-in).
 
-Captures made by older versions of k8stools still load. Data they don't have
-replays as empty, as unknown (`None`, never 0), or as an error saying the capture
-predates it.
+Captures made by older versions of k8stools still load. **What a capture didn't
+record replays as not recorded, never as none**, whether the capture predates it
+or didn't collect it:
+
+- A kind the capture has no list of (an older capture has no `endpoints`, say)
+  makes its tool raise `K8sNotRecorded`, an error saying the kind is unknown
+  rather than absent. `get_namespace_health` and `get_workload_report` name such
+  kinds in one note instead of failing.
+- A container log that wasn't recorded (unreadable when captured, or
+  `--no-logs`) raises `K8sNotRecorded` too, and so does a previous-instance log
+  of a container that restarted, when its previous log wasn't captured. A
+  container that never restarted has no previous instance, and says so, as
+  live. A log recorded as empty is replayed as empty.
+- A field the capture predates is unknown (`None`, never 0).
 
 ### Compression, and what to check in
 

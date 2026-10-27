@@ -164,8 +164,9 @@ def test_hpas_round_trip_and_their_ages_advance():
     assert back.metrics == hpa.metrics and back.notes == hpa.notes
 
 
-def test_a_capture_without_hpas_replays_none():
-    assert MockState(_capture(), frozen=True).get_hpa_summaries() == []
+def test_a_capture_without_hpas_doesnt_record_them():
+    with pytest.raises(k8s_tools.K8sNotRecorded, match="doesn't record HorizontalPodAutoscalers"):
+        MockState(_capture(), frozen=True).get_hpa_summaries()
 
 
 # --- in the composites ------------------------------------------------------------------

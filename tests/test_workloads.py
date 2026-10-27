@@ -218,13 +218,14 @@ def test_daemonsets_round_trip_and_filter_by_namespace():
     assert len(state.get_daemonset_summaries()) == 2
 
 
-def test_a_capture_from_before_2_3_0_has_no_daemonsets_and_no_owners():
+def test_a_capture_from_before_2_3_0_records_no_daemonsets_and_no_owners():
     state = MockState(_capture(pods=[{
         "summary": {"name": "p", "namespace": "default", "total_containers": 1,
                     "ready_containers": 1, "restarts": 0, "last_restart_seconds": None,
                     "age_seconds": 60.0},
         "container_statuses": []}]), frozen=True)
-    assert state.get_daemonset_summaries() == []
+    with pytest.raises(k8s_tools.K8sNotRecorded, match="doesn't record DaemonSets"):
+        state.get_daemonset_summaries()
     assert state.get_pod_summaries()[0].owner is None
 
 

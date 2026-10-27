@@ -61,6 +61,17 @@ class K8sMetricsUnavailable(K8sApiError):
     taken without metrics."""
 
 
+class K8sNotRecorded(K8sApiError):
+    """Replay only: the capture doesn't record what was asked for (a kind it has
+    no list of, or a container's log). Raised rather than answering empty, so
+    that "not recorded" never reads as "none". ``what`` names a kind that wasn't
+    recorded ("DaemonSets"), for callers that list them; None for a log."""
+
+    def __init__(self, message: str, what: Optional[str] = None):
+        super().__init__(message)
+        self.what = what
+
+
 class K8sLogReclaimed(K8sApiError):
     """The log instance asked for exists in the container's status, but its log
     file is gone: the kubelet answered 200 with "unable to retrieve container logs

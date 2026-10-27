@@ -169,12 +169,13 @@ def test_endpoints_round_trip_and_notes_are_derived():
     assert back == e and back.notes == [k8s_tools.NOTE_NO_READY_ENDPOINTS]
 
 
-def test_a_capture_from_before_endpoints_has_none_and_unknown_counts():
+def test_a_capture_from_before_endpoints_doesnt_record_them_and_has_unknown_counts():
     state = MockState(_capture(services=[{
         "name": "ad", "namespace": "default", "type": "ClusterIP", "cluster_ip": "10.96.1.100",
         "external_ip": None, "ports": [{"port": 8080, "protocol": "TCP"}], "age_seconds": 60.0,
         "selector": {"app": "ad"}, "labels": {}, "annotations": {}}]), frozen=True)
-    assert state.get_endpoint_summaries() == []
+    with pytest.raises(k8s_tools.K8sNotRecorded, match="doesn't record Service endpoints"):
+        state.get_endpoint_summaries()
     [s] = state.get_service_summaries()
     assert (s.ready_endpoints, s.not_ready_endpoints) == (None, None)
 

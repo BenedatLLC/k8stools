@@ -12,7 +12,7 @@ import pytest
 from kubernetes import client as c
 
 from k8stools import capture, k8s_tools, mock_tools
-from k8stools.k8s_tools import NOTE_CR_NO_CONDITIONS, NOTE_CR_NOT_OBSERVED, K8sApiError
+from k8stools.k8s_tools import NOTE_CR_NO_CONDITIONS, NOTE_CR_NOT_OBSERVED, K8sApiError, K8sNotRecorded
 from k8stools.mock_state import CAPTURE_VERSION, MockState
 
 UTC = datetime.timezone.utc
@@ -210,7 +210,8 @@ def test_replay_cases():
     with pytest.raises(K8sApiError, match="No custom resource 'widgets.example.com'"):
         denied.get_custom_resource_status("example.com", "widgets")
     older = _state()
-    assert older.get_custom_resource_definitions() == []
+    with pytest.raises(K8sNotRecorded, match="predates custom resources"):
+        older.get_custom_resource_definitions()
     with pytest.raises(K8sApiError, match="predates custom resources"):
         older.get_custom_resource_status("cert-manager.io", "certificates")
     with pytest.raises(K8sApiError, match="not readable|Forbidden"):

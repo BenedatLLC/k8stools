@@ -3,6 +3,56 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.4.0 — unreleased
+
+### Issues fixed
+- [#30](https://github.com/BenedatLLC/k8stools/issues/30) (in part): what a
+  capture didn't record replays as "not recorded", the first step towards
+  importing ITBench-Lite snapshots.
+
+### Added
+- `K8sNotRecorded`, a `K8sApiError` raised only on replay, when the capture
+  doesn't record what was asked for. Like any `K8sApiError`, an MCP client
+  receives its message.
+
+### Changed
+- **A kind a capture has no list of is now "not recorded" on replay, not
+  none.** Its tool raises `K8sNotRecorded`, saying the kind is unknown rather
+  than absent; it used to return `[]`, telling the agent none existed. This
+  covers namespaces, nodes, pods, Deployments, ReplicaSets, Services,
+  endpoints, Ingresses, ConfigMaps, StatefulSets, DaemonSets, HPAs, CronJobs,
+  Jobs, PVCs and events (`get_configmap` too), and custom resource definitions
+  in a capture made before 3.0.0. `get_namespace_health` and
+  `get_workload_report` don't fail: they name those kinds in one note, "Not
+  recorded in this capture, so unknown rather than absent: ...", and use
+  nothing from them. A report asked for a workload of a kind that wasn't
+  recorded raises `K8sNotRecorded`.
+- **A container log a capture didn't record is now "not recorded", not
+  empty.** `get_logs_for_pod_and_container` raised nothing and returned `''`
+  for a container missing from the pod's logs (unreadable when captured, or
+  `--no-logs`); it now raises `K8sNotRecorded`, and in `get_workload_report`
+  that tail has `available: false` with the reason. A log recorded as an empty
+  string still replays as empty. With `previous=True`, a container that
+  restarted but whose previous log wasn't captured is "not recorded"; one that
+  never restarted is "not found", as live. A container the pod doesn't have
+  is an error, as live, rather than an empty log.
+- In k8srca's captures this changes (the rest replay as before):
+  - `itbench-33-invalid-node-selector` and `jvm-oom-on-startup`: DaemonSets,
+    HPAs, endpoints and Ingresses read "not recorded", in the composites' note
+    and from their own tools. Neither has custom resources, now "not
+    recorded" rather than none. Scenario-33 also has no workload histories
+    (rebuilt from its ReplicaSets with a note, as before), and neither has
+    metrics ("predates resource metrics", as before).
+  - `image-pull-typo`: `email-754859f94c-4x46m`'s `email` log is not recorded
+    (the capture has no entry for it), so it is "not recorded", not empty.
+  - In seven of them (all but `checkout-gc-pressure`, `itbench-33` and
+    `jvm-oom-on-startup`), completed init containers that restarted (e.g.
+    `accounting-...-9pczq/wait-for-kafka`, 16 restarts) have no captured
+    previous log, by design: `previous=True` on them reads "not recorded",
+    not "not found".
+  - Scenario-33's 8 containers stored as `''` still replay as empty; only
+    re-importing changes them.
+
 ## 4.3.0 — 2026-10-24
 
 ### Issues fixed
