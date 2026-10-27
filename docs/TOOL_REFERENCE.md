@@ -95,7 +95,7 @@ shared by every tool, so all tools answer from this cluster.
 ClusterInfo
 An object with the following fields:
 
-- **`source`** (`str`): "kubeconfig" (bound through a kubeconfig context), "in-cluster" (the service account of the pod the server runs in), or "capture" (a recorded snapshot of a cluster being replayed, not a live cluster).
+- **`source`** (`str`): "kubeconfig" (bound through a kubeconfig context), "in-cluster" (the service account of the pod the server runs in), "capture" (a recorded snapshot of a cluster being replayed, not a live cluster), or "supplied" (a Python caller bound a client of its own with `use_api_client`; never from the MCP server).
 - **`context`** (`Optional[str]`): The kubeconfig context name. None for in-cluster config, and for a capture that did not record one.
 - **`server`** (`Optional[str]`): URL of the cluster's API server.
 - **`kubeconfig`** (`Optional[str]`): Path of the kubeconfig file (or ``:``-separated list of files) the binding was read from. None unless source is "kubeconfig".

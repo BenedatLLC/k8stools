@@ -504,6 +504,17 @@ k8s_tools.configure(kubeconfig="~/.kube/prod.yaml", context="prod-eu")
 
 The selection is resolved as described in [Selecting a cluster](#selecting-a-cluster).
 
+To answer from something that isn't a cluster (a converter serving a recorded
+snapshot, say), bind an `ApiClient` whose `rest_client` answers the requests, and
+pin the clock to the snapshot's time. Both apply to every tool and to
+`capture_state`, and are restored at the end of the block:
+
+```python
+with k8s_tools.use_api_client(api, context="snapshot-33"), \
+        k8s_tools.pinned_clock(snapshot_time):
+    state = capture_state()
+```
+
 ### Choosing tools in Python
 
 `TOOLS` is every tool. The toolsets are in `TOOLSETS`, and `select_tools` builds an

@@ -14,6 +14,14 @@ dates are release-tag dates.
 - `K8sNotRecorded`, a `K8sApiError` raised only on replay, when the capture
   doesn't record what was asked for. Like any `K8sApiError`, an MCP client
   receives its message.
+- `k8s_tools.pinned_clock(at)`: every tool computes ages as of `at` within the
+  block. Every age the tools compute now reads one clock (`_now()`).
+- `k8s_tools.use_api_client(api_client, context=, server=)`: bind every tool to
+  an `ApiClient` of your own within the block, then restore the binding. All
+  API groups, the metrics and custom-resource readers and `get_cluster_info`
+  (which reports `source: "supplied"`) go through it, so a converter can serve
+  a recorded snapshot to the real tools and capture by giving the client a
+  `rest_client` that answers from it.
 
 ### Changed
 - **A kind a capture has no list of is now "not recorded" on replay, not
@@ -52,6 +60,10 @@ dates are release-tag dates.
     not "not found".
   - Scenario-33's 8 containers stored as `''` still replay as empty; only
     re-importing changes them.
+- **A capture's ages are as of its `captured_at`.** `k8s-capture-state` pins
+  the clock for the whole capture, so an object read a minute in is no longer
+  aged a minute more than the file's timestamp says (replay shifted it by that
+  much). `captured_at` is now whole seconds.
 
 ## 4.3.0 — 2026-10-24
 

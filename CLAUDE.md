@@ -37,6 +37,7 @@ tests/
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
   test_stuck_rollouts.py     - Unscheduled pods and failing Deployment conditions make a workload unhealthy (#27)
+  test_hooks.py              - pinned_clock and use_api_client: one clock, every reader through the supplied client, restored (#30)
   test_not_recorded.py       - What a capture didn't record replays as not recorded: missing kinds, unrecorded logs, composites (#30)
   test_placement.py          - Composites' placement: nodeSelector/required affinity/tolerations against the nodes (#29)
   test_hpa.py                - get_hpa_summaries: metrics, conditions, at-max note, replay, composites
@@ -299,6 +300,14 @@ or lazily on first use. Invariants:
   deliberately no `K8STOOLS_KUBECONFIG`: `KUBECONFIG` already is that variable.
   The kubernetes client reads `KUBECONFIG` once, at import
   (`KUBE_CONFIG_DEFAULT_LOCATION`), so setting it at runtime has no effect.
+
+**Two hooks** let a converter run the real tools against a recorded snapshot
+(#30): `use_api_client(api_client, ...)` swaps the binding (and clears the group
+clients) for a block and restores both; `pinned_clock(at)` sets what `_now()`
+returns. Read the time only through `_now()`, never `datetime.now()`, and build
+any new client from `_binding().api_client`, or an import reads the wrong time or
+reaches a real cluster. `capture_state` pins the clock to its `captured_at` for
+the whole capture.
 
 `get_cluster_info` reports the binding. Its replay counterpart answers from the
 capture's optional top-level `cluster` record (context, server, server version —

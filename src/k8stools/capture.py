@@ -160,7 +160,17 @@ def capture_state(namespaces: Optional[list[str]] = None,
     # which made a "structure-only" capture *larger* than a normal one.
     include_previous_logs = include_previous_logs and include_logs
     redactor = _Redactor(redact, stats)
-    captured_at = datetime.datetime.now(datetime.timezone.utc)
+    captured_at = k8s_tools._now().replace(microsecond=0)
+    # Every age in the file is as of captured_at, however long the capture takes:
+    # read a minute in, a pod's age would otherwise be a minute more than the
+    # timestamp says, and replay would shift it by that much.
+    with k8s_tools.pinned_clock(captured_at):
+        return _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
+                        redact, redactor, stats, captured_at)
+
+
+def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
+             redact, redactor, stats, captured_at) -> dict[str, Any]:
 
     cluster = _safe(k8s_tools.get_cluster_info, default=None)
     all_namespaces = redactor(k8s_tools.get_namespaces())

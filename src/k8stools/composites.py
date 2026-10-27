@@ -39,7 +39,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
                         NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
-                        _to_whole_seconds)
+                        _now, _to_whole_seconds)
 
 
 # --- fixed semantics ------------------------------------------------------------
@@ -83,10 +83,6 @@ def _disagreement(code: Optional[int], reason: Optional[str]) -> Optional[str]:
 # --- gathering ----------------------------------------------------------------------
 
 _KINDS = ("Deployment", "StatefulSet", "DaemonSet", "Job")
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _recorded(unrecorded: Optional[list[str]], read, *args, default=()):

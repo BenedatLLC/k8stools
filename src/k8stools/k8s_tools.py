@@ -12,13 +12,14 @@
 """Function definitions for tools to interat with kubernetes.
 """
 
+import contextlib
 import sys
 import os
 import logging
 import datetime
 import json
 import re
-from typing import Optional, Union, Literal, Any, Annotated, ClassVar
+from typing import Optional, Union, Literal, Any, Annotated, Callable, ClassVar, Iterator
 
 from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
 import yaml
@@ -35,6 +36,32 @@ AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
 DISCOVERY_V1_API:Optional[client.DiscoveryV1Api] = None
 NETWORKING_V1_API:Optional[client.NetworkingV1Api] = None
 APIEXTENSIONS_V1_API:Optional[client.ApiextensionsV1Api] = None
+
+#: When set, what every tool reads as the current time (see :func:`pinned_clock`).
+_CLOCK: Optional[Callable[[], datetime.datetime]] = None
+
+
+def _now() -> datetime.datetime:
+    """The current time for every age the tools compute: one place to pin it."""
+    return _CLOCK() if _CLOCK is not None else datetime.datetime.now(datetime.timezone.utc)
+
+
+@contextlib.contextmanager
+def pinned_clock(at: datetime.datetime) -> Iterator[None]:
+    """Make every tool compute ages as of ``at`` (timezone-aware), for the block.
+
+    A capture pins it to its ``captured_at``, so ages read a minute into a capture
+    agree with the timestamp the file stores; an import pins it to the time of the
+    snapshot it converts. Process-wide, like the cluster binding.
+    """
+    global _CLOCK
+    if at.tzinfo is None:
+        raise ValueError("pinned_clock needs a timezone-aware datetime")
+    saved, _CLOCK = _CLOCK, (lambda: at)
+    try:
+        yield
+    finally:
+        _CLOCK = saved
 
 class K8sConfigError(Exception):
     """This is thrown when atempting to load the config or initializing the API fails."""
@@ -129,6 +156,8 @@ class _Binding:
     def describe(self) -> str:
         if self.source == "in-cluster":
             return f"in-cluster service account at {self.server}"
+        if self.source == "supplied":
+            return f"supplied API client, context '{self.context}' at {self.server}"
         return (f"context '{self.context}' at {self.server} "
                 f"(kubeconfig: {self.kubeconfig})")
 
@@ -218,13 +247,42 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
         If there is no selection and neither a kubeconfig nor in-cluster config
         can be loaded.
     """
-    global _BINDING, K8S, APPS_V1_API, BATCH_V1_API, AUTOSCALING_V2_API, DISCOVERY_V1_API, \
-        NETWORKING_V1_API, APIEXTENSIONS_V1_API
     binding = _resolve_binding(kubeconfig, context)
-    _BINDING = binding
-    K8S = APPS_V1_API = BATCH_V1_API = AUTOSCALING_V2_API = DISCOVERY_V1_API = None
-    NETWORKING_V1_API = APIEXTENSIONS_V1_API = None
+    _set_binding(binding)
     return binding.describe()
+
+
+#: The API-group clients built on the binding; replaced whenever it is.
+_GROUP_CLIENTS = ("K8S", "APPS_V1_API", "BATCH_V1_API", "AUTOSCALING_V2_API",
+                  "DISCOVERY_V1_API", "NETWORKING_V1_API", "APIEXTENSIONS_V1_API")
+
+
+def _set_binding(binding: Optional[_Binding]) -> None:
+    global _BINDING
+    _BINDING = binding
+    for name in _GROUP_CLIENTS:
+        globals()[name] = None
+
+
+@contextlib.contextmanager
+def use_api_client(api_client: client.ApiClient, context: Optional[str] = None,
+                   server: Optional[str] = None) -> Iterator[None]:
+    """Bind every tool to ``api_client`` for the block, then restore the binding.
+
+    For answering from something other than a kubeconfig, such as a converter
+    that serves a recorded snapshot: give it an ``ApiClient`` whose
+    ``rest_client`` answers the requests. Every API group, the metrics and
+    custom-resource readers and :func:`get_cluster_info` go through it, so
+    nothing reaches a real cluster. ``context`` and ``server`` are what
+    :func:`get_cluster_info` reports, with ``source="supplied"``.
+    """
+    saved = (_BINDING, {name: globals()[name] for name in _GROUP_CLIENTS})
+    _set_binding(_Binding(api_client, "supplied", context, server, None))
+    try:
+        yield
+    finally:
+        _set_binding(saved[0])
+        globals().update(saved[1])
 
 
 def _binding() -> _Binding:
@@ -343,7 +401,7 @@ def get_namespaces() -> list[NamespaceSummary]:
         K8S = _get_api_client()
     logging.info(f"get_namespaces()")
     namespaces = K8S.list_namespace().items
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     return [
         NamespaceSummary(name=namespace.metadata.name,
                         status=namespace.status.phase,
@@ -474,7 +532,7 @@ def get_node_summaries() -> list[NodeSummary]:
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching nodes: {_api_error_text(e)}") from e
     
-    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = _now()
     node_summaries: list[NodeSummary] = []
     
     for node in nodes:
@@ -672,7 +730,7 @@ def get_pod_summaries(namespace: Optional[str] = None) -> list[PodSummary]:
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e
 
-    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = _now()
 
     for pod in pods:
         pod_name = pod.metadata.name
@@ -832,7 +890,7 @@ def get_pod_events(pod_name: str, namespace: str = "default") -> list[EventSumma
     logging.info(f"get_pod_events(pod_name={pod_name}, namespace={namespace})")
     field_selector = f"involvedObject.name={pod_name}"
     events = K8S.list_namespaced_event(namespace, field_selector=field_selector)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     return [_event_summary(event, now, getattr(event.involved_object, 'name', pod_name))
             for event in events.items]
 
@@ -1319,7 +1377,7 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching deployments: {_api_error_text(e)}") from e
     
-    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = _now()
     
     for deployment in deployments.items:
         deployment_name = deployment.metadata.name
@@ -1396,7 +1454,7 @@ def get_replicaset_summaries(namespace: Optional[str] = None,
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching replica sets: {_api_error_text(e)}") from e
 
-    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = _now()
 
     for rs in replicasets.items:
         owner = None
@@ -1866,7 +1924,7 @@ def get_workload_history(name: str, namespace: str = "default",
 
     workload = _read_workload(kind, name, namespace)
     raw = _raw_revisions(kind, name, namespace)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
 
     revisions: list[WorkloadRevision] = []
     for i, (number, source, created, reused, template) in enumerate(raw):
@@ -1987,7 +2045,7 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching services: {_api_error_text(e)}") from e
 
-    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = _now()
     # One more list call, so "does this Service have backends?" needs no second
     # tool. Older roles may not grant EndpointSlices: counts are then unknown.
     try:
@@ -2294,7 +2352,7 @@ def get_ingress_summaries(namespace: Optional[str] = None) -> list[IngressSummar
         logging.warning(f"get_ingress_summaries: backend readiness unavailable: {e}")
         ready = None
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries = []
     for ing in ingresses:
         ns = ing.metadata.namespace
@@ -2379,7 +2437,7 @@ def get_configmap_summaries(namespace: Optional[str] = None) -> list[ConfigMapSu
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching config maps: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[ConfigMapSummary] = []
     for config_map in config_maps:
         key_count, data_size = _configmap_key_count_and_size(config_map)
@@ -2468,7 +2526,7 @@ def get_statefulset_summaries(namespace: Optional[str] = None) -> list[StatefulS
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching stateful sets: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[StatefulSetSummary] = []
     for sts in stateful_sets:
         spec = sts.spec
@@ -2548,7 +2606,7 @@ def get_daemonset_summaries(namespace: Optional[str] = None) -> list[DaemonSetSu
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching daemon sets: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[DaemonSetSummary] = []
     for ds in daemon_sets:
         spec = ds.spec
@@ -2712,7 +2770,7 @@ def get_hpa_summaries(namespace: Optional[str] = None) -> list[HpaSummary]:
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching horizontal pod autoscalers: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[HpaSummary] = []
     for hpa in hpas:
         spec, status = hpa.spec, hpa.status
@@ -2938,7 +2996,7 @@ def get_container_metrics(namespace: Optional[str] = None) -> list[ContainerUsag
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     readings = {(i["metadata"]["namespace"], i["metadata"]["name"]): i for i in items}
     out: list[ContainerUsage] = []
     for pod in pods:
@@ -2991,7 +3049,7 @@ def get_node_metrics() -> list[NodeUsage]:
         nodes = {n.metadata.name: n for n in K8S.list_node().items}
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching nodes: {_api_error_text(e)}") from e
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     out = []
     for item in items:
         name = item["metadata"]["name"]
@@ -3085,7 +3143,7 @@ def get_custom_resource_definitions() -> list[CrdSummary]:
         crds = APIEXTENSIONS_V1_API.list_custom_resource_definition().items
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching custom resource definitions: {_api_error_text(e)}") from e
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     out = []
     for crd in crds:
         spec = crd.spec
@@ -3142,7 +3200,7 @@ def get_custom_resource_status(group: str, plural: str, version: Optional[str] =
             raise K8sApiError(f"No custom resource '{plural}.{group}/{version}' in this cluster.") from e
         raise K8sApiError(f"Error fetching {plural}.{group}: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     out = []
     for item in (body.get("items", []) if isinstance(body, dict) else []):
         meta = item.get("metadata", {})
@@ -3243,7 +3301,7 @@ def get_cronjob_summaries(namespace: Optional[str] = None) -> list[CronJobSummar
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching cron jobs: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[CronJobSummary] = []
     for cron_job in cron_jobs:
         spec = cron_job.spec
@@ -3324,7 +3382,7 @@ def get_job_summaries(namespace: Optional[str] = None) -> list[JobSummary]:
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching jobs: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     summaries: list[JobSummary] = []
     for job in jobs:
         status = job.status
@@ -3496,7 +3554,7 @@ def get_pvc_summaries(namespace: Optional[str] = None) -> list[PVCSummary]:
         # Pod resolution is best-effort; leave mounted_by empty on failure.
         claim_to_pods = {}
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     # The unbound claims' events, from one call for the whole scope rather than one
     # per claim: a WaitForFirstConsumer claim with no pod stays Pending by design,
     # so a cluster can have many.
@@ -3594,7 +3652,7 @@ def get_events(namespace: Optional[str] = None,
     except client.ApiException as e:
         raise K8sApiError(f"Error fetching events: {_api_error_text(e)}") from e
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = _now()
     results: list[EventSummary] = []
     for event in events:
         involved = getattr(event, "involved_object", None)
@@ -3624,7 +3682,9 @@ def print_events(namespace: Optional[str] = None,
 
 class ClusterInfo(BaseModel):
     """Which cluster these tools are answering from."""
-    source: Literal["kubeconfig", "in-cluster", "capture"]
+    #: "supplied" only for Python callers that bind a client of their own
+    #: (:func:`use_api_client`); the MCP server never does.
+    source: Literal["kubeconfig", "in-cluster", "capture", "supplied"]
     context: Optional[str] = None
     server: Optional[str] = None
     kubeconfig: Optional[str] = None
