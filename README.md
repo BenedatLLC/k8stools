@@ -604,6 +604,7 @@ usage: k8s-capture-state [-h] [--namespace NS [NS ...]] [-o FILE]
                          [--kubeconfig PATH] [--context NAME] [--no-logs]
                          [--max-log-lines MAX_LOG_LINES] [--no-previous-logs]
                          [--no-redact] [--redact-file FILE]
+                         [--from-itbench DIR] [--at PULL] [--list-pulls]
                          [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
 
 Snapshot a Kubernetes cluster to a JSON file replayable by the k8stools MCP
@@ -639,6 +640,14 @@ options:
                         its compression). Use on captures taken with --no-
                         redact, or before a newer k8stools added redaction
                         rules.
+  --from-itbench DIR    Instead of capturing, import an ITBench-Lite snapshot
+                        (a scenario directory with k8s_objects_raw.tsv) as of
+                        one of its pulls. What it doesn't record replays as
+                        "not recorded".
+  --at PULL             With --from-itbench: the pull to import, numbered from
+                        1 [default: the last]. --list-pulls shows them.
+  --list-pulls          With --from-itbench: list the snapshot's pulls and
+                        exit
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Log level [default: INFO]
 ```
@@ -685,6 +694,41 @@ or didn't collect it:
   container that never restarted has no previous instance, and says so, as
   live. A log recorded as empty is replayed as empty.
 - A field the capture predates is unknown (`None`, never 0).
+
+### Importing an ITBench-Lite snapshot
+
+An [ITBench-Lite](https://huggingface.co/datasets/ibm-research/ITBench-Lite) scenario
+directory holds what an OpenTelemetry collector exported during the incident:
+Kubernetes objects pulled every five minutes (`k8s_objects_raw.tsv`), the event
+stream (`k8s_events_raw.tsv`) and the services' OTel log records
+(`otel_logs_raw.tsv`). `--from-itbench` turns one pull of it into a capture:
+
+```bash
+k8s-capture-state --from-itbench Scenario-33 --list-pulls      # numbered, with their kinds
+k8s-capture-state --from-itbench Scenario-33 --at 7 -o s33.json  # default: the last pull
+k8s-mcp-server --state-file s33.json --state-time frozen
+```
+
+The importer serves the pull to the real tools, with the clock set to the pull's
+time, and runs the same capture code against it, so an imported capture replays
+under the same rules as any other. What the snapshot doesn't hold replays as not
+recorded:
+
+- **Kinds the pull has no batch of.** A pull writes nothing for a kind with no
+  objects, so a missing kind may be none or a lost batch; `--list-pulls` and the
+  import's report name them. HPAs, CronJobs and ControllerRevisions are never
+  pulled, so StatefulSet and DaemonSet revisions are unknown (Deployment history
+  comes from the ReplicaSets).
+- **Logs are OpenTelemetry records, not container output.** Every replayed log
+  says so in a note: a stack trace a process printed to stderr isn't in them.
+  Records carry no container name: a record goes to its pod's only container, or
+  the container named like its service, or none (counted). Only the current
+  instance's records are kept (those since it started). A container with no
+  records at all is not recorded, and previous-instance logs never are.
+- **Metrics and custom resource instances** were never collected, and say so.
+- Events are those that existed at the pull (each recorded twice in the
+  snapshot, kept once). Endpoints are the core `Endpoints` objects, served as
+  EndpointSlices.
 
 ### Compression, and what to check in
 

@@ -506,6 +506,15 @@ def main() -> int:
                              "capture FILE and rewrite it in place (keeping its "
                              "compression). Use on captures taken with --no-redact, or "
                              "before a newer k8stools added redaction rules.")
+    parser.add_argument('--from-itbench', metavar='DIR', default=None,
+                        help="Instead of capturing, import an ITBench-Lite snapshot "
+                             "(a scenario directory with k8s_objects_raw.tsv) as of one "
+                             "of its pulls. What it doesn't record replays as \"not recorded\".")
+    parser.add_argument('--at', type=int, metavar='PULL', default=None,
+                        help="With --from-itbench: the pull to import, numbered from 1 "
+                             "[default: the last]. --list-pulls shows them.")
+    parser.add_argument('--list-pulls', action='store_true', default=False,
+                        help="With --from-itbench: list the snapshot's pulls and exit")
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='INFO', help="Log level [default: INFO]")
     args = parser.parse_args()
@@ -521,6 +530,12 @@ def main() -> int:
             return 1
         print(f"Redacted {count} value(s) in {args.redact_file}.")
         return 0
+
+    if args.list_pulls or args.at is not None:
+        if not args.from_itbench:
+            parser.error("--at and --list-pulls need --from-itbench")
+    if args.from_itbench:
+        return _import_itbench(args)
 
     redact = redaction_enabled(no_redact_flag=args.no_redact)
     if redact:
@@ -555,6 +570,38 @@ def main() -> int:
     write_state(state, output)
 
     print(stats.report())
+    print(f"Wrote {output} ({output.stat().st_size:,} bytes, "
+          f"{'redacted' if redact else 'NOT redacted'}).")
+    return 0
+
+
+def _import_itbench(args) -> int:
+    from . import itbench
+
+    directory = Path(args.from_itbench)
+    try:
+        if args.list_pulls:
+            pulls = itbench.read_pulls(directory)
+            kinds = itbench.all_kinds(pulls)
+            for pull in pulls:
+                print(pull.describe(kinds))
+            return 0
+        redact = redaction_enabled(no_redact_flag=args.no_redact)
+        if not redact:
+            logging.warning("Secret redaction is DISABLED - this capture may contain credentials")
+        stats, capture_stats = itbench.ImportStats(), CaptureStats()
+        state = itbench.import_snapshot(directory, args.at, namespaces=args.namespace,
+                                        include_logs=not args.no_logs,
+                                        max_log_lines=args.max_log_lines, redact=redact,
+                                        stats=stats, capture_stats=capture_stats)
+    except (itbench.SnapshotImportError, OSError) as e:
+        print(f"Import failed: {e}", file=sys.stderr)
+        return 1
+    output = Path(args.output) if args.output else Path(
+        f"itbench-{directory.name}-pull{stats.pull.number}.json")
+    write_state(state, output)
+    print(stats.report())
+    print(capture_stats.report())
     print(f"Wrote {output} ({output.stat().st_size:,} bytes, "
           f"{'redacted' if redact else 'NOT redacted'}).")
     return 0

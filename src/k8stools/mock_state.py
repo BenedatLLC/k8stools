@@ -614,10 +614,13 @@ class MockState:
                               now=self._clock.server_start_time + datetime.timedelta(
                                   seconds=self._clock.elapsed()))
         # Notes from the replayed state, as the live tool adds them from the live one.
-        return k8s_tools._with_log_notes(
+        noted = k8s_tools._with_log_notes(
             text, k8s_tools._all_statuses(self.get_pod_container_statuses(pod_name, namespace)),
             container_name,
             pod_name=pod_name, previous=previous)
+        if (self._data.get("source") or {}).get("logs") == "otel":
+            noted = f"{k8s_tools.LOG_NOTE_PREFIX}{NOTE_LOGS_FROM_OTEL}\n" + noted
+        return noted
 
     @_pinned_query
     def get_deployment_summaries(self,
@@ -939,6 +942,14 @@ def _slice_log(text: str, tail: Optional[int], since_seconds: Optional[int],
 #: The RFC 3339 timestamp the kubelet prefixes to each log line when asked for
 #: timestamps, split so the fractional digits (nanoseconds, in practice) and the
 #: zone spelling can be written back exactly as they came.
+#: Noted on every log of a capture whose logs are OpenTelemetry records (an
+#: ITBench import): an agent that finds no error in them otherwise concludes the
+#: process printed none.
+NOTE_LOGS_FROM_OTEL = (
+    "These lines are the OpenTelemetry log records the service exported (imported "
+    "from an ITBench snapshot), not the container's stdout/stderr, which wasn't "
+    "recorded: a stack trace or error the process printed directly may be missing.")
+
 _LOG_TS_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})(?=\s|$)")
 

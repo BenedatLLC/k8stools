@@ -6,11 +6,26 @@ dates are release-tag dates.
 ## 4.4.0 — unreleased
 
 ### Issues fixed
-- [#30](https://github.com/BenedatLLC/k8stools/issues/30) (in part): what a
-  capture didn't record replays as "not recorded", the first step towards
-  importing ITBench-Lite snapshots.
+- [#30](https://github.com/BenedatLLC/k8stools/issues/30): Import path: an
+  ITBench-Lite snapshot to a capture, at a chosen pull.
 
 ### Added
+- **`k8s-capture-state --from-itbench DIR [--at PULL]`** imports one pull of an
+  ITBench-Lite scenario directory (default: the last) as a capture, and
+  `--list-pulls` lists them with the kinds each has. The pull is served to the
+  real tools and capture code (`k8stools.itbench`), so it replays under the
+  same rules as a live capture, and what the snapshot doesn't hold is not
+  recorded: kinds a pull has no batch of, HPAs, CronJobs, StatefulSet and
+  DaemonSet revisions, previous-instance logs, and the logs of containers with
+  no records. Metrics and custom resource instances say ITBench didn't collect
+  them. Logs are the services' OpenTelemetry records, each line with its
+  time, severity, body (templates filled in) and attributes, and every
+  replayed log says in a note that they aren't the container's output. Events
+  are those that existed at the pull; Endpoints are served as EndpointSlices.
+  All 11 scenarios at hand import (7-18 s each); Scenario-33's matches k8srca's
+  earlier conversion on everything that had, and adds owners, the scheduler's
+  reasons, Deployment conditions, endpoints and the template change that
+  caused it.
 - `K8sNotRecorded`, a `K8sApiError` raised only on replay, when the capture
   doesn't record what was asked for. Like any `K8sApiError`, an MCP client
   receives its message.
@@ -60,6 +75,12 @@ dates are release-tag dates.
     not "not found".
   - Scenario-33's 8 containers stored as `''` still replay as empty; only
     re-importing changes them.
+- **A container that never started has no start time.** One that failed with
+  `StartError` (the runtime couldn't run it) reports its start as Go's zero
+  time, 1970-01-01, which `ContainerStateTerminated` took literally:
+  `ran_for` was 55 years, and `get_workload_report` gave that as the instance's
+  lifetime. `started_at` and `ran_for` are now None for it. (Found in
+  ITBench-Lite Scenario-105, a CrashLoopBackOff on an invalid command.)
 - **A capture's ages are as of its `captured_at`.** `k8s-capture-state` pins
   the clock for the whole capture, so an object read a minute in is no longer
   aged a minute more than the file's timestamp says (replay shifted it by that

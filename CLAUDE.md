@@ -10,6 +10,7 @@ src/k8stools/
   composites.py  - Logic of the composite tools (get_namespace_health, get_workload_report)
   mock_state.py  - MockState: loads a capture file and serves it to the tool queries
   capture.py     - `k8s-capture-state` CLI: snapshots a live cluster to a capture file
+  itbench.py     - `--from-itbench`: serves one pull of an ITBench-Lite snapshot to capture_state
   mock_tools.py  - Mock versions of all tools; thin delegates to MockState
   redaction.py   - Secret-redaction pass applied at the MCP server output boundary
   mcp_server.py  - MCP server (stdio or streamable-http transport)
@@ -17,6 +18,7 @@ src/k8stools/
   fixtures/
     otel-demo.json - Built-in capture served by `--mock` (hand-maintained, modeled on Minikube + OTel Demo)
 tests/
+  fixtures/itbench-33-excerpt/ - Trimmed ITBench-Lite Scenario-33 (two pulls); made by fixtures/make_itbench_excerpt.py
   test_k8s_tools.py          - Unit tests for the original tools (mocked K8s API)
   test_new_tools.py          - Unit tests for the 1.1.0 tools (ConfigMaps, CronJobs/Jobs, PVCs, StatefulSets, events, log enhancements)
   test_replicaset_tool.py    - Unit tests for get_replicaset_summaries (1.2.0), incl. mock-data consistency
@@ -37,6 +39,7 @@ tests/
   test_composites.py         - get_namespace_health / get_workload_report: semantics, grouping, bounds
   test_init_containers.py    - Init containers and native sidecars: the pod model, composites, capture, older captures
   test_stuck_rollouts.py     - Unscheduled pods and failing Deployment conditions make a workload unhealthy (#27)
+  test_itbench.py            - ITBench import: pulls, not-recorded kinds, events at the pull, log attribution, Scenario-33 regression
   test_hooks.py              - pinned_clock and use_api_client: one clock, every reader through the supplied client, restored (#30)
   test_not_recorded.py       - What a capture didn't record replays as not recorded: missing kinds, unrecorded logs, composites (#30)
   test_placement.py          - Composites' placement: nodeSelector/required affinity/tolerations against the nodes (#29)
@@ -408,6 +411,17 @@ Invariants worth preserving when touching this code:
   `previous_logs` when it restarted; a recorded `''` stays empty. One rule for
   every capture, live or imported. The composites read such kinds through
   `_recorded` and name them in one note. Live tools never raise it.
+- **An ITBench import runs the real capture** (#30): `itbench.SnapshotRest`
+  answers the API from one pull, under `use_api_client` and `pinned_clock`, and
+  `import_snapshot` then removes what the snapshot didn't record and states
+  what it never collected, rather than teaching `capture_state` about it. A
+  pull lists nothing for a kind with no objects, so a kind missing from the
+  pull is not recorded, never none. Logs are OTel SDK records: no container
+  name (attribute only to a pod's sole container or one named like the
+  service), a `container.id` that matches no container (don't use it), and
+  only the current instance's (by start time); replay notes their source
+  (`source.logs == "otel"`, `NOTE_LOGS_FROM_OTEL`). Previous-instance logs are
+  never imported.
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
   synthesizes answers for unknown pod names, and `get_pod_container_statuses`
   raises for one, as live.

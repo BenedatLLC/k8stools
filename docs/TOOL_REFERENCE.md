@@ -327,7 +327,7 @@ Each ContainerStatus has the following fields:
 - **`started`** (`Optional[bool]`): Started indicates whether the container has finished its postStart lifecycle hook and passed its startup probe.
 - **`stop_signal`** (`Optional[str]`): Stop signal for the container.
 - **`state`** (`Optional[ContainerState]`): Current state of the container.
-- **`last_state`** (`Optional[ContainerState]`): Last state of the container. When Terminated, ``ran_for`` is how long that instance ran (``finished_at - started_at``). It is not the restart interval, which adds the back-off named in a Waiting ``state``'s message, and it is not how much time the container's log covers: a process can stop logging long before it is killed.
+- **`last_state`** (`Optional[ContainerState]`): Last state of the container. When Terminated, ``ran_for`` is how long that instance ran (``finished_at - started_at``). An instance that never started (reason `StartError`: the runtime couldn't run it) has no `started_at` or `ran_for`; the API reports its start as 1970-01-01. It is not the restart interval, which adds the back-off named in a Waiting ``state``'s message, and it is not how much time the container's log covers: a process can stop logging long before it is killed.
 - **`volume_mounts`** (`list[VolumeMountStatus]`): Status of volume mounts for the container
 - **`resource_requests`** (`dict[str, str]`): Describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits.
 - **`resource_limits`** (`dict[str, str]`): Describes the maximum amount of compute resources allowed.
@@ -403,6 +403,8 @@ get_logs_for_pod_and_container(pod_name: str, namespace: str = 'default', contai
 Retrieves logs from a Kubernetes pod and container.
 
 The log may begin with lines starting `[k8stools] note: `, added by the tool rather than the container; see [Notes in results](#notes-in-results).
+
+Replaying a capture imported from an ITBench-Lite snapshot (`k8s-capture-state --from-itbench`), the lines are the service's OpenTelemetry log records, not the container's output, and a note says so: `These lines are the OpenTelemetry log records the service exported (imported from an ITBench snapshot), not the container's stdout/stderr, which wasn't recorded: a stack trace or error the process printed directly may be missing.` Each line is the record's time, its severity, its body and the attributes the body doesn't show.
 
 #### Parameters
 

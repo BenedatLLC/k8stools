@@ -947,6 +947,11 @@ class ContainerStateTerminated(BaseModel):
         # recorded before this field existed gets it too. Assigned inside a model
         # validator, so Interval's own validator does not run; apply its
         # normalization explicitly.
+        if self.started_at is not None and self.started_at.timestamp() <= 0:
+            # A container that never started (reason StartError: the runtime
+            # couldn't exec it) reports Go's zero time, 1970-01-01T00:00:00Z.
+            # Read as a time, it ran for 55 years; it ran for no time at all.
+            self.started_at = None
         if self.ran_for is None and self.started_at and self.finished_at:
             self.ran_for = _to_whole_seconds(self.finished_at - self.started_at)
         return self
