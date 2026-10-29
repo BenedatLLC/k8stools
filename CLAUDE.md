@@ -433,6 +433,11 @@ Invariants worth preserving when touching this code:
   only the current instance's (by start time); replay notes their source
   (`source.logs == "otel"`, `NOTE_LOGS_FROM_OTEL`). Previous-instance logs are
   never imported.
+  `SnapshotRest` (and the test fakes in `test_hooks.py`) sit under the
+  generated client at the REST layer, whose interface changed in kubernetes
+  37: 36 calls `GET(url, query_params=...)`, 37 `request(method, url)` with
+  the query in the URL and reads `read()`/`headers`/`response`. Keep both;
+  CI installs the newest client, so a third shape shows up there first.
 - **A pod not in the capture does not exist** for any tool. `mock_tools` no longer
   synthesizes answers for unknown pod names, and `get_pod_container_statuses`
   raises for one, as live.

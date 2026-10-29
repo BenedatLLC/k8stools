@@ -21,16 +21,22 @@ AT = datetime.datetime(2025, 12, 15, 18, 4, 39, tzinfo=datetime.timezone.utc)
 
 
 class _Response:
+    """Read as kubernetes 36 (data, getheader) and 37 (read(), headers) read one."""
+
     def __init__(self, status: int, body):
         self.status = status
         self.reason = "OK" if status == 200 else "Not Found"
         self.data = (body if isinstance(body, str) else json.dumps(body)).encode()
+        self.headers = {"content-type": "application/json"}
+
+    def read(self):
+        return self.data
 
     def getheader(self, name, default=None):
-        return "application/json" if name.lower() == "content-type" else default
+        return self.headers.get(name.lower(), default)
 
     def getheaders(self):
-        return {"content-type": "application/json"}
+        return self.headers
 
 
 class FakeRest:
@@ -42,7 +48,10 @@ class FakeRest:
         self.empty_lists = empty_lists
         self.paths: list[str] = []
 
-    def GET(self, url, **kwargs):
+    def request(self, method, url, **kwargs):  # kubernetes 37
+        return self.GET(url)
+
+    def GET(self, url, **kwargs):  # kubernetes 36
         path = urlparse(url).path.rstrip("/")
         self.paths.append(path)
         if path not in self.routes and self.empty_lists and "metrics.k8s.io" not in path:

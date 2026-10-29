@@ -49,7 +49,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from kubernetes import client
 
@@ -318,17 +318,28 @@ def _logs(directory: Path, at: datetime.datetime, pods: list[dict],
 # --- the fake API server ----------------------------------------------------------------
 
 class _Response:
+    """A response as either client generation reads one: kubernetes 36 reads
+    ``data`` and ``getheader``; 37 calls ``read()``, reads ``headers``, and takes
+    ``response`` for a call made with ``_preload_content=False`` (the log readers)."""
+
     def __init__(self, status: int, body: Any, content_type: str = "application/json"):
         self.status = status
-        self.reason = {200: "OK", 404: "Not Found"}.get(status, "")
+        self.reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed"}.get(status, "")
         self.data = (body if isinstance(body, str) else json.dumps(body)).encode()
-        self._content_type = content_type
+        self.headers = {"content-type": content_type}
+
+    @property
+    def response(self) -> "_Response":
+        return self
+
+    def read(self) -> bytes:
+        return self.data
 
     def getheader(self, name, default=None):
-        return self._content_type if name.lower() == "content-type" else default
+        return self.headers.get(name.lower(), default)
 
     def getheaders(self):
-        return {"content-type": self._content_type}
+        return self.headers
 
 
 def _not_found(what: str) -> client.ApiException:
@@ -396,8 +407,20 @@ class SnapshotRest:
         self.logs = logs
 
     def GET(self, url, query_params=None, **kwargs):
-        parts = urlparse(url).path.strip("/").split("/")
-        query = dict(query_params or [])
+        """The REST client call of kubernetes 36 and earlier."""
+        return self._get(urlparse(url).path, dict(query_params or []))
+
+    def request(self, method, url, headers=None, body=None, post_params=None,
+                _request_timeout=None):
+        """The REST client call of kubernetes 37, with the query in the URL."""
+        if method != "GET":
+            raise client.ApiException(http_resp=_Response(
+                405, {"kind": "Status", "code": 405, "message": f"{method} on a snapshot"}))
+        parsed = urlparse(url)
+        return self._get(parsed.path, dict(parse_qsl(parsed.query)))
+
+    def _get(self, path: str, query: dict[str, str]):
+        parts = path.strip("/").split("/")
         if parts == ["version"]:
             raise _not_found("server version")
         group = "" if parts[0] == "api" else parts[1]

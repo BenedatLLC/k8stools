@@ -20,6 +20,13 @@ dates are release-tag dates.
   Without resize the spec's resources are the applied ones; where the status
   reports them, they still win. Replay does the same from the captured spec,
   so existing captures and imports read correctly without being re-made.
+- **`--from-itbench` works with kubernetes 37.** 4.4.0's importer answered the
+  client's REST calls the way kubernetes 36 makes them (`rest_client.GET`);
+  kubernetes 37, a new generation of the client that `kubernetes>=36.0.3`
+  allows, calls `rest_client.request` and failed every import with
+  `'SnapshotRest' object has no attribute 'request'`. The importer now serves
+  both. The rest of k8stools was unaffected: the suite, including the tests
+  against a real cluster, passes on both 36 and 37.
 
 ## 4.4.0 — 2026-10-28
 
