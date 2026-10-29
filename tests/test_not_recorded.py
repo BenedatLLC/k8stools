@@ -30,6 +30,7 @@ READERS = {
     "services": lambda s: s.get_service_summaries(),
     "endpoints": lambda s: s.get_endpoint_summaries(),
     "ingresses": lambda s: s.get_ingress_summaries(),
+    "networkpolicies": lambda s: s.get_networkpolicy_summaries(),
     "configmaps": lambda s: s.get_configmap_summaries(),
     "statefulsets": lambda s: s.get_statefulset_summaries(),
     "daemonsets": lambda s: s.get_daemonset_summaries(),
@@ -141,7 +142,7 @@ def _scenario_33_shape(**extra):
 
 
 NOTE = ("Not recorded in this capture, so unknown rather than absent: DaemonSets, "
-        "HorizontalPodAutoscalers, Service endpoints, Ingresses.")
+        "HorizontalPodAutoscalers, Service endpoints, Ingresses, NetworkPolicies.")
 
 
 def test_the_namespace_view_names_what_wasnt_recorded_in_one_note():

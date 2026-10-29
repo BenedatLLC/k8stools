@@ -196,6 +196,7 @@ out-of-memory kill".
 | `get_service_summaries` | Services, like `kubectl get services`, with selector, labels, annotations, and ready / not-ready endpoint counts | | ✓ |
 | `get_endpoint_summaries` | Each Service's backends, from its EndpointSlices: every address's ready / serving / terminating state, pod and node | | ✓ |
 | `get_ingress_summaries` | Ingresses, like `kubectl get ingress` plus `describe`: each host/path rule with its backend Service and port resolved (flagged when the Service or port doesn't exist), TLS hosts and Secret names, load-balancer addresses | | ✓ |
+| `get_networkpolicy_summaries` | NetworkPolicies: the pods each selects, its rules, and what it allows per direction in plain words ("allows all ingress", "denies all egress", "allows ingress only from ..."), by the API's rules rather than the policy's name | | ✓ |
 
 ### Configuration and storage
 
@@ -408,7 +409,7 @@ rules:
   resources: [pods, nodes]
   verbs: [get, list]
 - apiGroups: [networking.k8s.io]
-  resources: [ingresses]
+  resources: [ingresses, networkpolicies]
   verbs: [get, list]
 - apiGroups: [apiextensions.k8s.io]
   resources: [customresourcedefinitions]

@@ -67,7 +67,8 @@ CAPTURE_VERSION = "1"
 _RECORDED_KINDS = {
     "namespaces": "namespaces", "nodes": "nodes", "pods": "pods",
     "deployments": "Deployments", "replicasets": "ReplicaSets", "services": "Services",
-    "endpoints": "Service endpoints", "ingresses": "Ingresses", "configmaps": "ConfigMaps",
+    "endpoints": "Service endpoints", "ingresses": "Ingresses",
+    "networkpolicies": "NetworkPolicies", "configmaps": "ConfigMaps",
     "statefulsets": "StatefulSets", "daemonsets": "DaemonSets", "hpas":
     "HorizontalPodAutoscalers", "cronjobs": "CronJobs", "jobs": "Jobs",
     "pvcs": "PersistentVolumeClaims", "events": "events",
@@ -156,7 +157,7 @@ def _model_classes(annotation: Any) -> list[type[BaseModel]]:
 #: Fields a model computes from its other fields (`notes`, issue #20). They are
 #: not written to captures: replay recomputes them, so a capture never carries
 #: stale wording, and one recorded before they existed gets them too.
-DERIVED_FIELDS = frozenset({"notes"})
+DERIVED_FIELDS = frozenset({"notes", "ingress_effect", "egress_effect"})
 
 
 def encode_model(model: BaseModel, captured_at: datetime.datetime) -> dict[str, Any]:
@@ -807,6 +808,12 @@ class MockState:
     def get_ingress_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.IngressSummary]:
         """Captures from before Ingresses were captured raise K8sNotRecorded."""
         return self._decode_all("ingresses", k8s_tools.IngressSummary, namespace)
+
+    @_pinned_query
+    def get_networkpolicy_summaries(self, namespace: Optional[str] = None
+                                    ) -> list[k8s_tools.NetworkPolicySummary]:
+        """Captures from before NetworkPolicies were captured raise K8sNotRecorded."""
+        return self._decode_all("networkpolicies", k8s_tools.NetworkPolicySummary, namespace)
 
     @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:

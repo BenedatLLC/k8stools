@@ -67,8 +67,8 @@ PULL_GAP = datetime.timedelta(seconds=60)
 CAPTURED_FROM = {
     "namespaces": "namespaces", "nodes": "nodes", "pods": "pods",
     "deployments": "deployments", "replicasets": "replicasets", "services": "services",
-    "endpoints": "endpoints", "ingresses": "ingresses", "configmaps": "configmaps",
-    "statefulsets": "statefulsets", "daemonsets": "daemonsets",
+    "endpoints": "endpoints", "ingresses": "ingresses", "networkpolicies": "networkpolicies",
+    "configmaps": "configmaps", "statefulsets": "statefulsets", "daemonsets": "daemonsets",
     "hpas": "horizontalpodautoscalers", "cronjobs": "cronjobs", "jobs": "jobs",
     "pvcs": "persistentvolumeclaims",
 }

@@ -8,8 +8,29 @@ dates are release-tag dates.
 ### Issues fixed
 - [#30](https://github.com/BenedatLLC/k8stools/issues/30): Import path: an
   ITBench-Lite snapshot to a capture, at a chosen pull.
+- [#31](https://github.com/BenedatLLC/k8stools/issues/31): A NetworkPolicy tool
+  that states what each policy allows.
 
 ### Added
+- **`get_networkpolicy_summaries(namespace)`**: each NetworkPolicy's pod
+  selector and the pods it selects, its rules, and what it allows per
+  direction in plain words ("allows all ingress", "denies all egress",
+  "allows ingress only from pods with app=web in this namespace on TCP
+  8080"), by the API's rules rather than the policy's name: ITBench-Lite
+  Scenario-31's `frontend-block-all-ports` allows everything. Default
+  `policyTypes`, `[{}]` against `[{podSelector: {}}]`, and one peer with two
+  selectors (both) against two peers (either) are each stated distinctly;
+  notes say when a selector matches no pod and when no egress rule allows
+  DNS. In the `investigate` toolset. Captured and replayed; a capture without
+  them says they're not recorded. **Needs `list` on
+  `networking.k8s.io/networkpolicies`** (added to the README's ClusterRole);
+  without it the composites say so and carry on.
+- `get_workload_report` gains `network_policies`: the policies selecting the
+  workload's pods, combined per direction ("ingress: allows all ingress
+  (NetworkPolicy/frontend-block-all-ports)"), or "no NetworkPolicy
+  (networking.k8s.io) selects these pods", with policy kinds installed as
+  custom resources (Cilium, Calico, AdminNetworkPolicy) named in a note.
+  `get_namespace_health` gains `network_policies`, one line per policy.
 - **`k8s-capture-state --from-itbench DIR [--at PULL]`** imports one pull of an
   ITBench-Lite scenario directory (default: the last) as a capture, and
   `--list-pulls` lists them with the kinds each has. The pull is served to the

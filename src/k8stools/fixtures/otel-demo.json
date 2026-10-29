@@ -1591,6 +1591,7 @@
       "age_seconds": 7190.0
     }
   ],
+  "networkpolicies": [],
   "configmaps": [
     {
       "name": "app-config",

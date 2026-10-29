@@ -29,6 +29,8 @@ notes existed) give the same notes; captures don't store them.
 | `EndpointSummary` | no ready endpoints | No ready endpoints: traffic sent to this Service has no pod to reach. |
 | `IngressSummary` | a backend doesn't resolve | A backend doesn't resolve: see the rule's backend_problem. Requests matching that rule can't reach a pod. |
 | `IngressSummary` | a backend Service has no ready endpoints | A backend Service has no ready endpoints (backend_ready 0): requests matching that rule can't reach a pod. |
+| `NetworkPolicySummary` | its selector matches no pod | Its pod selector matches no pod in the namespace now. It applies to any pod created later with matching labels. |
+| `NetworkPolicySummary` | it restricts egress and no rule allows port 53 (a named port could be 53, so one of those doesn't count) | No egress rule here allows port 53 (DNS). Unless another policy selecting the same pods allows it, they can't look up names. |
 | `CustomResourceStatus` | `observed_generation` < `generation` | observed_generation < generation: its controller hasn't yet acted on the latest spec change, so the conditions may describe the previous spec. |
 | `CustomResourceStatus` | no conditions | No status.conditions: this resource reports its state some other way, which this tool doesn't read. |
 | `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
@@ -164,6 +166,7 @@ over the pod's age is not a rate, and pointing to metrics
   - **`notes`** (`list[str]`)
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
 - **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
+- **`network_policies`** (`list[str]`): one line per NetworkPolicy in the namespace, at most 10, with the pods it selects and what it allows, e.g. "NetworkPolicy/frontend-block-all-ports selects 1 pod (frontend-675fd7b5c5-8qrfh): allows all ingress". Listed whether or not the workloads they select are healthy: a policy can be what a healthy workload's callers fail against. `get_workload_report` combines them per workload. When the policies can't be read, a note says why; a capture that didn't record them names them in the not-recorded note.
 - **`recovering`** (`list[WorkloadHealth]`): workloads that pass the healthy rule (all ready, nothing waiting) but have a container that restarted within the last 24 hours: its last termination finished then, and it is running again. Same fields as `workloads`, with `last_termination` the most recent restart. Most recent first, at most 10. A Job's finished container and a completed init container are not restarts. "Ready" is not "healthy": a workload that restarts and recovers would otherwise be listed as healthy, and answers quote that word.
 - **`recovering_more`** (`list[str]`): recovering workloads past the first 10, one line each, e.g. "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)".
 - **`healthy`** (`list[str]`): one line per healthy workload (as defined under `workloads`, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
@@ -205,6 +208,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`services`** (`list[EndpointSummary]`): Services sending traffic to its pods, with each backend's state.
 - **`usage`** (`list[ContainerUsage]`): its containers' current usage, as from `get_container_metrics`. When metrics aren't available, `notes` says why.
 - **`ingresses`** (`list[str]`): Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/ -> test-service:80 (3 ready)".
+- **`network_policies`** (`list[str]`): the NetworkPolicies selecting its pods, combined per direction, since a pod's allowed traffic is the union of every policy selecting it: "ingress: allows all ingress (NetworkPolicy/frontend-block-all-ports)", "egress: not restricted (no NetworkPolicy selects these pods for egress)", or "egress: denies all egress; none allows port 53, so these pods can't look up names (DNS) (NetworkPolicy/deny-all)". A policy selecting only some of its pods adds "NetworkPolicy/x selects 2 of these 3 pods". When none selects them, the one line "no NetworkPolicy (networking.k8s.io) selects these pods". Empty when the policies weren't recorded or couldn't be read, with a note saying which. Policy kinds installed as custom resources (Cilium, Calico, Antrea, AdminNetworkPolicy) are named in a note: they apply too, and aren't read.
 - **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers and logs come from, and an exit code / reason disagreement.
 
 Empty fields are left out of the result.
@@ -641,6 +645,50 @@ list of IngressSummary, each with:
 - **`tls`** (`list[IngressTLS]`): `hosts`, and `secret_name`: the certificate's Secret by name only; its contents are never read.
 - **`load_balancer`** (`list[str]`): load-balancer IPs or hostnames.
 - **`labels`**, **`annotations`**, **`age`**
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+### `get_networkpolicy_summaries`
+
+```python
+get_networkpolicy_summaries(namespace: Optional[str] = None) -> list[NetworkPolicySummary]
+```
+
+NetworkPolicies (`networking.k8s.io/v1`), with the pods each selects and a plain
+statement of what it allows in each direction it restricts. A policy's name
+says nothing reliable about what it does: ITBench-Lite Scenario-31's
+`frontend-block-all-ports` is `ingress: [{}]`, which allows every source on every
+port. The statements follow the API's rules, including the ones most often
+misread:
+
+- **Default `policyTypes`.** Omitted, Ingress is always restricted, and Egress only when the policy has egress rules. A policy with neither field set denies all ingress.
+- **A rule with no peers allows any peer, and one with no ports any port.** `ingress: [{}]` allows all ingress; `ingress: []` (or none) denies all.
+- **`podSelector: {}` in a peer is every pod in the policy's namespace**, not everyone: other namespaces and anything outside the cluster are not allowed. `namespaceSelector: {}` is every pod in every namespace, still nothing outside the cluster.
+- **One peer with both a pod and a namespace selector means pods matching both**; two peers (two list items) mean either.
+- **Policies add up.** A pod selected by any policy for a direction gets only what some rule of some selecting policy allows; one policy allowing all outweighs any number denying.
+
+What no statement here can show:
+
+- **Enforcement.** A NetworkPolicy has no effect unless the cluster's network plugin implements it, and the API doesn't say whether it does.
+- **Both ends.** A connection needs the client's egress and the server's ingress both allowed. Replies on an allowed connection always pass.
+- **Other policy kinds.** Cilium's and Calico's policies, Antrea's, and AdminNetworkPolicy (`policy.networking.k8s.io`, which takes precedence over NetworkPolicy) are custom resources and aren't read; `get_workload_report` names the ones installed.
+- **Traffic from the node** (e.g. kubelet probes) and **`ipBlock` matching pod IPs** are up to the network plugin.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+list of NetworkPolicySummary, each with:
+
+- **`name`**, **`namespace`**, **`age`**
+- **`pod_selector`** (`str`): the pods it applies to, as a label selector in kubectl syntax ("app=web,tier in (a,b)", "!canary"); "" selects every pod.
+- **`selected_pods`** (`list[str]`): the namespace's pods it selects now. Pods on the host network are left out: policies don't apply to them.
+- **`policy_types`** (`list[str]`): the directions it restricts, with the default above applied.
+- **`ingress`**, **`egress`** (`list[NetworkPolicyRule]`): its rules, each with:
+  - **`peers`** (`list[NetworkPolicyPeer]`): any of which may match; `[]` means any peer. A peer has `pod_selector` and `namespace_selector` (selectors as above, None when not set; both set means both must match), or `ip_block` ("10.0.0.0/8 except 10.1.0.0/16").
+  - **`ports`** (`list[NetworkPolicyPort]`): `protocol` (TCP by default), `port` (a number or a container port name; None for every port of the protocol) and `end_port`; `[]` means every port.
+- **`ingress_effect`**, **`egress_effect`** (`Optional[str]`): what it allows, from its rules alone: "allows all ingress", "denies all egress", or "allows ingress only from pods with app=frontend-proxy in this namespace on TCP 8080; or from addresses in 10.0.0.0/8 on any port". None for a direction it doesn't restrict. A namespace selector on the name label every namespace has reads "namespace ingress-nginx". Worked out each time it's read, so a capture replays it as a live call would.
 - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 
 ### `get_configmap_summaries`

@@ -87,7 +87,7 @@ def test_kinds_the_pull_has_no_batch_of_are_not_recorded(scenario_33):
         with pytest.raises(K8sNotRecorded):
             read()
     assert "Not recorded in this capture, so unknown rather than absent: StatefulSets, " \
-        "DaemonSets, Jobs, HorizontalPodAutoscalers, PersistentVolumeClaims, Ingresses." \
+        "DaemonSets, Jobs, HorizontalPodAutoscalers, PersistentVolumeClaims, Ingresses, NetworkPolicies." \
         in namespace_health(state, "otel-demo").notes
 
 
@@ -318,3 +318,33 @@ def test_an_import_reaches_no_real_cluster(tmp_path, monkeypatch):
     monkeypatch.setattr(k8s_tools, "_BINDING", None)
     itbench.import_snapshot(_snapshot(tmp_path))
     assert k8s_tools._BINDING is None
+
+
+def test_scenario_31s_policy_from_the_pull_that_has_it(tmp_path):
+    """The policy ITBench says blocks frontend allows all ingress (#31). A pull
+    from before it existed has no batch of NetworkPolicies, so there they are not
+    recorded, rather than none."""
+    labels = {"app.kubernetes.io/component": "frontend", "app.kubernetes.io/name": "frontend",
+              "opentelemetry.io/name": "frontend"}
+    frontend = _pod(name="frontend-675fd7b5c5-8qrfh", uid="u-fe")
+    frontend["metadata"]["labels"] = labels | {"pod-template-hash": "675fd7b5c5"}
+    proxy = _pod(name="frontend-proxy-6b4d584985-p6mgt", uid="u-fp")
+    proxy["metadata"]["labels"] = {"app.kubernetes.io/name": "frontend-proxy"}
+    policy = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+              "metadata": {"name": "frontend-block-all-ports", "namespace": "shop",
+                           "creationTimestamp": _api(T0 + datetime.timedelta(minutes=7))},
+              "spec": {"ingress": [{}], "podSelector": {"matchLabels": labels},
+                       "policyTypes": ["Ingress"]}}
+    before, after = T0 + datetime.timedelta(minutes=5), T0 + datetime.timedelta(minutes=10)
+    rows = [_object(at, kind, obj) for at in (before, after)
+            for kind, obj in BASE + [("pods", frontend), ("pods", proxy)]]
+    rows.append(_object(after, "networkpolicies", policy))
+    _write(tmp_path / itbench.OBJECTS_FILE, rows)
+    _write(tmp_path / itbench.EVENTS_FILE, [])
+    _write(tmp_path / itbench.LOGS_FILE, [])
+
+    [p] = _replay(itbench.import_snapshot(tmp_path, pull=2)).get_networkpolicy_summaries("shop")
+    assert (p.name, p.ingress_effect, p.selected_pods) == (
+        "frontend-block-all-ports", "allows all ingress", ["frontend-675fd7b5c5-8qrfh"])
+    with pytest.raises(K8sNotRecorded):
+        _replay(itbench.import_snapshot(tmp_path, pull=1)).get_networkpolicy_summaries("shop")

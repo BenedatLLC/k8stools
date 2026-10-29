@@ -199,6 +199,7 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         "hpas": [],
         "endpoints": [],
         "ingresses": [],
+        "networkpolicies": [],
         "workload_histories": [],
         "cronjobs": [],
         "jobs": [],
@@ -213,6 +214,8 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         state["services"] += _encode_all(redactor(k8s_tools.get_service_summaries(ns)), captured_at)
         state["endpoints"] += _encode_all(redactor(k8s_tools.get_endpoint_summaries(ns)), captured_at)
         state["ingresses"] += _encode_all(redactor(k8s_tools.get_ingress_summaries(ns)), captured_at)
+        state["networkpolicies"] += _encode_all(
+            redactor(k8s_tools.get_networkpolicy_summaries(ns)), captured_at)
         statefulsets = k8s_tools.get_statefulset_summaries(ns)
         state["statefulsets"] += _encode_all(redactor(statefulsets), captured_at)
         daemonsets = k8s_tools.get_daemonset_summaries(ns)

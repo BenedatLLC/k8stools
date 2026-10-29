@@ -462,6 +462,17 @@ NOTE_INGRESS_BACKEND = (
 NOTE_INGRESS_NO_READY = (
     "A backend Service has no ready endpoints (backend_ready 0): requests matching "
     "that rule can't reach a pod.")
+NOTE_NETPOL_SELECTS_NONE = (
+    "Its pod selector matches no pod in the namespace now. It applies to any pod "
+    "created later with matching labels.")
+NOTE_NETPOL_NO_DNS = (
+    "No egress rule here allows port 53 (DNS). Unless another policy selecting the "
+    "same pods allows it, they can't look up names.")
+NOTE_NETWORK_POLICIES = (
+    "NetworkPolicies are enforced only if the cluster's network plugin implements "
+    "them. A connection needs the client's egress and the server's ingress both "
+    "allowed; replies on an allowed connection always pass. Only networking.k8s.io "
+    "policies are shown.")
 NOTE_CR_NOT_OBSERVED = (
     "observed_generation < generation: its controller hasn't yet acted on the latest "
     "spec change, so the conditions may describe the previous spec.")
@@ -2403,6 +2414,242 @@ def print_ingress_summaries(namespace: Optional[str] = None) -> None:
                   f"{r.backend_ready if r.backend_ready is not None else '-':<6} {r.backend_problem or ''}")
 
 
+class NetworkPolicyPeer(BaseModel):
+    """One peer of a NetworkPolicy rule. The fields that are set all apply to the
+    same peer: pod_selector and namespace_selector together mean pods matching
+    both, not either."""
+    #: A label selector in kubectl syntax ("app=web,tier in (a,b)"); "" selects
+    #: every pod. None when not set.
+    pod_selector: Optional[str] = None
+    namespace_selector: Optional[str] = None
+    #: "10.0.0.0/8", or "10.0.0.0/8 except 10.1.0.0/16".
+    ip_block: Optional[str] = None
+
+
+class NetworkPolicyPort(BaseModel):
+    protocol: str = "TCP"
+    #: A port number, or a container port name; None for every port.
+    port: Optional[str] = None
+    #: The last port of a range starting at port.
+    end_port: Optional[int] = None
+
+
+class NetworkPolicyRule(BaseModel):
+    """One ingress or egress rule: traffic from (to) any of its peers, on any of
+    its ports. An empty list means any peer, or any port."""
+    peers: list[NetworkPolicyPeer] = Field(default_factory=list)
+    ports: list[NetworkPolicyPort] = Field(default_factory=list)
+
+
+class NetworkPolicySummary(BaseModel):
+    """A NetworkPolicy (networking.k8s.io/v1), with the pods it selects and what it
+    allows in each direction it restricts."""
+    name: str
+    namespace: str
+    #: The pods it applies to, as a label selector; "" selects every pod.
+    pod_selector: str
+    #: The directions it restricts, with the API's default applied: Ingress
+    #: always, Egress when it has egress rules.
+    policy_types: list[str] = Field(default_factory=list)
+    ingress: list[NetworkPolicyRule] = Field(default_factory=list)
+    egress: list[NetworkPolicyRule] = Field(default_factory=list)
+    #: Pods in the namespace its selector matches (pods on the host network,
+    #: which policies don't apply to, excluded).
+    selected_pods: list[str] = Field(default_factory=list)
+    #: What it allows, e.g. "allows all ingress", "denies all egress", "allows
+    #: ingress only from pods with app=web in this namespace on TCP 8080". None
+    #: for a direction it doesn't restrict.
+    ingress_effect: Optional[str] = None
+    egress_effect: Optional[str] = None
+    age: Duration
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_effects(self) -> "NetworkPolicySummary":
+        self.ingress_effect = network_policy_effect("Ingress", self.ingress) \
+            if "Ingress" in self.policy_types else None
+        self.egress_effect = network_policy_effect("Egress", self.egress) \
+            if "Egress" in self.policy_types else None
+        notes = []
+        if not self.selected_pods:
+            notes.append(NOTE_NETPOL_SELECTS_NONE)
+        if "Egress" in self.policy_types and allows_port(self.egress, 53) is False:
+            notes.append(NOTE_NETPOL_NO_DNS)
+        self.notes = notes
+        return self
+
+
+def _namespace_text(selector: str) -> str:
+    """Peers' namespaces: "every namespace", "namespace shop" (selected by the
+    name label every namespace has), or "namespaces with team=a"."""
+    if selector == "":
+        return "every namespace"
+    m = re.fullmatch(r"kubernetes\.io/metadata\.name=([^,]+)", selector)
+    return f"namespace {m.group(1)}" if m else f"namespaces with {selector}"
+
+
+def _peer_text(peer: NetworkPolicyPeer) -> str:
+    if peer.ip_block is not None:
+        return f"addresses in {peer.ip_block}"
+    pods = "every pod" if not peer.pod_selector else f"pods with {peer.pod_selector}"
+    if peer.namespace_selector is None:
+        return f"{pods} in this namespace"
+    return f"{pods} in {_namespace_text(peer.namespace_selector)}"
+
+
+def _port_text(port: NetworkPolicyPort) -> str:
+    if port.port is None:
+        return f"every {port.protocol} port"
+    if port.end_port is not None:
+        return f"{port.protocol} {port.port}-{port.end_port}"
+    return f"{port.protocol} {port.port}" if port.port.isdigit() \
+        else f"{port.protocol} port '{port.port}'"
+
+
+def network_policy_rule_text(direction: str, rule: NetworkPolicyRule) -> str:
+    """One rule as a phrase: "from pods with app=web in this namespace on TCP 8080"."""
+    peers = " or ".join(_peer_text(p) for p in rule.peers) if rule.peers \
+        else ("any source" if direction == "Ingress" else "any destination")
+    ports = ", ".join(_port_text(p) for p in rule.ports) if rule.ports else "any port"
+    return f"{'from' if direction == 'Ingress' else 'to'} {peers} on {ports}"
+
+
+def network_policy_effect(direction: str, rules: list[NetworkPolicyRule]) -> str:
+    """What rules that restrict ``direction`` allow, taken together (rules, and
+    policies selecting the same pod, add up)."""
+    word = direction.lower()
+    if not rules:
+        return f"denies all {word}"
+    if any(not r.peers and not r.ports for r in rules):
+        return f"allows all {word}"
+    texts = list(dict.fromkeys(network_policy_rule_text(direction, r) for r in rules))
+    return f"allows {word} only " + "; or ".join(texts)
+
+
+def allows_port(rules: list[NetworkPolicyRule], number: int) -> Optional[bool]:
+    """Whether some rule allows traffic to port ``number`` (to any peer). None when a
+    named port could be it: names resolve against the other end's containers."""
+    unknown = False
+    for rule in rules:
+        if not rule.ports:
+            return True
+        for p in rule.ports:
+            if p.port is None:
+                return True
+            if not p.port.isdigit():
+                unknown = True
+            elif int(p.port) == number or (p.end_port is not None
+                                           and int(p.port) <= number <= p.end_port):
+                return True
+    return None if unknown else False
+
+
+def _selector_text(selector) -> str:
+    """A V1LabelSelector in kubectl syntax; "" for one that selects everything."""
+    if selector is None:
+        return ""
+    parts = [f"{k}={v}" for k, v in sorted((selector.match_labels or {}).items())]
+    for e in selector.match_expressions or []:
+        values = ",".join(e.values or [])
+        parts.append({"In": f"{e.key} in ({values})", "NotIn": f"{e.key} notin ({values})",
+                      "Exists": e.key, "DoesNotExist": f"!{e.key}"}.get(
+                          e.operator, f"{e.key} {e.operator} ({values})"))
+    return ",".join(parts)
+
+
+def _selector_matches(selector, labels: dict[str, str]) -> bool:
+    """Whether a V1LabelSelector selects these labels; None selects everything."""
+    if selector is None:
+        return True
+    if any(labels.get(k) != v for k, v in (selector.match_labels or {}).items()):
+        return False
+    for e in selector.match_expressions or []:
+        present = e.key in labels
+        if e.operator == "In" and not (present and labels[e.key] in (e.values or [])):
+            return False
+        if e.operator == "NotIn" and present and labels[e.key] in (e.values or []):
+            return False
+        if e.operator == "Exists" and not present:
+            return False
+        if e.operator == "DoesNotExist" and present:
+            return False
+        if e.operator not in ("In", "NotIn", "Exists", "DoesNotExist"):
+            return False  # not a valid label selector; the API rejects it
+    return True
+
+
+def _policy_rule(rule, peers) -> NetworkPolicyRule:
+    out = NetworkPolicyRule()
+    for peer in peers or []:
+        if peer.ip_block is not None:
+            block = peer.ip_block.cidr
+            if peer.ip_block._except:
+                block += " except " + ", ".join(peer.ip_block._except)
+            out.peers.append(NetworkPolicyPeer(ip_block=block))
+        else:
+            out.peers.append(NetworkPolicyPeer(
+                pod_selector=None if peer.pod_selector is None else _selector_text(peer.pod_selector),
+                namespace_selector=None if peer.namespace_selector is None
+                else _selector_text(peer.namespace_selector)))
+    for p in rule.ports or []:
+        out.ports.append(NetworkPolicyPort(protocol=p.protocol or "TCP",
+                                           port=None if p.port is None else str(p.port),
+                                           end_port=p.end_port))
+    return out
+
+
+def get_networkpolicy_summaries(namespace: Optional[str] = None) -> list[NetworkPolicySummary]:
+    """NetworkPolicies (networking.k8s.io/v1): the pods each selects, its rules,
+    and what it allows per direction ("allows all ingress", "denies all egress",
+    "allows ingress only from ..."). Policies selecting a pod add up. Enforced
+    only if the cluster's network plugin implements them; CNI-specific policies
+    (Cilium, Calico) are custom resources, not shown. namespace: one, or all if
+    omitted."""
+    global K8S, NETWORKING_V1_API
+    if NETWORKING_V1_API is None:
+        NETWORKING_V1_API = _get_networking_v1_api_client()
+    if K8S is None:
+        K8S = _get_api_client()
+    logging.info(f"get_networkpolicy_summaries(namespace={namespace})")
+    try:
+        if namespace:
+            policies = NETWORKING_V1_API.list_namespaced_network_policy(namespace=namespace).items
+            pods = K8S.list_namespaced_pod(namespace=namespace).items if policies else []
+        else:
+            policies = NETWORKING_V1_API.list_network_policy_for_all_namespaces().items
+            pods = K8S.list_pod_for_all_namespaces().items if policies else []
+    except client.ApiException as e:
+        raise K8sApiError(f"Error fetching network policies: {_api_error_text(e)}") from e
+    pods = [p for p in pods if not (p.spec and p.spec.host_network)]
+    now = _now()
+    summaries = []
+    for pol in policies:
+        spec = pol.spec
+        ns = pol.metadata.namespace
+        types = list(spec.policy_types or []) or (
+            ["Ingress"] + (["Egress"] if spec.egress else []))
+        summaries.append(NetworkPolicySummary(
+            name=pol.metadata.name, namespace=ns, pod_selector=_selector_text(spec.pod_selector),
+            policy_types=types,
+            ingress=[_policy_rule(r, r._from) for r in spec.ingress or []],
+            egress=[_policy_rule(r, r.to) for r in spec.egress or []],
+            selected_pods=sorted(p.metadata.name for p in pods if p.metadata.namespace == ns
+                                 and _selector_matches(spec.pod_selector, p.metadata.labels or {})),
+            age=now - pol.metadata.creation_timestamp if pol.metadata.creation_timestamp
+            else datetime.timedelta(0)))
+    return summaries
+
+
+def print_networkpolicy_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_networkpolicy_summaries and prints the output to stdout, one line
+    per policy and direction."""
+    print(f"{'NAME':<32} {'POD-SELECTOR':<32} {'PODS':<5} EFFECT")
+    for p in get_networkpolicy_summaries(namespace):
+        for effect in filter(None, (p.ingress_effect, p.egress_effect)):
+            print(f"{p.name:<32} {p.pod_selector or '(all pods)':<32} "
+                  f"{len(p.selected_pods):<5} {effect}")
+
+
 
 
 class ConfigMapSummary(BaseModel):
@@ -3827,6 +4074,9 @@ class NamespaceHealth(_Compact):
     #: Ingress rules that can't reach a pod, e.g. "Ingress/shop: shop.example.com/old
     #: -> legacy:80: Service 'legacy' not found".
     ingress_problems: list[str] = Field(default_factory=list)
+    #: One line per NetworkPolicy, e.g. "NetworkPolicy/deny-all selects 3 pods
+    #: (a, b, c): denies all ingress". get_workload_report combines them per workload.
+    network_policies: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -3926,6 +4176,10 @@ class WorkloadReport(_Compact):
     #: Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/
     #: -> test-service:80 (3 ready)".
     ingresses: list[str] = Field(default_factory=list)
+    #: The NetworkPolicies selecting its pods, combined per direction: "ingress:
+    #: allows all ingress (NetworkPolicy/x)", or "no NetworkPolicy
+    #: (networking.k8s.io) selects these pods".
+    network_policies: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -3970,6 +4224,7 @@ TOOLS = [
     get_service_summaries,
     get_endpoint_summaries,
     get_ingress_summaries,
+    get_networkpolicy_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,

@@ -32,7 +32,8 @@ import signal
 from typing import Any, Optional
 
 from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
-                        IngressSummary,
+                        IngressSummary, NetworkPolicySummary, NOTE_NETWORK_POLICIES,
+                        allows_port, network_policy_effect,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
@@ -476,6 +477,73 @@ def _ingress_lines(ingresses: list[IngressSummary], services: Optional[set[str]]
     return lines
 
 
+_MAX_POLICY_LINES = 10
+
+
+def _pods_text(names: list[str]) -> str:
+    if not names:
+        return "no pod"
+    shown = ", ".join(names[:3]) + (f", +{len(names) - 3}" if len(names) > 3 else "")
+    return f"{len(names)} pod{'' if len(names) == 1 else 's'} ({shown})"
+
+
+def _policy_lines(policies: list[NetworkPolicySummary]) -> list[str]:
+    """One line per policy: what it selects and what it allows."""
+    lines = [f"NetworkPolicy/{p.name} selects {_pods_text(p.selected_pods)}: "
+             + "; ".join(filter(None, (p.ingress_effect, p.egress_effect)))
+             for p in sorted(policies, key=lambda p: p.name)]
+    if len(lines) > _MAX_POLICY_LINES:
+        lines[_MAX_POLICY_LINES:] = [f"and {len(lines) - _MAX_POLICY_LINES} more: "
+                                     "see get_networkpolicy_summaries"]
+    return lines
+
+
+def _workload_policy_lines(policies: list[NetworkPolicySummary], pod_names: set[str]) -> list[str]:
+    """The policies selecting these pods, combined per direction: a pod's allowed
+    traffic is the union of every policy selecting it for that direction."""
+    selecting = [p for p in policies if pod_names & set(p.selected_pods)]
+    if not selecting:
+        return ["no NetworkPolicy (networking.k8s.io) selects these pods"]
+    lines = []
+    for direction in ("Ingress", "Egress"):
+        word = direction.lower()
+        these = [p for p in selecting if direction in p.policy_types]
+        if not these:
+            lines.append(f"{word}: not restricted (no NetworkPolicy selects these pods for {word})")
+            continue
+        rules = [r for p in these for r in (p.ingress if direction == "Ingress" else p.egress)]
+        effect = network_policy_effect(direction, rules)
+        if direction == "Egress" and allows_port(rules, 53) is False:
+            effect += "; none allows port 53, so these pods can't look up names (DNS)"
+        lines.append(f"{word}: {effect} ("
+                     + ", ".join(f"NetworkPolicy/{p.name}" for p in these) + ")")
+    for p in selecting:
+        n = len(pod_names & set(p.selected_pods))
+        if n < len(pod_names):
+            lines.append(f"NetworkPolicy/{p.name} selects {n} of these {len(pod_names)} pods")
+    return lines
+
+
+def _policy_kinds(api) -> list[str]:
+    """Policy kinds installed as custom resources (Cilium, Calico, Antrea,
+    AdminNetworkPolicy): they apply too, and no tool here reads them."""
+    try:
+        crds = api.get_custom_resource_definitions()
+    except K8sApiError:  # including not recorded: the note is only ever additive
+        return []
+    return [f"{c.kind} ({c.group})" for c in crds if c.plural.endswith("networkpolicies")]
+
+
+def _network_policies(api, namespace: str, unrecorded: list[str]
+                      ) -> tuple[Optional[list[NetworkPolicySummary]], Optional[str]]:
+    """The namespace's policies, or None and why: not recorded (named in
+    ``unrecorded``) or not readable (e.g. a role without the permission)."""
+    try:
+        return _recorded(unrecorded, api.get_networkpolicy_summaries, namespace, default=None), None
+    except K8sApiError as e:
+        return None, f"NetworkPolicies unavailable: {e}"
+
+
 def _autoscaler_line(h: HpaSummary) -> str:
     at_max = h.current_replicas >= h.max_replicas
     line = (f"HPA {h.name}: {h.current_replicas} replicas (min "
@@ -639,6 +707,12 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         services_without_ready_endpoints=[_endpoint_line(e) for e in endpoints if not e.ready],
         ingress_problems=_ingress_lines(
             _recorded(unrecorded, api.get_ingress_summaries, namespace), problems_only=True))
+    policies, unavailable = _network_policies(api, namespace, unrecorded)
+    if policies:
+        result.network_policies = _policy_lines(policies)
+        result.notes.append(NOTE_NETWORK_POLICIES)
+    if unavailable:
+        result.notes.append(unavailable)
     if unrecorded:
         result.notes.append(_not_recorded_note(unrecorded))
     if by_name:
@@ -924,6 +998,17 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                                     {p.name for p in pods})
     report.ingresses = _ingress_lines(_recorded(unrecorded, api.get_ingress_summaries, namespace),
                                       services={e.service for e in report.services})
+    policies, unavailable = _network_policies(api, namespace, unrecorded)
+    if policies is not None and pods:
+        report.network_policies = _workload_policy_lines(policies, {p.name for p in pods})
+        if any(set(p.selected_pods) & {q.name for q in pods} for p in policies):
+            report.notes.append(NOTE_NETWORK_POLICIES)
+        if kinds := _policy_kinds(api):
+            report.notes.append("Policy kinds from custom resources are installed: "
+                                + ", ".join(kinds) + ". Their policies can also apply to "
+                                "these pods, and aren't shown.")
+    if unavailable:
+        report.notes.append(unavailable)
     if unrecorded:
         report.notes.append(_not_recorded_note(unrecorded))
     usage, usage_unavailable = _usage(api, namespace)

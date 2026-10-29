@@ -152,6 +152,12 @@ def get_ingress_summaries(namespace: Optional[str] = None) -> list[k8s_tools.Ing
 get_ingress_summaries.__doc__ = k8s_tools.get_ingress_summaries.__doc__
 
 
+def get_networkpolicy_summaries(namespace: Optional[str] = None) -> list[k8s_tools.NetworkPolicySummary]:
+    return _state().get_networkpolicy_summaries(namespace)
+
+get_networkpolicy_summaries.__doc__ = k8s_tools.get_networkpolicy_summaries.__doc__
+
+
 def get_endpoint_summaries(namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
     return _state().get_endpoint_summaries(namespace)
 
@@ -282,6 +288,7 @@ TOOLS = [
     get_service_summaries,
     get_endpoint_summaries,
     get_ingress_summaries,
+    get_networkpolicy_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,

@@ -47,6 +47,7 @@ tests/
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
   test_ingress.py            - get_ingress_summaries: backend resolution, readiness, TLS by name
+  test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
@@ -221,6 +222,15 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 - **Bounded:** healthy workloads are a one-line string each; compact models
   (`_Compact` drops empty fields; the server sends a result twice), at most 20 events and 100 log lines of 300 characters; tests
   hold the namespace view and reports to budgets on the `--mock` fixture.
+- **A NetworkPolicy is what its rules allow, not what it's called** (#31):
+  ITBench's `frontend-block-all-ports` is `ingress: [{}]`, allow-all. Effects
+  are derived from the stored rules (`network_policy_effect`, `DERIVED_FIELDS`),
+  so a fix reaches old captures; selected pods are stored, matched at capture.
+  Keep `[{}]` vs `[{podSelector: {}}]` and one peer with two selectors (both)
+  vs two peers (either) worded apart. A workload's policies combine as a union
+  per direction. Unrecorded or unreadable policies give no line, never "no
+  NetworkPolicy selects these pods"; a role without the permission must not
+  fail the report.
 - New data sources (HPA, endpoints, metrics: #14-#16) extend `WorkloadHealth`
   and `WorkloadReport` with fields, rather than adding tools to `triage`.
 
