@@ -161,7 +161,7 @@ over the pod's age is not a rate, and pointing to metrics
   - **`autoscaler`** (`str`): its HPA in a line, e.g. "HPA cart: 3 replicas (min 1, max 3), at max; cpu 92%/80%".
   - **`services`** (`list[str]`): Services sending traffic to its pods, e.g. "Service/ad: 0 ready, 1 not ready". Linked through their endpoints, which name the pods they selected, ready or not.
   - **`usage`** (`list[str]`): each container's current usage, e.g. "ad: memory 140Mi of 300Mi (46.7%), cpu 850m", or "ad: no reading". The readings' notes (e.g. that the sample is from a fresh instance after an OOM kill) are added to the workload's `notes`.
-  - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ.
+  - **`memory`** (`str`): the memory limit against the request, e.g. "limit 300Mi = request", "limit 512Mi, request 256Mi", "no limit"; per container when they differ. From the containers' applied resources, as `get_pod_container_statuses` reports them (the pod spec's when the status has none, on clusters before 1.33).
   - **`template_changed`** (`timedelta`): time since the pod template last changed (the current revision's age, from `get_workload_history`). Not how long the workload has been healthy.
   - **`notes`** (`list[str]`)
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
@@ -335,7 +335,9 @@ Each ContainerStatus has the following fields:
 - **`volume_mounts`** (`list[VolumeMountStatus]`): Status of volume mounts for the container
 - **`resource_requests`** (`dict[str, str]`): Describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits.
 - **`resource_limits`** (`dict[str, str]`): Describes the maximum amount of compute resources allowed.
-- **`allocated_resources`** (`dict[str, str]`): Compute resources allocated for this container by the node.
+
+  Both are the resources applied to the container. The status reports them only with in-place resize (`InPlacePodVerticalScaling`, on by default from Kubernetes 1.33). When it doesn't, they come from the pod spec's container, which can't have changed since the container was created. When the status does report them, they're used: after a resize they're what's applied, while the spec holds what was asked for. Replay applies the same rule to the captured spec, so captures from older clusters read correctly.
+- **`allocated_resources`** (`dict[str, str]`): Compute resources allocated for this container by the node. Reported only with in-place resize: empty means not reported, not none.
 - **`sidecar`** (`bool`): True for a native sidecar.
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
 

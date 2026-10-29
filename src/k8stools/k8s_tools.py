@@ -1016,8 +1016,12 @@ class ContainerStatus(BaseModel):
     state: Optional[ContainerState]
     last_state: Optional[ContainerState]
     volume_mounts: list[VolumeMountStatus]
+    #: Applied requests and limits: the status's where it reports them (in-place
+    #: resize, on by default from Kubernetes 1.33), else the pod spec's, which
+    #: can't have changed since the container was created.
     resource_requests: dict[str, str]
     resource_limits: dict[str, str]
+    #: Reported only with in-place resize; empty means not reported, not none.
     allocated_resources: dict[str, str]
     #: A native sidecar: an init container with restartPolicy Always, which runs
     #: beside the app containers for the pod's life and is listed with them.
@@ -1088,6 +1092,26 @@ def _container_status(pod_name: str, namespace: str, container_status: Any,
     )
 
 
+def _spec_resources(statuses: list[ContainerStatus], spec: dict) -> None:
+    """Fill in the requests and limits a status doesn't report from the pod spec.
+
+    A container's status carries its resources only with in-place resize (beta,
+    on by default from Kubernetes 1.33). Without it they can't change after the
+    container is created, so the spec's are the ones applied; on older clusters
+    every container otherwise read as having no limit (#32). Where the status has
+    them, they stand: after a resize they're what's applied, and the spec what was
+    asked for. Shared with MockState, so captures made before this read the same.
+    """
+    by_name = {c.get("name"): c for key in ("containers", "init_containers", "initContainers")
+               for c in spec.get(key) or []}
+    for s in statuses:
+        if s.resource_requests or s.resource_limits:
+            continue
+        resources = (by_name.get(s.container_name) or {}).get("resources") or {}
+        s.resource_requests = dict(resources.get("requests") or {})
+        s.resource_limits = dict(resources.get("limits") or {})
+
+
 def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> PodContainerStatuses:
     """Each container's status in one pod: image, ready, restart count, the
     current state and the last terminated instance (last_state: exit code, reason,
@@ -1119,6 +1143,7 @@ def get_pod_container_statuses(pod_name: str, namespace: str = "default") -> Pod
             containers.append(_container_status(pod_name, namespace, cs, sidecar=True))
         else:
             init_containers.append(_container_status(pod_name, namespace, cs))
+    _spec_resources(containers + init_containers, pod.spec.to_dict() if pod.spec else {})
     return PodContainerStatuses(pod_name=pod_name, namespace=namespace,
                                 containers=containers, init_containers=init_containers)
 

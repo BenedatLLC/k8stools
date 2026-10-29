@@ -3,6 +3,24 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.4.1 — unreleased
+
+### Issues fixed
+- [#32](https://github.com/BenedatLLC/k8stools/issues/32): Composites read memory
+  limits only from the container status; older clusters and ITBench imports
+  report "no limit".
+
+### Changed
+- **Container requests and limits come from the pod spec when the status
+  doesn't report them.** The status carries them only with in-place resize
+  (on by default from Kubernetes 1.33), so on older clusters, and in every
+  ITBench-Lite import, `get_pod_container_statuses` returned empty
+  `resource_requests` and `resource_limits`, and the composites' `memory` line
+  said "no limit" beside OOM kills (Scenario-105's fraud-detection, 400Mi).
+  Without resize the spec's resources are the applied ones; where the status
+  reports them, they still win. Replay does the same from the captured spec,
+  so existing captures and imports read correctly without being re-made.
+
 ## 4.4.0 — 2026-10-28
 
 ### Issues fixed

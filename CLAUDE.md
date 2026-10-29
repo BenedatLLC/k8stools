@@ -47,6 +47,7 @@ tests/
   test_endpoints.py          - get_endpoint_summaries and ServiceSummary endpoint counts
   test_metrics.py            - get_container_metrics / get_node_metrics: units, notes, the three replay cases
   test_ingress.py            - get_ingress_summaries: backend resolution, readiness, TLS by name
+  test_spec_resources.py     - Requests/limits from the pod spec when the status has none (pre-1.33, ITBench), live and replay (#32)
   test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
