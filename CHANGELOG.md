@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.4.0 — unreleased
+## 4.4.0 — 2026-10-28
 
 ### Issues fixed
 - [#30](https://github.com/BenedatLLC/k8stools/issues/30): Import path: an
