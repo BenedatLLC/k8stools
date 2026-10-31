@@ -66,6 +66,8 @@ class CaptureStats:
         self.logs_captured = 0
         self.previous_logs_captured = 0
         self.missing_previous_logs: list[str] = []
+        #: Logs the byte cap, not --max-log-lines, cut (#36).
+        self.logs_cut_by_bytes: list[str] = []
         self.redactions = 0
         #: kind -> {namespace ("" for cluster-wide): reason}, as in the capture.
         self.unreadable: dict[str, dict[str, str]] = {}
@@ -82,6 +84,12 @@ class CaptureStats:
                 f"  previous logs MISSING:  {len(self.missing_previous_logs)} "
                 f"(restarted container(s) whose previous instance could not be read)")
             for ref in self.missing_previous_logs:
+                lines.append(f"      {ref}")
+        if self.logs_cut_by_bytes:
+            lines.append(
+                f"  logs cut by bytes:      {len(self.logs_cut_by_bytes)} (kept the newest "
+                f"{k8s_tools.CAPTURE_LOG_BYTES // 2**20} MiB, fewer lines than --max-log-lines)")
+            for ref in self.logs_cut_by_bytes:
                 lines.append(f"      {ref}")
         if self.redactions:
             lines.append(f"  values redacted:        {self.redactions}")
@@ -267,6 +275,10 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         "version": CAPTURE_VERSION,
         "captured_at": captured_at.isoformat(),
         "redacted": redact,
+        # How much of each log was asked for, so replay can say which limit cut
+        # one (#36); a log the byte cap cut is listed in its pod's record.
+        **({"log_limits": {"max_lines": max_log_lines,
+                           "max_bytes": k8s_tools.CAPTURE_LOG_BYTES}} if include_logs else {}),
         # Which cluster this is, so replay can answer get_cluster_info. The
         # kubeconfig path is left out: it names a file on the capturing machine.
         "cluster": {
@@ -500,14 +512,16 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
         for status in statuses + (init_statuses or []):
             stats.containers += 1
             if include_logs:
-                logs = _safe(k8s_tools._read_pod_log, summary.name,
-                             namespace, status.container_name, tail=max_log_lines,
+                logs = _safe(k8s_tools._read_capture_log, summary.name,
+                             namespace, status.container_name, max_log_lines,
                              default=None)
                 if logs is not None:
-                    record["logs"][status.container_name] = redactor(logs)
+                    record["logs"][status.container_name] = redactor(logs[0])
                     stats.logs_captured += 1
                     _log_start(record, "log_starts", summary.name, namespace,
                                status.container_name, previous=False)
+                    _cut_by_bytes(record, "log_cut_by_bytes", status.container_name, logs[1],
+                                  stats, f"{namespace}/{summary.name}/{status.container_name}")
             # A completed init container's previous instance is rarely kept, and
             # isn't evidence of anything: one that is failing, like an app
             # container, is where the diagnosis is.
@@ -515,14 +529,18 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
             if include_previous_logs and status.restart_count > 0 and not completed_init:
                 # A missing previous instance is expected - it may have been
                 # garbage-collected - so this is non-fatal, but it is counted.
-                previous = _safe(k8s_tools._read_pod_log, summary.name,
-                                 namespace, status.container_name, tail=max_log_lines,
+                previous = _safe(k8s_tools._read_capture_log, summary.name,
+                                 namespace, status.container_name, max_log_lines,
                                  previous=True, default=None)
                 if previous is not None:
-                    previous_logs[status.container_name] = redactor(previous)
+                    previous_logs[status.container_name] = redactor(previous[0])
                     stats.previous_logs_captured += 1
                     _log_start(record, "previous_log_starts", summary.name, namespace,
                                status.container_name, previous=True)
+                    _cut_by_bytes(record, "previous_log_cut_by_bytes", status.container_name,
+                                  previous[1], stats,
+                                  f"{namespace}/{summary.name}/{status.container_name} "
+                                  "(previous)")
                 else:
                     stats.missing_previous_logs.append(
                         f"{namespace}/{summary.name}/{status.container_name}")
@@ -530,6 +548,15 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
             record["previous_logs"] = previous_logs
         records.append(record)
     return records
+
+
+def _cut_by_bytes(record: dict[str, Any], key: str, container: str, cut: bool,
+                  stats: CaptureStats, ref: str) -> None:
+    """List a log that :data:`k8s_tools.CAPTURE_LOG_BYTES` cut below
+    ``max_log_lines``, so replay names that limit rather than the line count."""
+    if cut:
+        record.setdefault(key, []).append(container)
+        stats.logs_cut_by_bytes.append(ref)
 
 
 def _log_start(record: dict[str, Any], key: str, pod: str, namespace: str,
@@ -576,7 +603,7 @@ def write_state(state: dict[str, Any], output: Path,
 
 
 #: Top-level capture keys that describe the file rather than the cluster.
-_CAPTURE_METADATA_KEYS = ("version", "captured_at", "redacted")
+_CAPTURE_METADATA_KEYS = ("version", "captured_at", "redacted", "log_limits")
 
 
 def redact_capture_file(path: Path) -> int:
@@ -620,7 +647,9 @@ def main() -> int:
                         help="Skip container logs entirely, including previous-instance "
                              "logs, for a structure-only snapshot")
     parser.add_argument('--max-log-lines', type=int, default=DEFAULT_MAX_LOG_LINES,
-                        help=f"Log lines to capture per container [default: {DEFAULT_MAX_LOG_LINES}]")
+                        help=f"Log lines to capture per container, up to "
+                             f"{k8s_tools.CAPTURE_LOG_BYTES // 2**20} MiB of each "
+                             f"[default: {DEFAULT_MAX_LOG_LINES}]")
     parser.add_argument('--no-previous-logs', action='store_true', default=False,
                         help="Skip the previous-instance logs of restarted containers. "
                              "These usually carry the diagnosis for a crash loop, so "

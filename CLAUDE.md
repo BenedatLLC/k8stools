@@ -50,7 +50,7 @@ tests/
   test_spec_resources.py     - Requests/limits from the pod spec when the status has none (pre-1.33, ITBench), live and replay (#32)
   test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
   test_forbidden.py          - A 403 is K8sForbidden; capture records an unreadable kind and carries on; replay and composites say so (#33)
-  test_log_search.py         - get_log_pattern_summary, grep before tail, where a log starts: live, capture and replay (#34)
+  test_log_search.py         - get_log_pattern_summary, grep before tail, where a log starts: live, capture and replay (#34); the capture's byte cap (#36)
   test_report_logs.py        - The workload report reads every pod's log; a cut line keeps its match; lines_from/log_starts (#35)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
@@ -148,7 +148,11 @@ read; `_log_extent_note`). Times are the kubelet's line prefix (`_line_time`),
 never times parsed from the message: replay moves only the prefix, with
 everything else. The capture stores each log's start as the kubelet wrote it
 (`log_starts`), like the lines it is compared with; a capture without it says
-the start is unknown, never that the log was whole.
+the start is unknown, never that the log was whole. The capture reads with its
+own cap (`_read_capture_log`, `CAPTURE_LOG_BYTES` = 16 MiB), not the tools' 1
+MiB: `--max-log-lines` is how much history it keeps (#36: 4.6.0 kept 2,675 of
+10,000 lines). It records `log_limits` and each log the byte cap cut
+(`log_cut_by_bytes`), and replay's notes name the limit that cut a log.
 
 **Every pod's log, and the match in a cut line** (#35). The workload report
 reads the focus pod's logs, then the others' (`_logs`): with `grep`, every log

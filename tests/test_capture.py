@@ -398,8 +398,8 @@ def test_a_containers_name_cannot_redact_its_own_logs(monkeypatch):
             last_state=None, volume_mounts=[], resource_requests={},
             resource_limits={}, allocated_resources={})]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
-    monkeypatch.setattr(k8s_tools, "_read_pod_log",
-                        lambda *a, **kw: log)
+    monkeypatch.setattr(k8s_tools, "_read_capture_log",
+                        lambda *a, **kw: (log, False))
 
     state = capture_state(redact=True)
     pod = state["pods"][0]
@@ -409,8 +409,8 @@ def test_a_containers_name_cannot_redact_its_own_logs(monkeypatch):
     # A secret-shaped value inside a log is still caught, as on the live server.
     # Only the token's own span goes: a log line is mostly diagnostics, and the
     # surrounding text is the part an agent is reading the log for.
-    monkeypatch.setattr(k8s_tools, "_read_pod_log",
-                        lambda *a, **kw: f"token={_FakeCluster.JWT}")
+    monkeypatch.setattr(k8s_tools, "_read_capture_log",
+                        lambda *a, **kw: (f"token={_FakeCluster.JWT}", False))
     state = capture_state(redact=True)
     captured_log = state["pods"][0]["logs"]["valkey-cart"]
     assert _FakeCluster.JWT not in captured_log
@@ -454,8 +454,8 @@ def test_no_logs_skips_previous_logs_too(monkeypatch):
             last_state=None, volume_mounts=[], resource_requests={},
             resource_limits={}, allocated_resources={})]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
-    monkeypatch.setattr(k8s_tools, "_read_pod_log",
-                        lambda *a, **kw: "some log text")
+    monkeypatch.setattr(k8s_tools, "_read_capture_log",
+                        lambda *a, **kw: ("some log text", False))
 
     stats = CaptureStats()
     state = capture_state(include_logs=False, redact=False, stats=stats)

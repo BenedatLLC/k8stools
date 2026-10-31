@@ -1315,9 +1315,10 @@ def _fetch_log(pod_name: str, namespace: str, container_name: Optional[str],
 
 
 def _read_tail(pod_name: str, namespace: str, container_name: Optional[str],
-               tail: Optional[int], since_seconds: Optional[int],
-               previous: bool) -> tuple[str, bool]:
-    """The last ``tail`` lines, and whether lines before them may exist.
+               tail: Optional[int], since_seconds: Optional[int], previous: bool,
+               cap: int = _TAIL_BYTES) -> tuple[str, bool, bool]:
+    """The last ``tail`` lines that fit in ``cap`` bytes; whether lines before
+    them may exist; and whether the cap, not ``tail``, decided where they start.
 
     ``limit_bytes`` stops reading that many bytes from the *start* of the tail,
     so a tail longer than the cap came back without its newest lines, the ones
@@ -1325,22 +1326,40 @@ def _read_tail(pod_name: str, namespace: str, container_name: Optional[str],
     lines than arrived.
     """
     tail = tail if tail is not None else _TAIL_LINES
+    capped = False
     for _ in range(6):
         text, full = _fetch_log(pod_name, namespace, container_name, previous,
-                                tail_lines=tail, limit_bytes=_TAIL_BYTES,
+                                tail_lines=tail, limit_bytes=cap,
                                 since_seconds=since_seconds)
         if not full or tail <= 1:
             break
+        capped = True
         tail = max(1, min(tail - 1, len(text.splitlines()) - 1))
-    return text, tail > 0 and len(text.splitlines()) >= tail
+    if full and "\n" in text:  # still full after the retries: drop the cut-off last line
+        text = text[:text.rfind("\n") + 1]
+    return text, tail > 0 and len(text.splitlines()) >= tail, capped
 
 
 def _read_pod_log(pod_name: str, namespace: str = "default",
                   container_name: Optional[str] = None, tail: Optional[int] = None,
                   since_seconds: Optional[int] = None, previous: bool = False) -> str:
-    """The container log as the API returns it, without notes. The capture
-    stores this, so replay can add notes for the replayed state."""
+    """The container log as the API returns it, without notes."""
     return _read_tail(pod_name, namespace, container_name, tail, since_seconds, previous)[0]
+
+
+#: The byte cap on a log the capture records: ``--max-log-lines`` decides how
+#: many lines, up to this, not the 1 MiB a tool result keeps (#36).
+CAPTURE_LOG_BYTES = WHOLE_LOG_BYTES
+
+
+def _read_capture_log(pod_name: str, namespace: str, container_name: Optional[str],
+                      tail: int, previous: bool = False) -> tuple[str, bool]:
+    """The log as the capture stores it (the API's text, without notes, so replay
+    can add notes for the replayed state): the last ``tail`` lines up to
+    :data:`CAPTURE_LOG_BYTES`, and whether that byte cap left some of them out."""
+    text, _, capped = _read_tail(pod_name, namespace, container_name, tail, None, previous,
+                                 cap=CAPTURE_LOG_BYTES)
+    return text, capped
 
 
 def _read_whole_log(pod_name: str, namespace: str, container_name: Optional[str],
@@ -1406,12 +1425,15 @@ def _show_time(t: datetime.datetime) -> str:
 
 
 def _log_extent_note(shown: list[str], recorded_from: Optional[datetime.datetime],
-                     log_starts: Optional[datetime.datetime]) -> Optional[str]:
+                     log_starts: Optional[datetime.datetime],
+                     why: Optional[str] = None) -> Optional[str]:
     """Where the lines shown start, when the log holds earlier ones.
 
     ``recorded_from`` is the first line the source holds (live, the kubelet's
     first line; replay, the capture's), ``log_starts`` where the log began when
-    known (live, the same). None when nothing was left out."""
+    known (live, the same), and ``why`` which of a capture's limits cut it, when
+    recorded. None when nothing was left out."""
+    why = f" {why}" if why else ""
     first = next((t for t in map(_line_time, shown) if t), None)
     if first is None:
         return None
@@ -1420,14 +1442,14 @@ def _log_extent_note(shown: list[str], recorded_from: Optional[datetime.datetime
     if recorded_from is not None and recorded_from < first:
         if began_earlier:
             return (f"{head}; this capture recorded the log from {_show_time(recorded_from)}, "
-                    f"and it began at {_show_time(log_starts)}. "
+                    f"and it began at {_show_time(log_starts)}.{why} "
                     "get_log_pattern_summary searches every recorded line.")
         log = "the log" if log_starts is not None else "the recorded log"
         return (f"{head}; {log} starts at {_show_time(recorded_from)}. "
                 "get_log_pattern_summary searches all of it.")
     if began_earlier:
         return (f"{head}; the log began at {_show_time(log_starts)}, but this capture "
-                "didn't record the lines before these.")
+                f"didn't record the lines before these.{why}")
     return None
 
 
@@ -1515,7 +1537,7 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
     returns its last instance for both values of previous. When that instance's
     log file is gone, raises an error, not text.
     """
-    text, cut = _read_tail(pod_name, namespace, container_name, tail, since_seconds, previous)
+    text, cut, _ = _read_tail(pod_name, namespace, container_name, tail, since_seconds, previous)
     extent = None
     if cut and not _is_reclaimed_log(text):
         try:  # where the log starts is best-effort too
@@ -4374,6 +4396,10 @@ NOTE_LOG_EXTENT_UNKNOWN = (
     "otherwise).")
 NOTE_LOG_CUT_IN_CAPTURE = ("This capture recorded the log from first_line; it began at "
                            "log_starts, and the lines before weren't recorded.")
+#: Which of the capture's limits cut a log, when the capture recorded them (#36).
+NOTE_CAPTURE_KEPT_LINES = "The capture kept each log's last {lines} lines (--max-log-lines)."
+NOTE_CAPTURE_KEPT_BYTES = ("The capture kept this log's newest {mib} MiB, fewer lines than "
+                           "its --max-log-lines {lines}.")
 NOTE_LOG_STARTS_LATE = "The log starts {gap} after this instance started (instance_started): {why}"
 LATE_ROTATED = ("the kubelet rotated earlier lines away, or the container wrote none until "
                 "then; which, the API doesn't say.")

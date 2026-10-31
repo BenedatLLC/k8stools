@@ -325,10 +325,10 @@ def test_live_the_report_greps_the_whole_log(kubelet, monkeypatch):
 
 # --- capture ------------------------------------------------------------------------
 
-def test_capture_records_where_each_log_starts(monkeypatch, kubelet):
+def _one_pod_cluster(monkeypatch, kubelet, log: str):
+    """A cluster of one pod whose container's log is ``log``; the kubelet fake."""
     _FakeCluster().install(monkeypatch)
-    log = _proxy_log(2000)
-    kubelet(log + "\n")
+    server = kubelet(log)
     status = ContainerStatus(
         pod_name="p", namespace="default", container_name="c", image="c:1", ready=True,
         restart_count=0, started=True, stop_signal=None,
@@ -341,10 +341,98 @@ def test_capture_records_where_each_log_starts(monkeypatch, kubelet):
                         lambda pod, ns: PodContainerStatuses(pod_name=pod, namespace=ns,
                                                              containers=[status]))
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda pod, ns: {"containers": [{"name": "c"}]})
+    return server
+
+
+def test_capture_records_where_each_log_starts(monkeypatch, kubelet):
+    log = _proxy_log(2000)
+    _one_pod_cluster(monkeypatch, kubelet, log + "\n")
     state = capture_state(redact=False, max_log_lines=1000)
     [pod] = state["pods"]
     assert pod["log_starts"] == {"c": log.split(" ", 1)[0]}
     replay = MockState(json.loads(json.dumps(state)), frozen=True,
                        server_start_time=datetime.datetime.fromisoformat(state["captured_at"]))
     s = replay.get_log_pattern_summary("p", "default", "c", pattern="503 UC")
-    assert s.lines == 1000 and k8s_tools.NOTE_LOG_CUT_IN_CAPTURE in s.notes
+    assert s.lines == 1000 and (k8s_tools.NOTE_LOG_CUT_IN_CAPTURE + " "
+                                + k8s_tools.NOTE_CAPTURE_KEPT_LINES.format(lines=1000)) in s.notes
+
+
+# --- the capture's byte cap (#36) ---------------------------------------------------
+# 4.6.0 read captured logs through the tools' 1 MiB reader, so --max-log-lines
+# 10000 kept 2,675 lines of Scenario-31's frontend-proxy, all after the policy.
+
+def _wide_log(n: int) -> str:
+    """``n`` lines of about 400 bytes, a second apart."""
+    return "\n".join(f"{_stamp(FIRST + datetime.timedelta(seconds=i))} line {i} " + "x" * 360
+                     for i in range(n)) + "\n"
+
+
+def test_capture_keeps_max_log_lines_past_a_mib(monkeypatch, kubelet):
+    log = _wide_log(10_000)
+    assert len(log) > 3 * 2**20
+    server = _one_pod_cluster(monkeypatch, kubelet, log)
+    stats = capture.CaptureStats()
+    state = capture_state(redact=False, max_log_lines=10_000, stats=stats)
+    [pod] = state["pods"]
+    assert pod["logs"]["c"] == log
+    assert "log_cut_by_bytes" not in pod and stats.logs_cut_by_bytes == []
+    assert state["log_limits"] == {"max_lines": 10_000, "max_bytes": k8s_tools.CAPTURE_LOG_BYTES}
+    assert server.calls[0]["limit_bytes"] == k8s_tools.CAPTURE_LOG_BYTES
+    # The tools still keep a result to 1 MiB.
+    assert len(k8s_tools._read_pod_log("p", "default", "c", tail=10_000)) < k8s_tools._TAIL_BYTES
+
+
+def test_a_log_past_the_capture_cap_keeps_its_newest_lines_and_says_so(monkeypatch, kubelet):
+    monkeypatch.setattr(k8s_tools, "CAPTURE_LOG_BYTES", 2**20)
+    log = _wide_log(10_000)
+    _one_pod_cluster(monkeypatch, kubelet, log)
+    stats = capture.CaptureStats()
+    state = capture_state(redact=False, max_log_lines=10_000, stats=stats)
+    [pod] = state["pods"]
+    kept = pod["logs"]["c"]
+    assert 0 < len(kept.splitlines()) < 10_000 and log.endswith(kept)  # whole lines, the newest
+    assert pod["log_cut_by_bytes"] == ["c"]
+    assert stats.logs_cut_by_bytes == ["default/p/c"]
+    assert "logs cut by bytes:      1" in stats.report()
+
+    replay = MockState(json.loads(json.dumps(state)), frozen=True,
+                       server_start_time=datetime.datetime.fromisoformat(state["captured_at"]))
+    why = k8s_tools.NOTE_CAPTURE_KEPT_BYTES.format(mib=1, lines=10_000)
+    s = replay.get_log_pattern_summary("p", "default", "c", pattern="line")
+    assert k8s_tools.NOTE_LOG_CUT_IN_CAPTURE + " " + why in s.notes
+    text = replay.get_logs_for_pod_and_container("p", "default", "c", tail=20)
+    assert why in text.splitlines()[0]
+
+
+def test_a_capture_that_recorded_no_limits_gives_no_reason():
+    """Captures before 4.6.1 don't say which limit cut a log, so replay doesn't."""
+    cut = _state(_proxy_log(), starts=_stamp(FIRST - datetime.timedelta(hours=1)))
+    s = _summary(cut)
+    assert k8s_tools.NOTE_LOG_CUT_IN_CAPTURE in s.notes
+    text = cut.get_logs_for_pod_and_container("frontend-proxy-1-a", "otel-demo", tail=20)
+    assert "and it began at" in text and "The capture kept" not in text
+
+
+def test_an_itbench_import_keeps_a_log_past_a_mib(tmp_path):
+    import shutil
+    from k8stools import itbench
+    snapshot = tmp_path / "snapshot"
+    shutil.copytree(EXCERPT, snapshot)
+    rows = (snapshot / "otel_logs_raw.tsv").read_text().splitlines()
+    head, first = rows[0], rows[1].split("\t")
+    stamp = datetime.datetime.fromisoformat(first[0][:26])
+    extra = []
+    for i in range(1, 4001):  # 4,000 records of about 400 bytes, before the first
+        row = list(first)
+        t = stamp - datetime.timedelta(milliseconds=i)
+        row[0], row[1] = t.strftime("%Y-%m-%d %H:%M:%S.%f") + "000", t.strftime("%Y-%m-%d %H:%M:%S")
+        row[8] = f"record {i} " + "y" * 360
+        extra.append("\t".join(row))
+    (snapshot / "otel_logs_raw.tsv").write_text("\n".join([head] + extra + rows[1:]) + "\n")
+    state = itbench.import_snapshot(snapshot, max_log_lines=10_000)
+    pod = next(p for p in state["pods"] if p["summary"]["name"] == first[10].split(
+        "'k8s.pod.name': '")[1].split("'")[0])
+    [log] = pod["logs"].values()
+    assert len(log.encode()) > 2**20
+    assert sum("y" * 360 in line for line in log.splitlines()) == 4000
+    assert "log_cut_by_bytes" not in pod

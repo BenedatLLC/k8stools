@@ -184,8 +184,8 @@ def _capture_one_pod(monkeypatch, statuses):
     monkeypatch.setattr(k8s_tools, "get_pod_container_statuses", statuses)
     monkeypatch.setattr(k8s_tools, "get_pod_spec", lambda p, ns: {})
     monkeypatch.setattr(capture, "_pod_labels", lambda ns: {})
-    monkeypatch.setattr(k8s_tools, "_read_pod_log",
-                        lambda pod, ns, c, tail=None, previous=False: f"{c} previous={previous}\n")
+    monkeypatch.setattr(k8s_tools, "_read_capture_log",
+                        lambda pod, ns, c, tail, previous=False: (f"{c} previous={previous}\n", False))
     return capture._capture_pods("default", NOW, include_logs=True, max_log_lines=10,
                                  include_previous_logs=True, stats=CaptureStats(),
                                  redactor=lambda v: v)[0]

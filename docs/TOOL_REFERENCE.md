@@ -474,10 +474,14 @@ in its message. On replay those move with every other time the replay returns
 happened; times inside messages stay as recorded, and show in `samples`.
 
 Replaying a capture, the search covers the lines the capture recorded: each log's
-last 1000 lines unless captured with `--max-log-lines`. Captures since 4.6.0 record
-where each log began, so the result gives `log_starts` with a note when the
-capture cut it; for older captures a note says the start isn't known. ITBench
-imports hold every OTel record of the current instance up to the pull.
+last 1000 lines unless captured with `--max-log-lines`, up to 16 MiB of each.
+Captures since 4.6.0 record where each log began, so the result gives
+`log_starts` with a note when the capture cut it; for older captures a note says
+the start isn't known. Since 4.6.1 that note also says which limit cut it: "The
+capture kept each log's last N lines (--max-log-lines)" or "The capture kept this
+log's newest 16 MiB, fewer lines than its --max-log-lines N" (`NOTE_CAPTURE_KEPT_LINES`,
+`NOTE_CAPTURE_KEPT_BYTES`); the log tool's note does the same. ITBench imports hold
+the current instance's OTel records up to the pull, within the same limits.
 
 #### Parameters
 

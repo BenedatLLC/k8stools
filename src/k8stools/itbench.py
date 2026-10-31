@@ -469,7 +469,7 @@ class _QuietLogReads(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        return not (message.startswith("_read_pod_log(")
+        return not (message.startswith("_read_capture_log(")
                     or message.startswith("Resource metrics not captured")
                     or message.startswith("Could not read the API server version"))
 

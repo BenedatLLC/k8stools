@@ -3,6 +3,32 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.6.1 — unreleased
+
+### Issues fixed
+- [#36](https://github.com/BenedatLLC/k8stools/issues/36): 4.6.0: captures keep
+  only about 1 MiB of each log, whatever --max-log-lines says.
+
+### Fixed
+- **A capture keeps `--max-log-lines` lines of each log, up to 16 MiB.** 4.6.0
+  read captured logs through the tools' reader, which keeps a result to 1 MiB,
+  so a busy log kept a fraction of the lines asked for: an ITBench re-import
+  with `--max-log-lines 10000` kept 2,675 lines of Scenario-31's frontend-proxy,
+  all after the NetworkPolicy, losing the 503s before it. The capture now has
+  its own cap (`CAPTURE_LOG_BYTES`, 16 MiB), still keeping the newest lines;
+  live captures and ITBench imports both. Tools keep 1 MiB.
+
+### Added
+- **A capture records which limit cut a log.** Its `log_limits` (`max_lines`,
+  `max_bytes`), and per pod the logs the byte cap cut (`log_cut_by_bytes`,
+  `previous_log_cut_by_bytes`), listed in the end-of-capture report too. On
+  replay, the note on a log the capture cut says which limit: the last N lines
+  (`--max-log-lines`) or the newest 16 MiB. Older captures give the notes they did.
+
+### Changed
+- **Captures of logs with long lines can be larger**: at the default 1000 lines,
+  lines of 4 KB now take 4 MB per log, not 1 MB. `--max-log-lines` sets the size.
+
 ## 4.6.0 — 2026-10-31
 
 ### Issues fixed

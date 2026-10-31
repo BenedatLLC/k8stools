@@ -630,7 +630,8 @@ options:
   --no-logs             Skip container logs entirely, including previous-
                         instance logs, for a structure-only snapshot
   --max-log-lines MAX_LOG_LINES
-                        Log lines to capture per container [default: 1000]
+                        Log lines to capture per container, up to 16 MiB of
+                        each [default: 1000]
   --no-previous-logs    Skip the previous-instance logs of restarted
                         containers. These usually carry the diagnosis for a
                         crash loop, so dropping them is rarely what you want.
@@ -683,9 +684,12 @@ always captured in full so the cluster still makes sense.
 Logs dominate the file size: expect a few MB for a few dozen pods (the 27-pod
 capture above was 1.4 MB with only 50 lines per container; a 38-pod one at 200
 lines was 3.3 MB). Use `--max-log-lines` to trade size against history, or
-`--no-logs` for a structure-only snapshot. The capture records where each log
-began, so on replay `get_log_pattern_summary` and the log tool say when the
-capture kept only the newest lines. Captures compress about 10x, and can be
+`--no-logs` for a structure-only snapshot. A log is kept to its newest 16 MiB,
+which can leave fewer lines than `--max-log-lines` (the end-of-capture report
+lists those logs); the tools' 1 MiB limit on a result doesn't apply. The capture
+records where each log began and which limit cut it, so on replay
+`get_log_pattern_summary` and the log tool say when the capture kept only the
+newest lines, and why. Captures compress about 10x, and can be
 written and read gzipped; see [Compression, and what to check
 in](#compression-and-what-to-check-in).
 

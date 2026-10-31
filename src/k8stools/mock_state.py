@@ -641,6 +641,21 @@ class MockState:
         starts = (record.get("previous_log_starts" if previous else "log_starts") or {})
         return container_name, logs[container_name], starts.get(container_name)
 
+    def _capture_cut(self, pod_name: str, namespace: str, container_name: str,
+                     previous: bool, recorded: str) -> Optional[str]:
+        """Which of the capture's limits cut this log, when it recorded them (#36):
+        the byte cap, or --max-log-lines when the log holds that many lines."""
+        limits = self._data.get("log_limits") or {}
+        record = self._pods.get((namespace, pod_name)) or {}
+        lines = limits.get("max_lines")
+        if container_name in (record.get("previous_log_cut_by_bytes" if previous
+                                         else "log_cut_by_bytes") or []):
+            return k8s_tools.NOTE_CAPTURE_KEPT_BYTES.format(
+                mib=limits.get("max_bytes", k8s_tools.CAPTURE_LOG_BYTES) // 2**20, lines=lines)
+        if lines and len(recorded.splitlines()) >= lines:
+            return k8s_tools.NOTE_CAPTURE_KEPT_LINES.format(lines=lines)
+        return None
+
     def _log_start(self, stamp: Optional[str]) -> Optional[datetime.datetime]:
         """A recorded log start, moved as replay moves the log's own lines."""
         return k8s_tools._line_time(_reanchor_log(stamp, self._log_shift)) if stamp else None
@@ -674,8 +689,9 @@ class MockState:
             if len(text.splitlines()) < len(recent.splitlines()) or since_seconds is None:
                 first = next((t for t in map(k8s_tools._line_time, whole.splitlines()) if t),
                              None)
-                extent = k8s_tools._log_extent_note(text.splitlines(), first,
-                                                    self._log_start(stamp))
+                extent = k8s_tools._log_extent_note(
+                    text.splitlines(), first, self._log_start(stamp),
+                    self._capture_cut(pod_name, namespace, container_name, previous, recorded))
         # Notes from the replayed state, as the live tool adds them from the live one.
         noted = k8s_tools._with_log_notes(
             text, k8s_tools._all_statuses(self.get_pod_container_statuses(pod_name, namespace)),
@@ -705,8 +721,10 @@ class MockState:
             container_name)
         if k8s_tools._is_reclaimed_log(recorded):
             raise k8s_tools._reclaimed_error(pod_name, container_name, previous, status)
+        why = self._capture_cut(pod_name, namespace, container_name, previous, recorded)
         return k8s_tools._summarize_log(
             _reanchor_log(recorded, self._log_shift), pod=pod_name, container=container_name,
+            cut=k8s_tools.NOTE_LOG_CUT_IN_CAPTURE + (f" {why}" if why else ""),
             previous=previous, pattern=pattern, bucket_seconds=bucket_seconds,
             max_samples=max_samples, notes=self._otel_note(k8s_tools._log_notes(status)),
             log_starts=self._log_start(stamp), extent_known=stamp is not None,
