@@ -59,7 +59,8 @@ state. Strip lines starting with `[k8stools] note: ` (the constant
 ## Errors
 
 A tool that can't answer raises an exception. In Python that is a `K8sApiError`
-(including `K8sLogReclaimed` and `K8sMetricsUnavailable`) or a `K8sConfigError`.
+(including `K8sLogReclaimed`, `K8sMetricsUnavailable`, `K8sNotRecorded` on
+replay, and `K8sForbidden` for a 403) or a `K8sConfigError`.
 A failure to reach the API server propagates as the HTTP client's error, except
 from the log readers, which raise `K8sApiError`.
 
@@ -126,7 +127,13 @@ From a capture that doesn't record a kind (it predates it, or didn't collect it)
 the kinds read here that weren't recorded are named in one note, "Not recorded in
 this capture, so unknown rather than absent: DaemonSets, Service endpoints.", and
 contribute nothing else: a DaemonSet's pods aren't assessed, and Services have no
-endpoint lines. The tool for such a kind raises `K8sNotRecorded` on replay.
+endpoint lines. The tool for such a kind raises `K8sNotRecorded` on replay. A
+kind the capture couldn't read is named the same way, as "NetworkPolicies (not
+readable when captured)". Live, a kind the account may not read (a 403) is
+named in "Not readable with these credentials (403 Forbidden), so unknown rather
+than absent: HorizontalPodAutoscalers.", and likewise contributes nothing else;
+the report doesn't fail. Pods, container statuses and pod specs are still
+required.
 
 Restart cadence comes from container status, not event counts: event records lag
 what they count (see `get_events`), so an event-derived rate is an average over

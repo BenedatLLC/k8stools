@@ -667,9 +667,14 @@ Everything the tools can read, so that every tool answers on replay:
 
 A cluster is selected exactly as for the MCP server (see [Selecting a
 cluster](#selecting-a-cluster)), and a selection that cannot be loaded fails the
-capture. The capture needs the permissions in [Permissions](#permissions); a
-custom-resource type it can't read is recorded as such rather than failing the
-capture, and so is a cluster without metrics-server.
+capture. The capture needs the permissions in [Permissions](#permissions), but
+a kind its role may not read (a 403) doesn't fail it: the kind is recorded as not
+readable, per namespace, and the capture carries on, so a role that predates a
+kind added in a newer k8stools still captures everything else. The summary at
+the end lists what wasn't readable and what to grant. Pods are required, and so
+is the namespace list unless `--namespace` is given. A custom-resource type it
+can't read, metrics it may not read, and a cluster without metrics-server are
+recorded the same way.
 
 `--namespace` restricts only the namespaced resources; namespaces and nodes are
 always captured in full so the cluster still makes sense.
@@ -694,6 +699,11 @@ or didn't collect it:
   of a container that restarted, when its previous log wasn't captured. A
   container that never restarted has no previous instance, and says so, as
   live. A log recorded as empty is replayed as empty.
+- A kind the capture's role couldn't read raises `K8sNotRecorded` with the
+  reason, in the namespaces it couldn't read and across all of them; the other
+  namespaces answer as recorded. Such a capture is format version "2", which
+  k8stools before 4.5.0 refuses rather than read those kinds as empty; a
+  complete capture stays version "1".
 - A field the capture predates is unknown (`None`, never 0).
 
 ### Importing an ITBench-Lite snapshot

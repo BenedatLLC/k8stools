@@ -34,6 +34,7 @@ import datetime
 import gzip
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -41,7 +42,8 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from . import k8s_tools
-from .mock_state import CAPTURE_VERSION, CaptureFormatError, encode_model, read_capture
+from .mock_state import (CAPTURE_VERSION, CAPTURE_VERSION_WITH_GAPS, CaptureFormatError,
+                         encode_model, read_capture)
 from .redaction import redact_object, redaction_enabled
 
 
@@ -65,6 +67,11 @@ class CaptureStats:
         self.previous_logs_captured = 0
         self.missing_previous_logs: list[str] = []
         self.redactions = 0
+        #: kind -> {namespace ("" for cluster-wide): reason}, as in the capture.
+        self.unreadable: dict[str, dict[str, str]] = {}
+        #: Forbidden reads stored elsewhere in the capture (metrics, custom
+        #: resources), reported with the kinds: the role needs them too.
+        self.forbidden_other: dict[str, str] = {}
 
     def report(self) -> str:
         lines = [f"Captured {self.pods} pod(s), {self.containers} container(s)."]
@@ -78,7 +85,25 @@ class CaptureStats:
                 lines.append(f"      {ref}")
         if self.redactions:
             lines.append(f"  values redacted:        {self.redactions}")
+        if self.unreadable or self.forbidden_other:
+            lines.append(f"  NOT READABLE:           {len(self.unreadable) + len(self.forbidden_other)} "
+                         "kind(s); replay says not recorded (grant the role these to capture them)")
+            for key, where in self.unreadable.items():
+                spaces = ", ".join(ns or "cluster-wide" for ns in where)
+                lines.append(f"      {key}: {_grant(next(iter(where.values())))} ({spaces})")
+            for key, reason in self.forbidden_other.items():
+                lines.append(f"      {key}: {_grant(reason)}")
         return "\n".join(lines)
+
+
+def _grant(reason: str) -> str:
+    """What a 403 says to grant, e.g. 'list networkpolicies in API group
+    networking.k8s.io', or the reason itself when it doesn't say."""
+    m = re.search(r'cannot (\w+) resource "([^"]+)" in API group "([^"]*)"', reason)
+    if not m:
+        return reason
+    group = m[3] or '"" (core)'
+    return f"{m[1]} {m[2]} in API group {group}"
 
 
 class _Redactor:
@@ -169,11 +194,73 @@ def capture_state(namespaces: Optional[list[str]] = None,
                         redact, redactor, stats, captured_at)
 
 
+def _unreadable_reason(e: k8s_tools.K8sApiError) -> Optional[str]:
+    """Why a list failed, if that means the capture can't have this kind (a
+    403, or a 404 for an API the cluster doesn't serve), else None: anything
+    else (a 5xx, a dropped connection) fails the capture rather than leave a
+    hole a retry would fill."""
+    if isinstance(e, k8s_tools.K8sForbidden) or _status(e) == 404:
+        return _without_user(str(e))
+    return None
+
+
+def _status(e: Exception) -> Optional[int]:
+    return getattr(e.__cause__, "status", None)
+
+
+def _without_user(reason: str) -> str:
+    """A 403's text without the account it names (``User "system:service
+    account:ns:name" cannot list ...``): captures get published, and what to
+    grant is the resource and group, which stay."""
+    return re.sub(r'User "[^"]*" ', "", reason)
+
+
+class _Reader:
+    """Reads one kind at a time; one the account may not read is recorded in
+    ``unreadable`` and read as [], and the capture carries on (#33). Replay
+    then raises K8sNotRecorded with the reason, never answers "none"."""
+
+    def __init__(self, stats: CaptureStats):
+        self.unreadable = stats.unreadable
+
+    def __call__(self, key: str, where: Optional[str], read, *args, **kwargs):
+        return self._read(key, where, [], read, *args, **kwargs)
+
+    def one(self, key: str, where: str, read, *args, **kwargs):
+        """Read one listed object. A 404 means it was deleted since the list,
+        not that its kind isn't served: it's skipped (None), and replay, which
+        listed it, answers for it as for one with nothing recorded."""
+        return self._read(key, where, None, read, *args, **kwargs)
+
+    def _read(self, key, where, empty, read, *args, **kwargs):
+        try:
+            return read(*args, **kwargs)
+        except k8s_tools.K8sApiError as e:
+            if empty is None and _status(e) == 404:
+                logging.info(f"{key}: skipped, deleted during the capture: {e}")
+                return None
+            reason = _unreadable_reason(e)
+            if reason is None:
+                raise
+            logging.warning(f"{key} not captured{f' in {where}' if where else ''}: {e}")
+            self.unreadable.setdefault(key, {})[where or ""] = reason
+            return empty
+
+
+def _read_plainly(key, where, read, *args, **kwargs):
+    return read(*args, **kwargs)
+
+
 def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
              redact, redactor, stats, captured_at) -> dict[str, Any]:
 
+    read = _Reader(stats)
     cluster = _safe(k8s_tools.get_cluster_info, default=None)
-    all_namespaces = redactor(k8s_tools.get_namespaces())
+    # The namespace list is what an all-namespace capture walks, so it can't
+    # do without it; with --namespace it's optional, like nodes (which a
+    # namespace-scoped role can never read). Pods are required, below.
+    all_namespaces = redactor(read("namespaces", None, k8s_tools.get_namespaces) if namespaces
+                              else k8s_tools.get_namespaces())
     target_namespaces = namespaces if namespaces else [ns.name for ns in all_namespaces]
 
     state: dict[str, Any] = {
@@ -188,7 +275,8 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
             "server_version": cluster.server_version,
         } if cluster else None,
         "namespaces": _encode_all(all_namespaces, captured_at),
-        "nodes": _encode_all(redactor(k8s_tools.get_node_summaries()), captured_at),
+        "nodes": _encode_all(redactor(read("nodes", None, k8s_tools.get_node_summaries)),
+                             captured_at),
         "pods": [],
         "deployments": [],
         "replicasets": [],
@@ -207,39 +295,49 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         "events": [],
     }
 
+    def kind(key, ns, fn):
+        state[key] += _encode_all(redactor(read(key, ns, fn, ns)), captured_at)
+
     for ns in target_namespaces:
-        deployments = k8s_tools.get_deployment_summaries(ns)
+        deployments = read("deployments", ns, k8s_tools.get_deployment_summaries, ns)
         state["deployments"] += _encode_all(redactor(deployments), captured_at)
-        state["replicasets"] += _encode_all(redactor(k8s_tools.get_replicaset_summaries(ns)), captured_at)
-        state["services"] += _encode_all(redactor(k8s_tools.get_service_summaries(ns)), captured_at)
-        state["endpoints"] += _encode_all(redactor(k8s_tools.get_endpoint_summaries(ns)), captured_at)
-        state["ingresses"] += _encode_all(redactor(k8s_tools.get_ingress_summaries(ns)), captured_at)
-        state["networkpolicies"] += _encode_all(
-            redactor(k8s_tools.get_networkpolicy_summaries(ns)), captured_at)
-        statefulsets = k8s_tools.get_statefulset_summaries(ns)
+        kind("replicasets", ns, k8s_tools.get_replicaset_summaries)
+        kind("services", ns, k8s_tools.get_service_summaries)
+        kind("endpoints", ns, k8s_tools.get_endpoint_summaries)
+        kind("ingresses", ns, k8s_tools.get_ingress_summaries)
+        kind("networkpolicies", ns, k8s_tools.get_networkpolicy_summaries)
+        statefulsets = read("statefulsets", ns, k8s_tools.get_statefulset_summaries, ns)
         state["statefulsets"] += _encode_all(redactor(statefulsets), captured_at)
-        daemonsets = k8s_tools.get_daemonset_summaries(ns)
+        daemonsets = read("daemonsets", ns, k8s_tools.get_daemonset_summaries, ns)
         state["daemonsets"] += _encode_all(redactor(daemonsets), captured_at)
-        state["hpas"] += _encode_all(redactor(k8s_tools.get_hpa_summaries(ns)), captured_at)
+        kind("hpas", ns, k8s_tools.get_hpa_summaries)
         # The tool's own result, not raw templates: replay serves it as is, and
-        # env values never reach the file.
-        for kind, workloads in (("Deployment", deployments), ("StatefulSet", statefulsets),
-                                ("DaemonSet", daemonsets)):
+        # env values never reach the file. One the role can't read (its
+        # ReplicaSets, ControllerRevisions or ConfigMaps) marks the namespace,
+        # and replay says not recorded for any workload without a history.
+        for wkind, workloads in (("Deployment", deployments), ("StatefulSet", statefulsets),
+                                 ("DaemonSet", daemonsets)):
             for w in workloads:
-                state["workload_histories"].append(encode_model(
-                    redactor(k8s_tools.get_workload_history(w.name, ns, kind)), captured_at))
-        state["cronjobs"] += _encode_all(redactor(k8s_tools.get_cronjob_summaries(ns)), captured_at)
-        state["jobs"] += _encode_all(redactor(k8s_tools.get_job_summaries(ns)), captured_at)
+                history = read.one("workload_histories", ns, k8s_tools.get_workload_history,
+                                   w.name, ns, wkind)
+                if history:
+                    state["workload_histories"].append(encode_model(redactor(history), captured_at))
+        kind("cronjobs", ns, k8s_tools.get_cronjob_summaries)
+        kind("jobs", ns, k8s_tools.get_job_summaries)
         # Without their events: replay derives them from the capture's event
         # records, so a stored copy would only duplicate those, unread.
         state["pvcs"] += [{k: v for k, v in record.items() if k != "events"} for record in
-                          _encode_all(redactor(k8s_tools.get_pvc_summaries(ns)), captured_at)]
-        state["configmaps"] += _capture_configmaps(ns, captured_at, redactor)
-        state["events"] += _capture_events(ns, captured_at, redactor)
+                          _encode_all(redactor(read("pvcs", ns, k8s_tools.get_pvc_summaries, ns)),
+                                      captured_at)]
+        state["configmaps"] += _capture_configmaps(ns, captured_at, redactor, read)
+        state["events"] += _capture_events(ns, captured_at, redactor, read)
         state["pods"] += _capture_pods(ns, captured_at, include_logs, max_log_lines,
                                        include_previous_logs, stats, redactor)
-    state["metrics"] = _capture_metrics(target_namespaces, captured_at, redactor)
-    state["custom_resources"] = _capture_custom_resources(namespaces, captured_at, redactor)
+    state["metrics"] = _capture_metrics(target_namespaces, captured_at, redactor, stats)
+    state["custom_resources"] = _capture_custom_resources(namespaces, captured_at, redactor, stats)
+    if stats.unreadable:
+        state["unreadable"] = stats.unreadable
+        state["version"] = CAPTURE_VERSION_WITH_GAPS
     return state
 
 
@@ -249,18 +347,21 @@ MAX_CUSTOM_RESOURCES_PER_TYPE = 500
 
 
 def _capture_custom_resources(namespaces: Optional[list[str]], captured_at: datetime.datetime,
-                              redactor: "_Redactor") -> dict[str, Any]:
+                              redactor: "_Redactor", stats: Optional[CaptureStats] = None) -> dict[str, Any]:
     """CRDs and each type's instances' health.
 
     Read access to custom resources is granted per API group, so a role often
     covers only some: a type it can't read is recorded with the reason, and
     replay raises it as a live call would, rather than failing the capture.
     """
+    stats = stats or CaptureStats()
     try:
         definitions = k8s_tools.get_custom_resource_definitions()
     except k8s_tools.K8sApiError as e:
         logging.warning(f"Custom resources not captured: {e}")
-        return {"available": False, "reason": str(e)}
+        if isinstance(e, k8s_tools.K8sForbidden):
+            stats.forbidden_other["custom resources"] = _without_user(str(e))
+        return {"available": False, "reason": _without_user(str(e))}
     instances = []
     for crd in definitions:
         record: dict[str, Any] = {"group": crd.group, "plural": crd.plural,
@@ -273,7 +374,9 @@ def _capture_custom_resources(namespaces: Optional[list[str]], captured_at: date
                 items = k8s_tools.get_custom_resource_status(crd.group, crd.plural,
                                                              crd.storage_version)
         except k8s_tools.K8sApiError as e:
-            instances.append(record | {"available": False, "reason": str(e)})
+            instances.append(record | {"available": False, "reason": _without_user(str(e))})
+            if isinstance(e, k8s_tools.K8sForbidden):
+                stats.forbidden_other[f"{crd.plural}.{crd.group}"] = _without_user(str(e))
             continue
         record |= {"available": True, "truncated": len(items) > MAX_CUSTOM_RESOURCES_PER_TYPE,
                    "items": _encode_all(redactor(items[:MAX_CUSTOM_RESOURCES_PER_TYPE]), captured_at)}
@@ -283,26 +386,29 @@ def _capture_custom_resources(namespaces: Optional[list[str]], captured_at: date
 
 
 def _capture_metrics(namespaces: list[str], captured_at: datetime.datetime,
-                     redactor: "_Redactor") -> dict[str, Any]:
+                     redactor: "_Redactor", stats: Optional[CaptureStats] = None) -> dict[str, Any]:
     """The usage tools' results, or why metrics weren't available.
 
     No metrics-server is a normal setup, so it's recorded rather than failing the
-    capture, and replay raises the same error the live tool would. Any other
-    error (e.g. no permission on metrics.k8s.io) still fails the capture.
+    capture, and replay raises the same error the live tool would. So is a role
+    without metrics.k8s.io (#33); any other error still fails the capture.
     """
+    stats = stats or CaptureStats()
     try:
         containers: list[dict[str, Any]] = []
         for ns in namespaces:
             containers += _encode_all(redactor(k8s_tools.get_container_metrics(ns)), captured_at)
         nodes = _encode_all(redactor(k8s_tools.get_node_metrics()), captured_at)
-    except k8s_tools.K8sMetricsUnavailable as e:
+    except (k8s_tools.K8sMetricsUnavailable, k8s_tools.K8sForbidden) as e:
         logging.warning(f"Resource metrics not captured: {e}")
-        return {"available": False, "reason": str(e)}
+        if isinstance(e, k8s_tools.K8sForbidden):
+            stats.forbidden_other["metrics"] = _without_user(str(e))
+        return {"available": False, "reason": _without_user(str(e))}
     return {"available": True, "containers": containers, "nodes": nodes}
 
 
 def _capture_configmaps(namespace: str, captured_at: datetime.datetime,
-                        redactor: "_Redactor") -> list[dict[str, Any]]:
+                        redactor: "_Redactor", read: Optional["_Reader"] = None) -> list[dict[str, Any]]:
     """ConfigMap summaries plus their full contents, so both ConfigMap tools replay.
 
     ``key_count`` / ``data_size`` are stored alongside the content rather than
@@ -310,7 +416,9 @@ def _capture_configmaps(namespace: str, captured_at: datetime.datetime,
     ``get_configmap`` returns only their key names.
     """
     records = []
-    for summary in redactor(k8s_tools.get_configmap_summaries(namespace)):
+    read = read or _read_plainly
+    for summary in redactor(read("configmaps", namespace, k8s_tools.get_configmap_summaries,
+                                 namespace)):
         record = {
             "name": summary.name,
             "namespace": summary.namespace,
@@ -332,7 +440,7 @@ def _capture_configmaps(namespace: str, captured_at: datetime.datetime,
 
 
 def _capture_events(namespace: str, captured_at: datetime.datetime,
-                    redactor: "_Redactor") -> list[dict[str, Any]]:
+                    redactor: "_Redactor", read: Optional["_Reader"] = None) -> list[dict[str, Any]]:
     """All events in a namespace, as one flat list.
 
     Events are captured per-namespace (rather than cluster-wide in one call) so
@@ -342,7 +450,8 @@ def _capture_events(namespace: str, captured_at: datetime.datetime,
     ``get_events`` filters on them, and ``get_pod_events`` reports a bare name.
     """
     records = []
-    for event in redactor(k8s_tools.get_events(namespace=namespace)):
+    read = read or _read_plainly
+    for event in redactor(read("events", namespace, k8s_tools.get_events, namespace=namespace)):
         kind, sep, name = event.object.partition("/")
         if not sep:  # no kind available; the whole string is the name
             kind, name = None, event.object

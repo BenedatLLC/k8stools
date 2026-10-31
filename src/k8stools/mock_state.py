@@ -63,6 +63,12 @@ from . import k8s_tools
 #: Version of the capture file format this module reads and :mod:`k8stools.capture` writes.
 CAPTURE_VERSION = "1"
 
+#: The version of a capture with kinds it couldn't read (an ``unreadable``
+#: map, #33). Only such captures get it: a reader before 4.5.0 would ignore the
+#: map and answer "none" for those kinds, so it must refuse them, while a
+#: complete capture stays readable by every version.
+CAPTURE_VERSION_WITH_GAPS = "2"
+
 #: What each top-level list holds, for the error when a capture has none.
 _RECORDED_KINDS = {
     "namespaces": "namespaces", "nodes": "nodes", "pods": "pods",
@@ -371,10 +377,10 @@ class MockState:
     def __init__(self, data: dict[str, Any], frozen: bool = False,
                  server_start_time: Optional[datetime.datetime] = None):
         version = data.get("version")
-        if version != CAPTURE_VERSION:
+        if version not in (CAPTURE_VERSION, CAPTURE_VERSION_WITH_GAPS):
             raise CaptureFormatError(
-                f"Unsupported capture version {version!r}; this build reads version "
-                f"{CAPTURE_VERSION!r}.")
+                f"Unsupported capture version {version!r}; this build reads versions "
+                f"{CAPTURE_VERSION!r} and {CAPTURE_VERSION_WITH_GAPS!r}.")
         self._data = data
         self._clock = _Clock(
             server_start_time or datetime.datetime.now(datetime.timezone.utc),
@@ -422,22 +428,43 @@ class MockState:
 
     # -- helpers ------------------------------------------------------------
 
-    def _records(self, key: str) -> list[dict[str, Any]]:
+    def _records(self, key: str, namespace: Optional[str] = None) -> list[dict[str, Any]]:
         """A top-level list, or K8sNotRecorded when the capture has none: a
         missing kind is unknown, not empty, whether the capture predates it or
-        didn't collect it."""
+        didn't collect it. Also when the capture couldn't read the kind in
+        ``namespace`` (any namespace, when None): see :meth:`_check_readable`."""
         records = self._data.get(key)
         if records is None:
             raise k8s_tools.K8sNotRecorded(
                 f"This capture doesn't record {_RECORDED_KINDS.get(key, key)}: it has no "
                 f"'{key}' list (it predates them, or they weren't collected), so they "
                 "are unknown, not absent.", what=_RECORDED_KINDS.get(key, key))
+        self._check_readable(key, namespace)
         return records
+
+    def _check_readable(self, key: str, namespace: Optional[str]) -> None:
+        """Raise K8sNotRecorded if the capture recorded ``key`` as unreadable in
+        ``namespace`` (#33). ``unreadable`` maps a kind to {namespace: reason},
+        with "" for a cluster-wide read; the kind's list still holds what the
+        other namespaces returned."""
+        unreadable = (self._data.get("unreadable") or {}).get(key)
+        if not unreadable:
+            return
+        where = next((ns for ns in unreadable if namespace is None or ns in ("", namespace)),
+                     None)
+        if where is None:
+            return
+        what = _RECORDED_KINDS.get(key, key.replace("_", " "))
+        place = f" in namespace '{where}'" if where else ""
+        raise k8s_tools.K8sNotRecorded(
+            f"This capture doesn't record {what}{place}: they weren't readable when "
+            f"captured ({unreadable[where]}), so they are unknown, not absent.",
+            what=what, reason="not readable when captured")
 
     def _decode_all(self, key: str, model: type[BaseModel],
                     namespace: Optional[str]) -> list[Any]:
         """Decode a top-level list, filtered by namespace the way the real tools do."""
-        records = self._records(key)
+        records = self._records(key, namespace)
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         return [decode_model(model, r, self._clock) for r in records]
@@ -524,7 +551,7 @@ class MockState:
         the ``Kind/name`` form ``get_events`` uses.
         """
         results = []
-        for record in self._records("events"):
+        for record in self._records("events", namespace):
             if record.get("namespace") != namespace:
                 continue
             if record.get("involved_name") != pod_name:
@@ -539,7 +566,7 @@ class MockState:
                    involved_name: Optional[str] = None,
                    event_type: Optional[str] = None) -> list[k8s_tools.EventSummary]:
         results = []
-        for record in self._records("events"):
+        for record in self._records("events", namespace):
             if namespace is not None and record.get("namespace") != namespace:
                 continue
             if reason is not None and record.get("reason") != reason:
@@ -649,10 +676,12 @@ class MockState:
                     (kind, name, namespace):
                 return decode_model(k8s_tools.WorkloadHistory, record, self._clock)
 
+        # Not rebuilt from the ReplicaSets when the capture couldn't read it.
+        self._check_readable("workload_histories", namespace)
         key = {"Deployment": "deployments", "StatefulSet": "statefulsets",
                "DaemonSet": "daemonsets"}[kind]
         if not any(r.get("name") == name and r.get("namespace") == namespace
-                   for r in self._records(key)):
+                   for r in self._records(key, namespace)):
             raise k8s_tools.K8sApiError(
                 f"{kind} '{name}' not found in namespace '{namespace}'.")
 
@@ -696,7 +725,7 @@ class MockState:
         `k8s_tools.get_replicaset_summaries`. See that function's docstring for
         what a missing revision means.
         """
-        records = self._records("replicasets")
+        records = self._records("replicasets", namespace)
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         if deployment is not None:
@@ -716,7 +745,7 @@ class MockState:
     @_pinned_query
     def get_configmap_summaries(self,
                                 namespace: Optional[str] = None) -> list[k8s_tools.ConfigMapSummary]:
-        records = self._records("configmaps")
+        records = self._records("configmaps", namespace)
         if namespace is not None:
             records = [r for r in records if r.get("namespace") == namespace]
         summaries = []
@@ -733,7 +762,7 @@ class MockState:
 
     @_pinned_query
     def get_configmap(self, name: str, namespace: str = "default") -> dict[str, Any]:
-        for r in self._records("configmaps"):
+        for r in self._records("configmaps", namespace):
             if r.get("name") == name and r.get("namespace") == namespace:
                 return {
                     "name": r.get("name"),
@@ -885,7 +914,7 @@ class MockState:
                              since_seconds: Optional[int] = None,
                              previous: bool = False) -> Optional[str]:
         """Logs of the CronJob's newest Job's newest pod, as the real tool resolves them."""
-        owned = [r for r in self._records("jobs")
+        owned = [r for r in self._records("jobs", namespace)
                  if r.get("namespace") == namespace and r.get("owner") == cronjob_name]
         if not owned:
             return None

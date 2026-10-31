@@ -275,11 +275,16 @@ def test_not_recorded_or_unreadable_policies_are_never_none():
             return getattr(self._state, name)
 
         def get_networkpolicy_summaries(self, namespace=None):
-            raise k8s_tools.K8sApiError("Error fetching network policies: 403 Forbidden")
+            raise self.error
 
+    # A 403 is a kind these credentials can't read (#33); any other failure says why.
+    note = ("Not readable with these credentials (403 Forbidden), so unknown rather "
+            "than absent: NetworkPolicies.")
+    Forbidden.error = k8s_tools.K8sForbidden("Error fetching network policies: 403 Forbidden")
     report = workload_report(Forbidden(_fixture()), "test-deployment", "default")
     assert report.network_policies == []
-    assert "NetworkPolicies unavailable: Error fetching network policies: 403 Forbidden" \
-        in report.notes
-    assert "NetworkPolicies unavailable: Error fetching network policies: 403 Forbidden" \
-        in namespace_health(Forbidden(_fixture()), "default").notes
+    assert note in report.notes
+    assert note in namespace_health(Forbidden(_fixture()), "default").notes
+    Forbidden.error = k8s_tools.K8sApiError("Error fetching network policies: 500 Internal Server Error")
+    assert "NetworkPolicies unavailable: Error fetching network policies: 500 Internal Server " \
+        "Error" in workload_report(Forbidden(_fixture()), "test-deployment", "default").notes

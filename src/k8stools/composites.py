@@ -36,7 +36,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         allows_port, network_policy_effect,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
-                        K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
+                        K8sForbidden, K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
                         NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
@@ -86,21 +86,58 @@ def _disagreement(code: Optional[int], reason: Optional[str]) -> Optional[str]:
 _KINDS = ("Deployment", "StatefulSet", "DaemonSet", "Job")
 
 
+#: The kind each reader returns, for naming one the account may not read.
+_READER_KINDS = {
+    "get_deployment_summaries": "Deployments", "get_statefulset_summaries": "StatefulSets",
+    "get_daemonset_summaries": "DaemonSets", "get_job_summaries": "Jobs",
+    "get_replicaset_summaries": "ReplicaSets", "get_pvc_summaries": "PersistentVolumeClaims",
+    "get_hpa_summaries": "HorizontalPodAutoscalers", "get_endpoint_summaries": "Service endpoints",
+    "get_ingress_summaries": "Ingresses", "get_networkpolicy_summaries": "NetworkPolicies",
+    "get_events": "events", "get_workload_history": "workload history",
+}
+
+
+class _Unknown(str):
+    """A kind in ``unrecorded``: equal to its name, shown with why it's unknown.
+    ``forbidden`` marks a live read the account isn't allowed (#33); the rest
+    are a replayed capture's."""
+
+    def __new__(cls, what: str, shown: Optional[str] = None, forbidden: bool = False):
+        self = super().__new__(cls, what)
+        self.shown, self.forbidden = shown or what, forbidden
+        return self
+
+
 def _recorded(unrecorded: Optional[list[str]], read, *args, default=()):
-    """read(*args), or ``default`` when a replayed capture doesn't record that
-    kind, which is then named in ``unrecorded`` (for NOTE_NOT_RECORDED). Live
-    tools never raise K8sNotRecorded."""
+    """read(*args), or ``default`` when that kind is unknown, which is then
+    named in ``unrecorded`` (for the notes): a replayed capture doesn't record
+    it, or the account may not read it (a 403, live). Unknown is never none."""
     try:
         return read(*args)
     except K8sNotRecorded as e:
         if unrecorded is not None and e.what and e.what not in unrecorded:
-            unrecorded.append(e.what)
+            unrecorded.append(_Unknown(e.what, f"{e.what} ({e.reason})" if e.reason else None))
+        return default
+    except K8sForbidden:
+        what = _READER_KINDS.get(getattr(read, "__name__", ""))
+        if what is None:
+            raise
+        if unrecorded is not None and what not in unrecorded:
+            unrecorded.append(_Unknown(what, forbidden=True))
         return default
 
 
-def _not_recorded_note(unrecorded: list[str]) -> str:
-    return ("Not recorded in this capture, so unknown rather than absent: "
-            + ", ".join(unrecorded) + ".")
+def _not_recorded_notes(unrecorded: list[str]) -> list[str]:
+    forbidden = [u for u in unrecorded if getattr(u, "forbidden", False)]
+    missing = [getattr(u, "shown", u) for u in unrecorded if u not in forbidden]
+    notes = []
+    if missing:
+        notes.append("Not recorded in this capture, so unknown rather than absent: "
+                     + ", ".join(missing) + ".")
+    if forbidden:
+        notes.append("Not readable with these credentials (403 Forbidden), so unknown "
+                     "rather than absent: " + ", ".join(forbidden) + ".")
+    return notes
 
 
 def _workloads(api, namespace: str, unrecorded: Optional[list[str]] = None
@@ -440,10 +477,11 @@ _MAX_RECOVERING = 10
 
 
 def _usage(api, namespace: str) -> tuple[Optional[list[ContainerUsage]], Optional[str]]:
-    """Container usage, or (None, why not) when metrics aren't available."""
+    """Container usage, or (None, why not) when metrics aren't available or
+    the account may not read them."""
     try:
         return api.get_container_metrics(namespace), None
-    except K8sMetricsUnavailable as e:
+    except (K8sMetricsUnavailable, K8sForbidden) as e:
         return None, str(e)
 
 
@@ -714,7 +752,7 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
     if unavailable:
         result.notes.append(unavailable)
     if unrecorded:
-        result.notes.append(_not_recorded_note(unrecorded))
+        result.notes += _not_recorded_notes(unrecorded)
     if by_name:
         result.notes.append(NOTE_MATCHED_BY_NAME)
     if any(w.placement for w in entries):
@@ -749,10 +787,13 @@ _MAX_EVENTS = 20
 
 
 def _find_kind(api, name: str, namespace: str) -> str:
-    found = [kind for kind, n, *_ in _workloads(api, namespace) if n == name]
+    unrecorded: list[str] = []
+    found = [kind for kind, n, *_ in _workloads(api, namespace, unrecorded) if n == name]
     if not found:
+        unknown = (f" ({', '.join(getattr(u, 'shown', u) for u in unrecorded)} unknown: "
+                   "not recorded or not readable)" if unrecorded else "")
         raise K8sApiError(f"No Deployment, StatefulSet, DaemonSet or Job named '{name}' "
-                          f"in namespace '{namespace}'.")
+                          f"in namespace '{namespace}'{unknown}.")
     if len(found) > 1:
         raise K8sApiError(f"'{name}' names a {' and a '.join(found)} in namespace "
                           f"'{namespace}'; pass kind.")
@@ -899,7 +940,11 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     workloads = _workloads(api, namespace, unrecorded)
     matches = [(r, d, c) for k, n, r, d, c in workloads if (k, n) == (kind, name)]
     if not matches:
-        if f"{kind}s" in unrecorded:
+        unknown = next((u for u in unrecorded if u == f"{kind}s"), None)
+        if getattr(unknown, "forbidden", False):
+            raise K8sForbidden(f"These credentials can't read {kind}s (403 Forbidden), so "
+                               f"{kind} '{name}' is unknown, not absent.")
+        if unknown is not None:
             raise K8sNotRecorded(f"This capture doesn't record {kind}s, so {kind} "
                                  f"'{name}' is unknown, not absent.", what=f"{kind}s")
         raise K8sApiError(f"{kind} '{name}' not found in namespace '{namespace}'.")
@@ -1010,7 +1055,7 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     if unavailable:
         report.notes.append(unavailable)
     if unrecorded:
-        report.notes.append(_not_recorded_note(unrecorded))
+        report.notes += _not_recorded_notes(unrecorded)
     usage, usage_unavailable = _usage(api, namespace)
     if usage_unavailable:
         report.notes.append(f"Usage unavailable: {usage_unavailable}")

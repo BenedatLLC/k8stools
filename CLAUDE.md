@@ -49,6 +49,7 @@ tests/
   test_ingress.py            - get_ingress_summaries: backend resolution, readiness, TLS by name
   test_spec_resources.py     - Requests/limits from the pod spec when the status has none (pre-1.33, ITBench), live and replay (#32)
   test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
+  test_forbidden.py          - A 403 is K8sForbidden; capture records an unreadable kind and carries on; replay and composites say so (#33)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
@@ -265,13 +266,14 @@ cadence). Moving one out of a description is fine; dropping it isn't.
 
 ```python
 raise K8sConfigError("Could not load kube config")                   # config/connection problems
-raise K8sApiError(f"Error fetching pods: {_api_error_text(e)}") from e  # API operation failures
+raise _api_error("Error fetching pods", e) from e                    # API operation failures (K8sForbidden for a 403)
 ```
 
-Build a message from a Kubernetes client exception with `_api_error_text(e)`, never
-`{e}`: `str(ApiException)` is ~700 characters of response headers and raw JSON
-around the one sentence that matters (`404 Not Found: pods "x" not found`), and a
-urllib3 connection error names an object by its address. (#25)
+Build the error from a Kubernetes client exception with `_api_error(prefix, e)`
+(its text is `_api_error_text(e)`), never `{e}`: `str(ApiException)` is ~700
+characters of response headers and raw JSON around the one sentence that matters
+(`404 Not Found: pods "x" not found`), and a urllib3 connection error names an
+object by its address. (#25)
 
 **These messages reach agents.** The MCP library passes an exception's text to the
 client only for its `ToolError`; anything else is reported as a crash, "Error
@@ -422,6 +424,22 @@ Invariants worth preserving when touching this code:
   `previous_logs` when it restarted; a recorded `''` stays empty. One rule for
   every capture, live or imported. The composites read such kinds through
   `_recorded` and name them in one note. Live tools never raise it.
+- **Forbidden is not fatal, and not none** (#33). A 403 is `K8sForbidden`
+  (`_api_error` builds every API error; don't raise `K8sApiError` from an
+  `ApiException` directly). The capture reads each kind through `_Reader`: a
+  403, or a 404 for an unserved API, goes in the top-level `unreadable` map
+  (`{key: {namespace or "": reason}}`) and the capture carries on; replay's
+  `_records(key, namespace)` raises `K8sNotRecorded` for that namespace or an
+  all-namespace query. Pods, and namespaces without `--namespace`, stay
+  required; other errors still fail. A 404 counts only on a list: a single
+  object read through `_Reader.one` (a workload's history) that 404s was
+  deleted mid-capture and is skipped. Stored reasons drop the 403's `User
+  "..."` (`_without_user`): captures get published. A capture with an
+  `unreadable` map is `CAPTURE_VERSION_WITH_GAPS` ("2"), so older readers,
+  which would answer "none", refuse it; a complete one stays "1". Live,
+  `_recorded` treats `K8sForbidden` like an unrecorded kind (named by the
+  reader's function name, `_READER_KINDS`), in its own "Not readable with
+  these credentials" note.
 - **An ITBench import runs the real capture** (#30): `itbench.SnapshotRest`
   answers the API from one pull, under `use_api_client` and `pinned_clock`, and
   `import_snapshot` then removes what the snapshot didn't record and states

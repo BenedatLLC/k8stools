@@ -3,6 +3,58 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.5.0 — unreleased
+
+### Issues fixed
+- [#33](https://github.com/BenedatLLC/k8stools/issues/33): k8s-capture-state
+  aborts the whole capture on one forbidden resource.
+
+### Added
+- **`K8sForbidden`**, a `K8sApiError` the tools raise for a 403, so a caller
+  can tell "this role may not read that" from other failures. Its message is
+  unchanged.
+
+### Changed
+- **A kind the capture's role may not read no longer fails the capture.** On a
+  403 (or a 404 for an API the cluster doesn't serve) the capture records the
+  kind as not readable, per namespace, in a top-level `unreadable` map, and
+  carries on; the summary at the end lists each one with what to grant. On
+  replay its tool raises `K8sNotRecorded` with the reason, in that namespace
+  (and across all of them), never answers "none". Before, a role that predated
+  4.4.0's NetworkPolicies lost the whole capture at that one read. Pods are
+  still required, and so is the namespace list when no `--namespace` is given;
+  nodes are not, since a namespace-scoped role can't read them. Other failures
+  (5xx, a dropped connection) still fail the capture. A workload history the
+  role can't read marks its namespace: a workload whose history was recorded
+  is still served, and one without says not recorded. A workload deleted
+  between the list and its history read is skipped, not recorded as
+  unreadable.
+- **A capture with an `unreadable` map is version "2".** A k8stools before
+  4.5.0 would ignore the map and answer "none" (an empty list) for those
+  kinds, so it refuses such a capture instead. A complete capture is still
+  version "1" and every version reads it; this one reads both.
+- **Reasons stored in a capture no longer name the account.** A 403's
+  `User "system:serviceaccount:..."` is removed from what the `unreadable`
+  map, metrics and custom resources record (custom-resource reasons have
+  carried it since they were captured); the resource and API group to grant
+  stay. The capture's own log keeps the full text.
+- **A capture without permission on `metrics.k8s.io` records metrics as
+  unavailable**, with the reason, as it does for a cluster without
+  metrics-server, instead of failing.
+- **`get_namespace_health` and `get_workload_report` carry on past a 403.** A
+  kind the account may not read (HPAs, endpoints, Ingresses, StatefulSets, ...)
+  is named in a note, "Not readable with these credentials (403 Forbidden), so
+  unknown rather than absent: ...", instead of failing the report. A
+  NetworkPolicy 403 is in that note now rather than its own "NetworkPolicies
+  unavailable" line. From a capture, a kind recorded as not readable is named in
+  the not-recorded note as "NetworkPolicies (not readable when captured)".
+  Metrics the account may not read leave a "Usage unavailable" note, as no
+  metrics-server does.
+- **`get_namespaces` and `get_pod_events` raise `K8sApiError`** (`K8sForbidden`
+  for a 403) on an API failure. They let the client's `ApiException` through,
+  so over MCP a forbidden namespace list was reported as a crash with no
+  reason. Found by capturing with a namespace-scoped role.
+
 ## 4.4.1 — 2026-10-28
 
 ### Issues fixed
