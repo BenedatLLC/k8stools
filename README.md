@@ -3,7 +3,7 @@
 ![Unit Tests](https://github.com/BenedatLLC/k8stools/actions/workflows/unit-tests.yml/badge.svg)
 
 k8stools gives AI agents read-only access to a Kubernetes cluster. It provides
-31 tools: from "what is wrong in this namespace?" down to a single pod's spec or
+33 tools: from "what is wrong in this namespace?" down to a single pod's spec or
 logs. You can use them in two ways:
 
 * **As an MCP server** (`k8s-mcp-server`, included), for Claude Code, Cursor,
@@ -93,14 +93,14 @@ The account it runs as needs only `get` and `list` permissions. See
 
 An MCP client sends every tool's description to the model on every turn, and
 agents choose less reliably when they have many similar tools to pick from. So the
-server doesn't have to offer all 31 tools: it serves a named **toolset**, chosen
+server doesn't have to offer all 33 tools: it serves a named **toolset**, chosen
 with `--toolset`:
 
 | Toolset | What it contains | Use it when |
 |---|---|---|
 | `triage` | 5 tools: `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | The agent's job is to find what's wrong and where. The two *composite* tools answer in one call what otherwise takes five or six. |
-| `investigate` **(default)** | 27 tools: every tool except the four that another tool already covers | The agent needs to dig into details: specs, history, logs, networking, storage. |
-| `all` | All 31 tools | You want the full set, as k8stools 2.x served. |
+| `investigate` **(default)** | 29 tools: every tool except the four that another tool already covers | The agent needs to dig into details: specs, history, logs, networking, storage. |
+| `all` | All 33 tools | You want the full set, as k8stools 2.x served. |
 
 The four tools that `investigate` leaves out, and what to use instead:
 
@@ -171,7 +171,8 @@ out-of-memory kill".
 | `get_pod_container_statuses` | Each container's state in a pod: running, waiting or terminated, restarts, last termination. Init containers are listed separately (`[]` when there are none); native sidecars are listed with the app containers. | | ✓ |
 | `get_pod_spec` | A pod's full spec | | ✓ |
 | `get_pod_events` | The events for one pod | | |
-| `get_logs_for_pod_and_container` | A container's logs, with `tail`, `since_seconds` and `previous` (the instance before the last restart). See [Previous-instance log semantics](#previous-instance-log-semantics). | | ✓ |
+| `get_logs_for_pod_and_container` | A container's logs, with `tail`, `since_seconds` and `previous` (the instance before the last restart). When the tail leaves earlier lines out, a note says where the log starts. See [Previous-instance log semantics](#previous-instance-log-semantics). | | ✓ |
+| `get_log_pattern_summary` | When a pattern occurs across a container's whole retained log, not just a tail: the count, first and last match, matches per time bucket (so an onset or a gap shows), a few matching lines, and how far back the log goes. A small result whatever the log's size. | | ✓ |
 | `get_container_metrics` | Each running container's current CPU and memory use beside its requests and limits, like `kubectl top pod --containers` (needs metrics-server) | | ✓ |
 
 ### Workloads
@@ -682,7 +683,9 @@ always captured in full so the cluster still makes sense.
 Logs dominate the file size: expect a few MB for a few dozen pods (the 27-pod
 capture above was 1.4 MB with only 50 lines per container; a 38-pod one at 200
 lines was 3.3 MB). Use `--max-log-lines` to trade size against history, or
-`--no-logs` for a structure-only snapshot. Captures compress about 10x, and can be
+`--no-logs` for a structure-only snapshot. The capture records where each log
+began, so on replay `get_log_pattern_summary` and the log tool say when the
+capture kept only the newest lines. Captures compress about 10x, and can be
 written and read gzipped; see [Compression, and what to check
 in](#compression-and-what-to-check-in).
 

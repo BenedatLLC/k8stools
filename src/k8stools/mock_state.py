@@ -49,6 +49,7 @@ import functools
 import gzip
 import json
 import re
+import sys
 import types
 import typing
 import zlib
@@ -599,12 +600,11 @@ class MockState:
             message=record.get("message", ""),
         )
 
-    @_pinned_query
-    def get_logs_for_pod_and_container(self, pod_name: str, namespace: str = "default",
-                                       container_name: Optional[str] = None,
-                                       tail: Optional[int] = None,
-                                       since_seconds: Optional[int] = None,
-                                       previous: bool = False) -> Optional[str]:
+    def _recorded_log(self, pod_name: str, namespace: str, container_name: Optional[str],
+                      previous: bool) -> tuple[str, str, Optional[str]]:
+        """The container's name, its recorded log, and the kubelet's timestamp on
+        the first line of the log it was read from (None when the capture didn't
+        record it). Raises as the live tools do, or K8sNotRecorded."""
         record = self._pods.get((namespace, pod_name))
         if record is None:
             raise k8s_tools.K8sApiError(
@@ -638,23 +638,71 @@ class MockState:
                 f"The {'previous instance' if previous else 'log'} of container "
                 f"'{container_name}' in pod '{pod_name}' wasn't recorded in this capture: "
                 "what it wrote is unknown.")
-        elif k8s_tools._is_reclaimed_log(logs[container_name]):
+        starts = (record.get("previous_log_starts" if previous else "log_starts") or {})
+        return container_name, logs[container_name], starts.get(container_name)
+
+    def _log_start(self, stamp: Optional[str]) -> Optional[datetime.datetime]:
+        """A recorded log start, moved as replay moves the log's own lines."""
+        return k8s_tools._line_time(_reanchor_log(stamp, self._log_shift)) if stamp else None
+
+    def _otel_note(self, notes: list[str]) -> list[str]:
+        if (self._data.get("source") or {}).get("logs") == "otel":
+            return [NOTE_LOGS_FROM_OTEL] + notes
+        return notes
+
+    @_pinned_query
+    def get_logs_for_pod_and_container(self, pod_name: str, namespace: str = "default",
+                                       container_name: Optional[str] = None,
+                                       tail: Optional[int] = None,
+                                       since_seconds: Optional[int] = None,
+                                       previous: bool = False) -> Optional[str]:
+        container_name, recorded, stamp = self._recorded_log(
+            pod_name, namespace, container_name, previous)
+        extent = None
+        if k8s_tools._is_reclaimed_log(recorded):
             # The kubelet's message has no timestamp for since_seconds to filter on;
             # passed whole, it raises below as the live tool does.
-            text = logs[container_name]
+            text = recorded
         else:
-            text = _slice_log(_reanchor_log(logs[container_name], self._log_shift),
-                              tail=tail, since_seconds=since_seconds,
-                              now=self._clock.server_start_time + datetime.timedelta(
-                                  seconds=self._clock.elapsed()))
+            whole = _reanchor_log(recorded, self._log_shift)
+            now = self._clock.server_start_time + datetime.timedelta(
+                seconds=self._clock.elapsed())
+            recent = _slice_log(whole, tail=sys.maxsize, since_seconds=since_seconds, now=now)
+            text = _slice_log(recent, tail=tail, since_seconds=None, now=now)
+            # As live: where the log starts is said when the tail left lines out,
+            # not when since_seconds did (that is what was asked for).
+            if len(text.splitlines()) < len(recent.splitlines()) or since_seconds is None:
+                first = next((t for t in map(k8s_tools._line_time, whole.splitlines()) if t),
+                             None)
+                extent = k8s_tools._log_extent_note(text.splitlines(), first,
+                                                    self._log_start(stamp))
         # Notes from the replayed state, as the live tool adds them from the live one.
         noted = k8s_tools._with_log_notes(
             text, k8s_tools._all_statuses(self.get_pod_container_statuses(pod_name, namespace)),
             container_name,
-            pod_name=pod_name, previous=previous)
-        if (self._data.get("source") or {}).get("logs") == "otel":
-            noted = f"{k8s_tools.LOG_NOTE_PREFIX}{NOTE_LOGS_FROM_OTEL}\n" + noted
-        return noted
+            pod_name=pod_name, previous=previous, extent=extent)
+        return "".join(f"{k8s_tools.LOG_NOTE_PREFIX}{n}\n" for n in self._otel_note([])) + noted
+
+    @_pinned_query
+    def get_log_pattern_summary(self, pod_name: str, namespace: str = "default",
+                                container_name: Optional[str] = None,
+                                pattern: Optional[str] = None, previous: bool = False,
+                                bucket_seconds: int = 60,
+                                max_samples: int = 5) -> k8s_tools.LogPatternSummary:
+        container_name, recorded, stamp = self._recorded_log(
+            pod_name, namespace, container_name, previous)
+        status = k8s_tools._status_for(
+            k8s_tools._all_statuses(self.get_pod_container_statuses(pod_name, namespace)),
+            container_name)
+        if k8s_tools._is_reclaimed_log(recorded):
+            raise k8s_tools._reclaimed_error(pod_name, container_name, previous, status)
+        return k8s_tools._summarize_log(
+            _reanchor_log(recorded, self._log_shift), pod=pod_name, container=container_name,
+            previous=previous, pattern=pattern, bucket_seconds=bucket_seconds,
+            max_samples=max_samples, notes=self._otel_note(k8s_tools._log_notes(status)),
+            log_starts=self._log_start(stamp), extent_known=stamp is not None,
+            instance_started=k8s_tools._instance_started(status, previous),
+            late=k8s_tools.LATE_NOT_COLLECTED if self._otel_note([]) else k8s_tools.LATE_ROTATED)
 
     @_pinned_query
     def get_deployment_summaries(self,

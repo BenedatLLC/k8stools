@@ -3,6 +3,43 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.6.0 — unreleased
+
+### Issues fixed
+- [#34](https://github.com/BenedatLLC/k8stools/issues/34): Search a log over its
+  whole retained span: a pattern summary tool, and grep before tail.
+
+### Added
+- **`get_log_pattern_summary`**: where a pattern occurs across a container
+  instance's whole retained log, in a result whose size doesn't depend on the
+  log's. It gives the count, the first and last match, matches/lines per time
+  bucket (at most 60; a run with no match is one entry, so a gap shows), a few
+  matching lines (the first, the last, and evenly spaced between), and the
+  log's span. Times are the kubelet's line timestamps, which replay moves with
+  every other time. Live, it reads up to 16 MiB, the newest part of a longer
+  log, and says where the log began. In `investigate` and `all`.
+- **Captures record where each log began** (`log_starts`, `previous_log_starts`:
+  the kubelet's timestamp on the first line, one small read per log), so replay
+  can tell a log the capture kept whole from one it cut at `--max-log-lines`.
+  Older captures say the start isn't known.
+
+### Changed
+- **`get_workload_report(grep=...)` searches each whole log**, not its last 1000
+  lines. Each log then holds every match, or the first, the last and evenly
+  spaced between when there are more than `log_lines`, with `matches`,
+  `searched_lines` and `searched_from`. Before, a grep that found nothing in the
+  tail read as nothing in the log. Without `grep`, the report reads only
+  `log_lines` lines.
+- **A log that a tail cut says where it starts**: a `[k8stools] note:` line
+  above it, e.g. "These 1000 lines start at 17:55:44Z; the log starts at
+  17:42:19Z", on replay too (naming the capture's cut). Not for lines left out
+  by `since_seconds`.
+
+### Fixed
+- **A tail over 1 MiB lost its newest lines.** `limit_bytes` stops reading that
+  many bytes from the start of the tail, so 1000 long lines came back without
+  the most recent ones. The log reader now asks again for fewer lines.
+
 ## 4.5.0 — 2026-10-30
 
 ### Issues fixed

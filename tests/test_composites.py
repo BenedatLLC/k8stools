@@ -396,8 +396,11 @@ def test_logs_are_bounded_filtered_and_their_notes_separated():
                               logs={"ad": logs}, previous={"ad": logs})])
     r = workload_report(state, "ad", "default", log_lines=5, grep="line 5")
     current = r.logs[0]
-    # grep ("line 5" matches 5 and 50-59), then the last 5 matches, each capped
-    assert [l.split()[2] for l in current.lines] == ["55", "56", "57", "58", "59"]
+    # grep ("line 5" matches 5 and 50-59) over the whole log, then 5 of the 11
+    # matches: the first, the last, and evenly spaced between, each capped (#34)
+    assert [l.split()[2] for l in current.lines] == ["5", "51", "54", "57", "59"]
+    assert (current.matches, current.searched_lines) == (11, 60)
+    assert "11 lines match; shown: the first, the last, and evenly spaced between." in current.notes
     assert all(len(l) <= composites._MAX_LINE_CHARS + 4 for l in current.lines)
     # The container is waiting, so the tool's note line is lifted out of the log.
     assert current.notes and not any(l.startswith("[k8stools]") for l in current.lines)

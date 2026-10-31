@@ -1257,9 +1257,7 @@ def _decode_log_response(resp: Any) -> str:
     multi-byte character, so a ``UnicodeDecodeError`` here would fail a whole
     investigation over one bad byte.
     """
-    # The raw urllib3 response carries the body on `.data`; a preloaded response
-    # is already a str, and is passed through rather than decoded twice.
-    data = None if resp is None else getattr(resp, "data", resp)
+    data = _log_body(resp)
     if data is None:
         return ''
     if isinstance(data, bytes):
@@ -1267,41 +1265,170 @@ def _decode_log_response(resp: Any) -> str:
     return data if isinstance(data, str) else str(data)
 
 
+def _log_body(resp: Any) -> Any:
+    # The raw urllib3 response carries the body on `.data`; a preloaded response
+    # is already a str, and is passed through rather than decoded twice.
+    return None if resp is None else getattr(resp, "data", resp)
+
+
+#: The default tail, and the byte cap on a tail read.
+_TAIL_LINES = 1000
+_TAIL_BYTES = 1024 * 1024
+#: The most a whole-log read fetches. The logs API serves only the kubelet's
+#: current file, which it rotates at containerLogMaxSize (10 MiB by default).
+WHOLE_LOG_BYTES = 16 * 1024 * 1024
+#: Enough for the first line's timestamp (30 characters with nanoseconds).
+_START_BYTES = 64
+
+
+def _fetch_log(pod_name: str, namespace: str, container_name: Optional[str],
+               previous: bool, **query: Any) -> tuple[str, bool]:
+    """One log request: the text, and whether the response filled ``limit_bytes``."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    # Optional args are only passed when set so the common path stays simple.
+    log_kwargs: dict[str, Any] = dict(
+        name=pod_name,
+        namespace=namespace,
+        container=container_name,
+        follow=False,
+        _preload_content=False,    # Raw response; see _decode_log_response()
+        timestamps=True,
+        **{k: v for k, v in query.items() if v is not None},
+    )
+    if previous:
+        log_kwargs["previous"] = True
+    try:
+        resp = K8S.read_namespaced_pod_log(**log_kwargs)
+    except client.ApiException as e:
+        raise _api_error("Error fetching logs", e) from e
+    except Exception as e:
+        raise _api_error("Error fetching logs", e) from e
+    data = _log_body(resp)
+    size = len(data.encode() if isinstance(data, str) else data) \
+        if isinstance(data, (str, bytes)) else 0
+    limit = query.get("limit_bytes")
+    # A single string containing all logs, with real newlines. An empty log
+    # is '', never None - callers treat the two the same.
+    return _decode_log_response(resp), limit is not None and size >= limit
+
+
+def _read_tail(pod_name: str, namespace: str, container_name: Optional[str],
+               tail: Optional[int], since_seconds: Optional[int],
+               previous: bool) -> tuple[str, bool]:
+    """The last ``tail`` lines, and whether lines before them may exist.
+
+    ``limit_bytes`` stops reading that many bytes from the *start* of the tail,
+    so a tail longer than the cap came back without its newest lines, the ones
+    a caller wants most. When the response fills the cap, ask again for fewer
+    lines than arrived.
+    """
+    tail = tail if tail is not None else _TAIL_LINES
+    for _ in range(6):
+        text, full = _fetch_log(pod_name, namespace, container_name, previous,
+                                tail_lines=tail, limit_bytes=_TAIL_BYTES,
+                                since_seconds=since_seconds)
+        if not full or tail <= 1:
+            break
+        tail = max(1, min(tail - 1, len(text.splitlines()) - 1))
+    return text, tail > 0 and len(text.splitlines()) >= tail
+
+
 def _read_pod_log(pod_name: str, namespace: str = "default",
                   container_name: Optional[str] = None, tail: Optional[int] = None,
                   since_seconds: Optional[int] = None, previous: bool = False) -> str:
     """The container log as the API returns it, without notes. The capture
     stores this, so replay can add notes for the replayed state."""
-    global K8S
-    if K8S is None:
-        K8S = _get_api_client()
+    return _read_tail(pod_name, namespace, container_name, tail, since_seconds, previous)[0]
 
+
+def _read_whole_log(pod_name: str, namespace: str, container_name: Optional[str],
+                    previous: bool) -> tuple[str, Optional[datetime.datetime]]:
+    """Everything the kubelet holds for that instance, up to :data:`WHOLE_LOG_BYTES`
+    of its newest lines; and when the cap left older lines out, where the log began.
+
+    ``limit_bytes`` keeps the *first* bytes, the oldest lines, so a log past the
+    cap is read again as a tail of fewer lines than the first read held, until
+    one fits. (A runtime that doesn't rotate, like minikube's docker, keeps
+    weeks of an apiserver's log.)
+    """
+    text, full = _fetch_log(pod_name, namespace, container_name, previous,
+                            limit_bytes=WHOLE_LOG_BYTES)
+    if not full:
+        return text, None
+    began = _line_time(text)
+    tail = text.count("\n")
+    for _ in range(6):
+        tail = max(1, tail * 9 // 10)
+        text, full = _fetch_log(pod_name, namespace, container_name, previous,
+                                tail_lines=tail, limit_bytes=WHOLE_LOG_BYTES)
+        if not full or tail == 1:
+            break
+        tail = min(tail, text.count("\n"))
+    if full:  # the last line is cut off; drop it
+        text = text[:text.rfind("\n") + 1]
+    return text, began
+
+
+def _log_start(pod_name: str, namespace: str, container_name: Optional[str],
+               previous: bool) -> Optional[str]:
+    """The kubelet's timestamp on the retained log's first line, as written (one
+    small read), or None when there is none to read."""
+    text, _ = _fetch_log(pod_name, namespace, container_name, previous,
+                         limit_bytes=_START_BYTES)
+    token = text.split(" ", 1)[0]
+    return token if _line_time(token) else None
+
+
+_LINE_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?(?=\s|$)")
+
+
+def _line_time(line: str) -> Optional[datetime.datetime]:
+    """The RFC 3339 timestamp the kubelet prefixes to a log line, if it has one.
+    Times an application writes inside its message aren't read: replay moves only
+    the prefix, with every other time it returns."""
+    m = _LINE_TIME_RE.match(line)
+    if m is None:
+        return None
+    zone = m.group(3) or "Z"
     try:
-        # read_namespaced_pod_log with reasonable limits to avoid memory issues.
-        # Optional args are only passed when set so the common path stays simple.
-        log_kwargs: dict[str, Any] = dict(
-            name=pod_name,
-            namespace=namespace,
-            container=container_name,  # Pass container_name if specified
-            follow=False,              # Set to False to get all current logs
-            _preload_content=False,    # Raw response; see _decode_log_response()
-            timestamps=True,           # Optional: Include timestamps
-            tail_lines=tail if tail is not None else 1000,  # Default: last 1000 lines
-            limit_bytes=1024*1024,     # Limit to 1MB to avoid memory issues
-        )
-        if since_seconds is not None:
-            log_kwargs["since_seconds"] = since_seconds
-        if previous:
-            log_kwargs["previous"] = True
-        resp = K8S.read_namespaced_pod_log(**log_kwargs)
+        stamp = datetime.datetime.fromisoformat(
+            m.group(1) + ("+00:00" if zone == "Z" else zone))
+    except ValueError:
+        return None
+    return stamp + datetime.timedelta(microseconds=int(((m.group(2) or "") + "000000")[:6]))
 
-        # A single string containing all logs, with real newlines. An empty log
-        # is '', never None - callers treat the two the same.
-        return _decode_log_response(resp)
-    except client.ApiException as e:
-        raise _api_error("Error fetching logs", e) from e
-    except Exception as e:
-        raise _api_error("Error fetching logs", e) from e
+
+def _show_time(t: datetime.datetime) -> str:
+    return t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _log_extent_note(shown: list[str], recorded_from: Optional[datetime.datetime],
+                     log_starts: Optional[datetime.datetime]) -> Optional[str]:
+    """Where the lines shown start, when the log holds earlier ones.
+
+    ``recorded_from`` is the first line the source holds (live, the kubelet's
+    first line; replay, the capture's), ``log_starts`` where the log began when
+    known (live, the same). None when nothing was left out."""
+    first = next((t for t in map(_line_time, shown) if t), None)
+    if first is None:
+        return None
+    head = f"These {len(shown)} lines start at {_show_time(first)}"
+    began_earlier = log_starts is not None and log_starts < (recorded_from or first)
+    if recorded_from is not None and recorded_from < first:
+        if began_earlier:
+            return (f"{head}; this capture recorded the log from {_show_time(recorded_from)}, "
+                    f"and it began at {_show_time(log_starts)}. "
+                    "get_log_pattern_summary searches every recorded line.")
+        log = "the log" if log_starts is not None else "the recorded log"
+        return (f"{head}; {log} starts at {_show_time(recorded_from)}. "
+                "get_log_pattern_summary searches all of it.")
+    if began_earlier:
+        return (f"{head}; the log began at {_show_time(log_starts)}, but this capture "
+                "didn't record the lines before these.")
+    return None
 
 
 #: Marks a line k8stools adds to the top of a log; it is not the container's output.
@@ -1351,17 +1478,23 @@ def _all_statuses(pod: PodContainerStatuses) -> list[ContainerStatus]:
     return pod.containers + (pod.init_containers or [])
 
 
+def _status_for(statuses: list["ContainerStatus"],
+                container_name: Optional[str]) -> Optional["ContainerStatus"]:
+    return next((s for s in statuses if s.container_name == container_name),
+                statuses[0] if statuses and container_name is None else None)
+
+
 def _with_log_notes(text: str, statuses: list["ContainerStatus"],
                     container_name: Optional[str], *, pod_name: Optional[str] = None,
-                    previous: bool = False) -> str:
+                    previous: bool = False, extent: Optional[str] = None) -> str:
     """Prefix ``text`` with a marked line per note (none when nothing applies).
     Raises :class:`K8sLogReclaimed` when ``text`` is the kubelet's message that the
-    log file is gone, rather than returning that message where a log belongs."""
-    status = next((s for s in statuses if s.container_name == container_name),
-                  statuses[0] if statuses and container_name is None else None)
+    log file is gone, rather than returning that message where a log belongs.
+    ``extent`` is :func:`_log_extent_note`'s, for the caller that knows it."""
+    status = _status_for(statuses, container_name)
     if _is_reclaimed_log(text):
         raise _reclaimed_error(pod_name, container_name, previous, status)
-    notes = _log_notes(status)
+    notes = _log_notes(status) + ([extent] if extent else [])
     return "".join(f"{LOG_NOTE_PREFIX}{n}\n" for n in notes) + text
 
 
@@ -1378,18 +1511,40 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
     Only one previous instance is kept.
 
     Lines starting "[k8stools] note:" are added by this tool, not the container:
-    e.g. that a waiting container returns its last instance for both values of
-    previous. When that instance's log file is gone, raises an error, not text.
+    e.g. where these lines start in a longer log, or that a waiting container
+    returns its last instance for both values of previous. When that instance's
+    log file is gone, raises an error, not text.
     """
-    text = _read_pod_log(pod_name, namespace, container_name, tail=tail,
-                         since_seconds=since_seconds, previous=previous)
+    text, cut = _read_tail(pod_name, namespace, container_name, tail, since_seconds, previous)
+    extent = None
+    if cut and not _is_reclaimed_log(text):
+        try:  # where the log starts is best-effort too
+            start = _line_time(_log_start(pod_name, namespace, container_name, previous) or "")
+            extent = _log_extent_note(text.splitlines(), start, start)
+        except K8sApiError as e:
+            logging.debug(f"get_logs_for_pod_and_container: no log start: {e}")
     try:
         statuses = _all_statuses(get_pod_container_statuses(pod_name, namespace))
     except Exception as e:  # notes are best-effort; the log itself was readable
         logging.debug(f"get_logs_for_pod_and_container: no status for notes: {e}")
         statuses = []
     return _with_log_notes(text, statuses, container_name, pod_name=pod_name,
-                           previous=previous)
+                           previous=previous, extent=extent)
+
+
+def _instance_started(status: Optional["ContainerStatus"],
+                      previous: bool) -> Optional[datetime.datetime]:
+    """When the instance whose log a read returns started: the previous instance
+    (or, while waiting, the last terminated one) or the current one."""
+    if status is None:
+        return None
+    if previous or _waiting(status):
+        last = status.last_state
+        return last.started_at if isinstance(last, ContainerStateTerminated) else None
+    state = status.state
+    if isinstance(state, (ContainerStateRunning, ContainerStateTerminated)):
+        return state.started_at
+    return None
 
 
 class ResourceCondition(BaseModel):
@@ -4163,6 +4318,224 @@ class EventLine(_Compact):
     objects: int = 1
 
 
+class LogPatternSummary(_Compact):
+    """Where a pattern occurs across a container instance's whole log."""
+    pod: str
+    container: str
+    previous: bool = False
+    #: None counts every line.
+    pattern: Optional[str] = None
+    #: The lines searched, and the kubelet's timestamps on the first and last.
+    lines: int
+    first_line: Optional[datetime.datetime] = None
+    last_line: Optional[datetime.datetime] = None
+    #: Where the log began, when that is before first_line: the earlier lines
+    #: weren't searched (past the size cap, or not recorded by the capture).
+    log_starts: Optional[datetime.datetime] = None
+    #: When the instance that wrote this log started.
+    instance_started: Optional[datetime.datetime] = None
+    matches: int
+    first_match: Optional[datetime.datetime] = None
+    last_match: Optional[datetime.datetime] = None
+    #: The bucket width used (widened to keep at most LOG_MAX_BUCKETS).
+    bucket_seconds: Optional[int] = None
+    #: "<bucket start> <matches>/<lines>", UTC, from first_line to last_line; a
+    #: run of buckets with no match is one entry, "<start> to <end> 0/<lines>".
+    buckets: list[str] = Field(default_factory=list)
+    #: Matching lines: the first, the last, and evenly spaced between.
+    samples: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+#: Characters kept of each log line a result shows.
+LOG_LINE_CHARS = 300
+LOG_MAX_BUCKETS = 60
+_LOG_MAX_SAMPLES = 100
+#: Bucket widths to widen to, in seconds; past a day, whole days.
+_BUCKET_WIDTHS = (1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200,
+                  10800, 21600, 43200, 86400)
+
+NOTE_LOG_CAPPED = (f"The log is longer than {WHOLE_LOG_BYTES // 2**20} MiB, so only its "
+                   "newest part was searched, from first_line; it began at log_starts.")
+NOTE_LOG_NO_TIMES = ("These lines carry no timestamps, so matches can't be placed in "
+                     "time: no buckets.")
+NOTE_LOG_EXTENT_UNKNOWN = (
+    "This capture doesn't record where the log began, so lines before first_line may "
+    "not have been recorded (a capture keeps each log's last 1000 lines unless told "
+    "otherwise).")
+NOTE_LOG_CUT_IN_CAPTURE = ("This capture recorded the log from first_line; it began at "
+                           "log_starts, and the lines before weren't recorded.")
+NOTE_LOG_STARTS_LATE = "The log starts {gap} after this instance started (instance_started): {why}"
+LATE_ROTATED = ("the kubelet rotated earlier lines away, or the container wrote none until "
+                "then; which, the API doesn't say.")
+#: Why, for an ITBench import's OTel records, which the kubelet never held.
+LATE_NOT_COLLECTED = ("the snapshot holds no earlier records: none were collected, or the "
+                      "service exported none until then; which isn't recorded.")
+
+
+def _line_matcher(pattern: Optional[str]) -> Callable[[str], bool]:
+    """A case-insensitive regex, or a substring when it isn't one."""
+    if not pattern:
+        return lambda line: True
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+        return lambda line: rx.search(line) is not None
+    except re.error:
+        lowered = pattern.lower()
+        return lambda line: lowered in line.lower()
+
+
+def _clip(line: str) -> str:
+    return line if len(line) <= LOG_LINE_CHARS else line[:LOG_LINE_CHARS] + " ..."
+
+
+def _spread(n: int, k: int) -> list[int]:
+    """``k`` indices of ``n`` items: the first, the last, evenly spaced between."""
+    if k <= 0 or n == 0:
+        return []
+    if n <= k:
+        return list(range(n))
+    if k == 1:
+        return [0]
+    return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+
+
+def _gap(td: datetime.timedelta) -> str:
+    seconds = int(td.total_seconds())
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes}m"
+    return f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
+
+
+def _summarize_log(text: str, *, pod: str, container: str, previous: bool,
+                   pattern: Optional[str], bucket_seconds: int, max_samples: int,
+                   notes: list[str], log_starts: Optional[datetime.datetime] = None,
+                   instance_started: Optional[datetime.datetime] = None,
+                   extent_known: bool = True, late: str = LATE_ROTATED,
+                   cut: str = NOTE_LOG_CUT_IN_CAPTURE) -> LogPatternSummary:
+    """The summary of a log's text (no note lines), shared by the live tool and replay.
+    ``log_starts`` is where the log began when that is known, and ``cut`` the note
+    for lines before the text; ``extent_known`` is False for a capture that didn't
+    record where the log began."""
+    lines = [l for l in text.splitlines() if l]
+    match = _line_matcher(pattern)
+    times: list[Optional[datetime.datetime]] = []
+    last = None
+    for line in lines:  # a line without a timestamp belongs to the one before it
+        last = _line_time(line) or last
+        times.append(last)
+    hits = [i for i, line in enumerate(lines) if match(line)]
+    stamped = [t for t in times if t is not None]
+    first_line, last_line = (stamped[0], stamped[-1]) if stamped else (None, None)
+    notes = list(notes)
+    if log_starts is not None and first_line is not None and log_starts < first_line:
+        notes.append(cut)
+    else:
+        log_starts = None
+        if not extent_known and lines:
+            notes.append(NOTE_LOG_EXTENT_UNKNOWN)
+    began = log_starts or (first_line if extent_known else None)
+    if began is not None and instance_started is not None \
+            and began - instance_started > datetime.timedelta(minutes=1):
+        notes.append(NOTE_LOG_STARTS_LATE.format(gap=_gap(began - instance_started), why=late))
+    if lines and first_line is None:
+        notes.append(NOTE_LOG_NO_TIMES)
+    summary = LogPatternSummary(
+        pod=pod, container=container, previous=previous, pattern=pattern or None,
+        lines=len(lines), first_line=first_line, last_line=last_line,
+        log_starts=log_starts, instance_started=instance_started, matches=len(hits),
+        first_match=next((times[i] for i in hits if times[i]), None),
+        last_match=next((times[i] for i in reversed(hits) if times[i]), None),
+        samples=[_clip(lines[hits[j]])
+                 for j in _spread(len(hits), min(max(max_samples, 0), _LOG_MAX_SAMPLES))],
+        notes=notes)
+    if first_line is not None:
+        summary.bucket_seconds, summary.buckets = _buckets(
+            times, set(hits), first_line, last_line, max(1, int(bucket_seconds)), summary.notes)
+    return summary
+
+
+def _buckets(times: list[Optional[datetime.datetime]], hits: set[int],
+             first: datetime.datetime, last: datetime.datetime, width: int,
+             notes: list[str]) -> tuple[int, list[str]]:
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    start, end = (int((t - epoch).total_seconds()) for t in (first, last))
+
+    def count(w: int) -> int:
+        return end // w - start // w + 1
+
+    asked = width
+    if count(width) > LOG_MAX_BUCKETS:
+        # A span of S seconds touches at most S/w + 2 buckets.
+        needed = (end - start) / (LOG_MAX_BUCKETS - 2)
+        width = next((w for w in _BUCKET_WIDTHS if w >= max(needed, asked)),
+                     86400 * -(-int(needed) // 86400))
+        notes.append(f"bucket_seconds widened from {asked} to {width}, to keep "
+                     f"{LOG_MAX_BUCKETS} buckets or fewer.")
+    origin = start // width * width
+    n = count(width)
+    lines, matches = [0] * n, [0] * n
+    for i, t in enumerate(times):
+        b = 0 if t is None else (int((t - epoch).total_seconds()) - origin) // width
+        lines[b] += 1
+        matches[b] += i in hits
+    one_day = first.astimezone(datetime.timezone.utc).date() == \
+        last.astimezone(datetime.timezone.utc).date()
+    shape = ("%H:%M" if width % 60 == 0 else "%H:%M:%S") if one_day else "%m-%dT%H:%M"
+
+    def label(b: int) -> str:
+        return (epoch + datetime.timedelta(seconds=origin + b * width)).strftime(shape)
+
+    out, b = [], 0
+    while b < n:
+        end = b
+        if not matches[b]:
+            while end + 1 < n and not matches[end + 1]:
+                end += 1
+        if end > b:
+            out.append(f"{label(b)} to {label(end + 1)} 0/{sum(lines[b:end + 1])}")
+        else:
+            out.append(f"{label(b)} {matches[b]}/{lines[b]}")
+        b = end + 1
+    return width, out
+
+
+def get_log_pattern_summary(pod_name: str, namespace: str = "default",
+                            container_name: Optional[str] = None,
+                            pattern: Optional[str] = None, previous: bool = False,
+                            bucket_seconds: int = 60,
+                            max_samples: int = 5) -> LogPatternSummary:
+    """When a pattern occurs across a container's whole log, not just its tail:
+    match count, first and last match, matches/lines per time bucket (so a gap
+    or an onset shows), and a few matching lines. The log's own span is given,
+    so you know how far back it was searched.
+
+    pattern: regex, case-insensitive (omit to count all lines). previous: the
+    previous instance. bucket_seconds: bucket width (widened for long logs).
+    max_samples: matching lines to show (max 100)."""
+    text, began = _read_whole_log(pod_name, namespace, container_name, previous)
+    try:
+        statuses = _all_statuses(get_pod_container_statuses(pod_name, namespace))
+    except Exception as e:  # notes are best-effort; the log itself was readable
+        logging.debug(f"get_log_pattern_summary: no status for notes: {e}")
+        statuses = []
+    status = _status_for(statuses, container_name)
+    if _is_reclaimed_log(text):
+        raise _reclaimed_error(pod_name, container_name, previous, status)
+    return _summarize_log(
+        text, pod=pod_name, container=container_name or (status.container_name if status
+                                                         else "(default)"),
+        previous=previous, pattern=pattern, bucket_seconds=bucket_seconds,
+        max_samples=max_samples,
+        notes=_log_notes(status), log_starts=began, cut=NOTE_LOG_CAPPED,
+        instance_started=_instance_started(status, previous))
+
+
 #: LogTail.reason when the instance's log file is gone.
 LOG_RECLAIMED_REASON = "that instance's log file is gone (the kubelet reclaimed it)"
 
@@ -4176,6 +4549,12 @@ class LogTail(_Compact):
     available: Optional[bool] = None
     reason: Optional[str] = None
     lines: list[str] = Field(default_factory=list)
+    #: With grep, the whole log was searched: how many lines matched, of how
+    #: many, from when (the first line's timestamp). Then lines are matches: all
+    #: of them, or the first, the last, and evenly spaced between.
+    matches: Optional[int] = None
+    searched_lines: Optional[int] = None
+    searched_from: Optional[datetime.datetime] = None
     #: Lines the tool added about this log ("[k8stools] note: ..."), not output.
     notes: list[str] = Field(default_factory=list)
 
@@ -4248,7 +4627,7 @@ def get_workload_report(name: str, namespace: str = "default", kind: Optional[st
     deduplicated; current and previous log tails of its most troubled pod; the
     last pod-template change; the ConfigMaps and Secrets it uses. kind:
     Deployment, StatefulSet, DaemonSet or Job (found by name if omitted).
-    log_lines: per log (max 100). grep: keep only matching log lines."""
+    log_lines: per log (max 100). grep: search each whole log for this regex."""
     from .composites import workload_report
     return workload_report(sys.modules[__name__], name, namespace, kind, log_lines, grep)
 
@@ -4263,6 +4642,7 @@ TOOLS = [
     get_pod_events,
     get_pod_spec,
     get_logs_for_pod_and_container,
+    get_log_pattern_summary,
     get_deployment_summaries,
     get_replicaset_summaries,
     get_workload_history,

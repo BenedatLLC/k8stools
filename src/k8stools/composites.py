@@ -37,7 +37,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
                         K8sForbidden, K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
-                        LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
+                        LOG_LINE_CHARS, LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
                         NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
                         Termination, WorkloadHealth, WorkloadReport, _init_completed,
                         _now, _to_whole_seconds)
@@ -782,7 +782,7 @@ def _recovering_line(w: WorkloadHealth) -> str:
 # --- get_workload_report -----------------------------------------------------------------
 
 _MAX_LOG_LINES = 100
-_MAX_LINE_CHARS = 300
+_MAX_LINE_CHARS = LOG_LINE_CHARS
 _MAX_EVENTS = 20
 
 
@@ -904,7 +904,12 @@ def _events(api, namespace: str, names: list[str], kinds: set[str],
 def _tail(api, pod: str, namespace: str, container: str, previous: bool,
           lines: int, grep: Optional[str]) -> Optional[LogTail]:
     try:
-        text = api.get_logs_for_pod_and_container(pod, namespace, container, previous=previous)
+        if grep:  # the whole log, not its tail (#34)
+            found = api.get_log_pattern_summary(pod, namespace, container, pattern=grep,
+                                                previous=previous, max_samples=lines)
+        else:
+            text = api.get_logs_for_pod_and_container(pod, namespace, container,
+                                                      tail=lines, previous=previous)
     except K8sLogReclaimed:
         return LogTail(pod=pod, container=container, previous=previous, available=False,
                        reason=LOG_RECLAIMED_REASON)
@@ -913,18 +918,20 @@ def _tail(api, pod: str, namespace: str, container: str, previous: bool,
                        reason=str(e))
     except K8sApiError:
         return None  # e.g. no previous instance
+    if grep:
+        notes = [n for n in found.notes if not n.startswith("bucket_seconds")]
+        if found.matches > len(found.samples):
+            notes.append(f"{found.matches} lines match; shown: the first, the last, and "
+                         "evenly spaced between.")
+        return LogTail(pod=pod, container=container, previous=previous, lines=found.samples,
+                       matches=found.matches, searched_lines=found.lines,
+                       searched_from=found.first_line, notes=notes)
     notes, body = [], []
     for line in (text or "").splitlines():
         if line.startswith(LOG_NOTE_PREFIX):
             notes.append(line[len(LOG_NOTE_PREFIX):])
         else:
             body.append(line)
-    if grep:
-        try:
-            rx = re.compile(grep, re.IGNORECASE)
-            body = [l for l in body if rx.search(l)]
-        except re.error:
-            body = [l for l in body if grep.lower() in l.lower()]
     body = [l if len(l) <= _MAX_LINE_CHARS else l[:_MAX_LINE_CHARS] + " ..."
             for l in body[-lines:]]
     return LogTail(pod=pod, container=container, previous=previous, lines=body, notes=notes)

@@ -52,6 +52,14 @@ for ...` message, which agents read as the container's output even with a note
 above it. The error says which instance it was, and that this is not a tool
 failure.
 
+A log also gets a note when `tail` left earlier lines out, saying where the lines
+shown start and where the log does (#34), e.g. `These 1000 lines start at
+2025-12-15T17:55:44Z; the log starts at 2025-12-15T17:42:19Z.
+get_log_pattern_summary searches all of it.` Replaying a capture that cut the log
+at its line limit, the note says where the capture's record starts and, when the
+capture recorded it, where the log began. No note is added for lines left out by
+`since_seconds`: that is what was asked for.
+
 Captures store logs without these lines, and replay adds them for the replayed
 state. Strip lines starting with `[k8stools] note: ` (the constant
 `k8s_tools.LOG_NOTE_PREFIX`) to get the container's output alone.
@@ -197,7 +205,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`name`**, **`namespace`**: the workload.
 - **`kind`**: Deployment, StatefulSet, DaemonSet or Job. Found by name if omitted; an error if the name is ambiguous.
 - **`log_lines`**: lines per log tail, at most 100. Lines longer than 300 characters are cut.
-- **`grep`**: keep only log lines matching this regular expression (case-insensitive; a plain substring if it isn't a valid regex), then take the last `log_lines`.
+- **`grep`**: search each whole log for this regular expression (case-insensitive; a plain substring if it isn't a valid regex), as `get_log_pattern_summary` does, rather than the tail. Each `LogTail` then holds every match, or when there are more than `log_lines`, the first, the last, and evenly spaced between (a note says so), with `matches`, `searched_lines` and `searched_from`. Before 4.6.0 the search covered only the last 1000 lines, and a grep that found nothing there read as nothing in the log.
 
 #### Returns
 
@@ -208,7 +216,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`instances`** (`list[Instance]`): every pod's containers now: `pod_age` (time since the pod was created; when its restarts happened isn't recorded), `state`, `started` (time since the current instance started), `ready`, `restarts`, and `last_termination` as in `get_namespace_health`.
 - **`init_instances`** (`list[Instance]`): init container instances, in every pod, that haven't completed (exited 0), with a note; omitted when all have. When a capture didn't record init statuses, a note says so rather than this reading as "all completed". The logs of the focus pod's pending init containers are included in `logs`.
 - **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
-- **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; so does a log a replayed capture didn't record, with a reason saying so. `available` is omitted when the log was read.
+- **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. Without `grep`, a tail cut from a longer log has the log tool's note saying where the log starts. With `grep`, `matches` (how many lines matched), `searched_lines` and `searched_from` (the first searched line's timestamp) say how much was searched. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; so does a log a replayed capture didn't record, with a reason saying so. `available` is omitted when the log was read.
 - **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
 - **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
 - **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
@@ -440,6 +448,64 @@ Replaying a capture imported from an ITBench-Lite snapshot (`k8s-capture-state -
 
 str: The log content as text, with real newlines. An empty string if the
 container has produced no log output (never None).
+
+### `get_log_pattern_summary`
+
+```python
+get_log_pattern_summary(pod_name: str, namespace: str = 'default', container_name: Optional[str] = None, pattern: Optional[str] = None, previous: bool = False, bucket_seconds: int = 60, max_samples: int = 5) -> LogPatternSummary
+```
+
+Where a pattern occurs across a container instance's whole log, in a result whose
+size doesn't depend on the log's (#34). Answers "did these errors start, or get
+worse, when X changed?", which a tail can't: a busy proxy's default 1000-line
+tail covers about 90 seconds.
+
+The logs API has no server-side search, so the tool fetches what the kubelet
+holds for that instance and searches it in the tool. The kubelet serves only its
+current log file, which it rotates at `containerLogMaxSize` (10 MiB by default),
+so "whole log" means what is still retained. The search covers at most
+16 MiB (`WHOLE_LOG_BYTES`): of a longer log (a runtime that doesn't rotate, like
+minikube's docker, keeps weeks of an apiserver's log) the newest 16 MiB are
+searched, with `log_starts` giving where the log began and a note saying so.
+
+Times are the kubelet's timestamps on each line, not times an application writes
+in its message. On replay those move with every other time the replay returns
+(event times, ages), so buckets compare directly with when a policy or rollout
+happened; times inside messages stay as recorded, and show in `samples`.
+
+Replaying a capture, the search covers the lines the capture recorded: each log's
+last 1000 lines unless captured with `--max-log-lines`. Captures since 4.6.0 record
+where each log began, so the result gives `log_starts` with a note when the
+capture cut it; for older captures a note says the start isn't known. ITBench
+imports hold every OTel record of the current instance up to the pull.
+
+#### Parameters
+
+- **`pod_name`**, **`namespace`**: the pod.
+- **`container_name`**: defaults to the first container.
+- **`pattern`**: a regular expression, matched case-insensitively (a plain substring if it isn't a valid regex). Omitted, every line counts, which gives the log's volume over time.
+- **`previous`**: the previous, terminated instance (see `get_logs_for_pod_and_container`).
+- **`bucket_seconds`**: bucket width, default 60. Widened, with a note, to keep at most 60 buckets (`LOG_MAX_BUCKETS`).
+- **`max_samples`**: matching lines to return, at most 100; default 5.
+
+#### Returns
+
+`LogPatternSummary`:
+
+- **`pod`**, **`container`**, **`previous`**, **`pattern`**
+- **`lines`** (`int`): lines searched.
+- **`first_line`**, **`last_line`** (`datetime`): the timestamps on the first and last line searched: how far back the search went.
+- **`log_starts`** (`datetime`): where the log began when that is before `first_line`: lines not searched, because the log is past the 16 MiB cap or (on replay) the capture didn't record them. A note says which. Omitted otherwise.
+- **`instance_started`** (`datetime`): when the instance that wrote the log started. When the log starts more than a minute later, a note says so: the kubelet rotated earlier lines away, or the container wrote none until then, and the API doesn't say which. For an ITBench import the note says instead that the snapshot holds no earlier records (none were collected, or the service exported none).
+- **`matches`** (`int`): matching lines; **`first_match`**, **`last_match`** (`datetime`).
+- **`bucket_seconds`** (`int`): the width used.
+- **`buckets`** (`list[str]`): `"<start> <matches>/<lines>"` per bucket, in UTC, from `first_line` to `last_line`, aligned to multiples of the width (e.g. `"17:43 1/640"`). A run of buckets with no match is one entry, `"17:48 to 17:54 0/3200"` (end exclusive), so a gap shows without 60 lines of zeros. Times are `HH:MM` (`HH:MM:SS` for widths under a minute) when the log is within one UTC day, else `MM-DDTHH:MM`; `first_line` gives the date. Empty when no line has a timestamp, with a note.
+- **`samples`** (`list[str]`): matching lines, cut to 300 characters: all of them, or the first, the last, and evenly spaced between.
+- **`notes`** (`list[str]`): that a waiting container's log is its last instance's, the 16 MiB cap, the capture's extent, a widened bucket, the OTel source of an ITBench import's lines.
+
+When the instance's log file is gone, raises `K8sLogReclaimed`; a log a replayed capture didn't record raises `K8sNotRecorded`.
+
+Empty fields are left out of the result.
 
 ### `get_deployment_summaries`
 

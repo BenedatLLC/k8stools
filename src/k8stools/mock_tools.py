@@ -108,6 +108,18 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
 get_logs_for_pod_and_container.__doc__ = k8s_tools.get_logs_for_pod_and_container.__doc__
 
 
+def get_log_pattern_summary(pod_name: str, namespace: str = "default",
+                            container_name: Optional[str] = None,
+                            pattern: Optional[str] = None, previous: bool = False,
+                            bucket_seconds: int = 60,
+                            max_samples: int = 5) -> k8s_tools.LogPatternSummary:
+    return _state().get_log_pattern_summary(
+        pod_name, namespace, container_name, pattern=pattern, previous=previous,
+        bucket_seconds=bucket_seconds, max_samples=max_samples)
+
+get_log_pattern_summary.__doc__ = k8s_tools.get_log_pattern_summary.__doc__
+
+
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[k8s_tools.DeploymentSummary]:
     return _state().get_deployment_summaries(namespace)
 
@@ -282,6 +294,7 @@ TOOLS = [
     get_pod_events,
     get_pod_spec,
     get_logs_for_pod_and_container,
+    get_log_pattern_summary,
     get_deployment_summaries,
     get_replicaset_summaries,
     get_workload_history,

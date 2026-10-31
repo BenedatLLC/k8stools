@@ -506,6 +506,8 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
                 if logs is not None:
                     record["logs"][status.container_name] = redactor(logs)
                     stats.logs_captured += 1
+                    _log_start(record, "log_starts", summary.name, namespace,
+                               status.container_name, previous=False)
             # A completed init container's previous instance is rarely kept, and
             # isn't evidence of anything: one that is failing, like an app
             # container, is where the diagnosis is.
@@ -519,6 +521,8 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
                 if previous is not None:
                     previous_logs[status.container_name] = redactor(previous)
                     stats.previous_logs_captured += 1
+                    _log_start(record, "previous_log_starts", summary.name, namespace,
+                               status.container_name, previous=True)
                 else:
                     stats.missing_previous_logs.append(
                         f"{namespace}/{summary.name}/{status.container_name}")
@@ -526,6 +530,17 @@ def _capture_pods(namespace: str, captured_at: datetime.datetime,
             record["previous_logs"] = previous_logs
         records.append(record)
     return records
+
+
+def _log_start(record: dict[str, Any], key: str, pod: str, namespace: str,
+               container: str, previous: bool) -> None:
+    """Record the kubelet's timestamp on the first line of the log just read, as
+    written, so replay can tell a log the capture kept whole from one it cut at
+    ``max_log_lines`` (#34). Stored verbatim, like the log lines it is compared
+    with, and moved with them on replay."""
+    stamp = _safe(k8s_tools._log_start, pod, namespace, container, previous, default=None)
+    if stamp is not None:
+        record.setdefault(key, {})[container] = stamp
 
 
 def _safe(fn, *args, default=None, **kwargs):

@@ -200,7 +200,9 @@ def test_retrieve_logs_for_pod_and_container():
             # a real client reproduces (a fake returning str hides it entirely).
             assert not logs.startswith("b'")
             assert "\\n" not in logs
-            assert logs.count("\n") <= 5
+            output = [l for l in logs.splitlines()
+                      if not l.startswith(k8s_tools.LOG_NOTE_PREFIX)]
+            assert len(output) <= 5
             # Every line is timestamped, so a decoded log always has a real newline.
             assert logs.endswith("\n")
         # `previous` is not asserted to differ from the above: while a container is in
@@ -548,8 +550,14 @@ def test_get_logs_tail_and_since_seconds():
     tailed = k8s_tools.get_logs_for_pod_and_container(
         pod_name, "default", container_name, tail=5)
     assert isinstance(tailed, str)
-    assert len(tailed.splitlines()) <= 5
-    assert len(tailed.splitlines()) <= len(full.splitlines())
+    def output(text):  # without the tool's note lines (#34: where a tail starts)
+        return [l for l in text.splitlines() if not l.startswith(k8s_tools.LOG_NOTE_PREFIX)]
+
+    assert len(output(tailed)) <= 5
+    assert len(output(tailed)) <= len(output(full))
+    if len(output(full)) > 5:
+        assert any(l.startswith(k8s_tools.LOG_NOTE_PREFIX + "These 5 lines start at")
+                   for l in tailed.splitlines())
 
     # since_seconds is a time window, so it is also a subset of the full read
     recent = k8s_tools.get_logs_for_pod_and_container(
@@ -1008,3 +1016,20 @@ def test_custom_resources():
     for crd in crds[:5]:
         for r in k8s_tools.get_custom_resource_status(crd.group, crd.plural):
             assert r.kind == crd.kind
+
+
+def test_log_pattern_summary_covers_the_whole_log():
+    """#34: the summary searches the whole retained log, and its buckets account
+    for every line it searched."""
+    found = _find_running_pod("default")
+    if found is None:
+        pytest.skip("No running pods found in namespace 'default'.")
+    pod_name, container_name = found
+    s = k8s_tools.get_log_pattern_summary(pod_name, "default", container_name)
+    assert s.matches == s.lines  # no pattern: every line
+    if s.first_line is not None:
+        assert s.first_line <= s.last_line
+        assert sum(int(b.rsplit("/", 1)[1]) for b in s.buckets) == s.lines
+        if s.log_starts is None:  # under the cap: from the log's first line
+            start = k8s_tools._log_start(pod_name, "default", container_name, False)
+            assert k8s_tools._line_time(start) == s.first_line

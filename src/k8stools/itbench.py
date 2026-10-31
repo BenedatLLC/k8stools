@@ -453,7 +453,11 @@ class SnapshotRest:
         tail = query.get("tailLines")
         if tail is not None and text:
             text = "\n".join(text.split("\n")[-int(tail):])
-        return _Response(200, text + ("\n" if text else ""), "text/plain")
+        body = text + ("\n" if text else "")
+        limit = query.get("limitBytes")
+        if limit is not None:  # from the start, as the kubelet stops reading
+            body = body.encode()[:int(limit)].decode("utf-8", errors="ignore")
+        return _Response(200, body, "text/plain")
 
 
 # --- the import -----------------------------------------------------------------------

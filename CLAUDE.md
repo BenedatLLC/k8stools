@@ -50,6 +50,7 @@ tests/
   test_spec_resources.py     - Requests/limits from the pod spec when the status has none (pre-1.33, ITBench), live and replay (#32)
   test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
   test_forbidden.py          - A 403 is K8sForbidden; capture records an unreadable kind and carries on; replay and composites say so (#33)
+  test_log_search.py         - get_log_pattern_summary, grep before tail, where a log starts: live, capture and replay (#34)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
@@ -135,6 +136,18 @@ A new tool lands in the `all` and `investigate` toolsets automatically
 what another tool already answers, add it to `OVERLAPPING_TOOLS` instead of
 `investigate`. Every tool's description is context on every turn, so keep the
 set small.
+
+**Search the whole log, and say where it starts** (#34). `get_log_pattern_summary`
+and the workload report's `grep` read the whole retained log
+(`_read_whole_log`), not a tail. `limit_bytes` keeps the *first* bytes, so a tail
+or a whole log past the cap would lose its newest lines; both readers ask again
+for fewer lines instead (a minikube apiserver log is weeks long). A tail that
+left lines out gets a note with where the log starts (`_log_start`, a 64-byte
+read; `_log_extent_note`). Times are the kubelet's line prefix (`_line_time`),
+never times parsed from the message: replay moves only the prefix, with
+everything else. The capture stores each log's start as the kubelet wrote it
+(`log_starts`), like the lines it is compared with; a capture without it says
+the start is unknown, never that the log was whole.
 
 The log readers decode the response themselves and pass `_preload_content=False`.
 The log endpoint is the only call whose body is a bare scalar rather than a model,

@@ -146,6 +146,12 @@
       },
       "previous_logs": {
         "ad": "2026-09-13T01:29:32.114203817Z Picked up JAVA_TOOL_OPTIONS: -javaagent:/usr/src/app/opentelemetry-javaagent.jar\n2026-09-13T01:29:32.982110043Z OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes\n2026-09-13T01:29:33.551204338Z [otel.javaagent 2026-09-13 01:29:33:551 +0000] [main] INFO io.opentelemetry.javaagent.tooling.VersionLogger - opentelemetry-javaagent - version: 2.4.0\n2026-09-13T01:29:35.004417290Z [main] INFO oteldemo.AdService - AdService starting.\n2026-09-13T01:29:36.772341005Z [main] INFO oteldemo.AdService - Initializing in-memory ad catalog\n2026-09-13T01:29:38.336655012Z [main] INFO oteldemo.AdService - Ad service started, listening on 9555\n2026-09-13T01:31:01.219887411Z [grpc-default-executor-0] INFO oteldemo.AdService - Targeted ad request received\n2026-09-13T01:31:19.884312907Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 271M of 300M\n2026-09-13T01:31:31.775510223Z [grpc-default-executor-0] WARN oteldemo.AdService - GC overhead rising; heap at 289M of 300M\n2026-09-13T01:31:34.140155000Z Terminating due to java.lang.OutOfMemoryError: Java heap space\n"
+      },
+      "log_starts": {
+        "ad": "2026-09-13T01:36:35.114203817Z"
+      },
+      "previous_log_starts": {
+        "ad": "2026-09-13T01:29:32.114203817Z"
       }
     },
     {
@@ -236,6 +242,10 @@
       "logs": {
         "container-1": "2026-09-12T23:37:33.000000000Z Starting container-1 container\n2026-09-12T23:37:34.000000000Z container-1 container started successfully\n2026-09-12T23:37:35.000000000Z Processing requests...\n2026-09-12T23:37:36.000000000Z Ready to serve traffic",
         "container-2": "2026-09-12T23:37:33.000000000Z Starting container-2 container\n2026-09-12T23:37:34.000000000Z container-2 container started successfully\n2026-09-12T23:37:35.000000000Z Processing requests...\n2026-09-12T23:37:36.000000000Z Ready to serve traffic"
+      },
+      "log_starts": {
+        "container-1": "2026-09-12T23:37:33.000000000Z",
+        "container-2": "2026-09-12T23:37:33.000000000Z"
       }
     },
     {
@@ -295,6 +305,9 @@
       },
       "logs": {
         "kube": "2026-09-12T01:37:33.000000000Z Starting kube container\n2026-09-12T01:37:34.000000000Z kube container started successfully\n2026-09-12T01:37:35.000000000Z Processing requests...\n2026-09-12T01:37:36.000000000Z Ready to serve traffic"
+      },
+      "log_starts": {
+        "kube": "2026-09-12T01:37:33.000000000Z"
       }
     },
     {
@@ -359,6 +372,9 @@
       },
       "logs": {
         "cleanup": "2026-09-13T01:35:33.004417290Z cleanup starting, TIMEOUT=30\n2026-09-13T01:35:33.772341005Z scanning /var/data for expired sessions\n2026-09-13T01:35:45.336655012Z removed 418 expired session files\n2026-09-13T01:36:32.219887411Z cleanup complete\n"
+      },
+      "log_starts": {
+        "cleanup": "2026-09-13T01:35:33.004417290Z"
       }
     },
     {
@@ -516,7 +532,10 @@
       "logs": {
         "opentelemetry-collector": "2026-09-13T01:37:24.064704896Z 2026-09-13T01:37:24.064Z\tinfo\tMetrics\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"metrics\", \"resource metrics\": 9, \"metrics\": 30, \"data points\": 337}\n2026-09-13T01:37:24.945704548Z 2026-09-13T01:37:24.945Z\tinfo\tLogs\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"logs\", \"resource logs\": 1, \"log records\": 2}\n2026-09-13T01:37:25.022704770Z 2026-09-13T01:37:25.022Z\tinfo\tTraces\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"traces\", \"resource spans\": 1, \"spans\": 22}\n2026-09-13T01:37:25.150704157Z 2026-09-13T01:37:25.150Z\tinfo\tLogs\t{\"otelcol.component.id\": \"debug\", \"otelcol.component.kind\": \"exporter\", \"otelcol.signal\": \"logs\", \"resource logs\": 1, \"log records\": 1}\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "opentelemetry-collector": "2026-09-13T01:37:24.064704896Z"
+      }
     },
     {
       "summary": {
@@ -593,7 +612,10 @@
       "logs": {
         "cart": "2026-09-12T23:37:37.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:38.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:38.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:38.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "cart": "2026-09-12T23:37:37.892704000Z"
+      }
     },
     {
       "summary": {
@@ -670,7 +692,10 @@
       "logs": {
         "cart": "2026-09-12T23:37:38.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:39.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:39.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:39.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "cart": "2026-09-12T23:37:38.892704000Z"
+      }
     },
     {
       "summary": {
@@ -747,7 +772,10 @@
       "logs": {
         "cart": "2026-09-12T23:37:39.892704000Z info: Microsoft.Hosting.Lifetime[14] Now listening on: http://[::]:7070\n2026-09-12T23:37:40.242704137Z info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.\n2026-09-12T23:37:40.592704274Z info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production\n2026-09-12T23:37:40.942704411Z info: cart.cartstore.ValkeyCartStore[0] Successfully connected to Redis\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "cart": "2026-09-12T23:37:39.892704000Z"
+      }
     },
     {
       "summary": {
@@ -887,7 +915,10 @@
       "logs": {
         "postgres": "2026-09-10T01:37:47.892704000Z 2026-09-10 01:37:47.892 UTC [1] LOG:  starting PostgreSQL 16.4 on x86_64-pc-linux-gnu\n2026-09-10T01:37:48.242704137Z 2026-09-10 01:37:48.242 UTC [1] LOG:  listening on IPv4 address '0.0.0.0', port 5432\n2026-09-10T01:37:48.592704274Z 2026-09-10 01:37:48.592 UTC [28] LOG:  database system was shut down at 2026-09-10 01:37:07 UTC\n2026-09-10T01:37:48.942704411Z 2026-09-10 01:37:48.942 UTC [1] LOG:  database system is ready to accept connections\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "postgres": "2026-09-10T01:37:47.892704000Z"
+      }
     },
     {
       "summary": {
@@ -968,6 +999,9 @@
       },
       "previous_logs": {
         "accounting": "unable to retrieve container logs for containerd://4f1c2b9e7a6d"
+      },
+      "log_starts": {
+        "accounting": "2026-09-13T00:57:44.492704000Z"
       }
     },
     {
@@ -1045,7 +1079,10 @@
       "logs": {
         "checkout": "2026-09-13T01:31:02.492704000Z {\"level\":\"info\",\"msg\":\"payment went through\",\"transaction_id\":\"4f8a2c1e\"}\n2026-09-13T01:31:02.612704000Z {\"level\":\"info\",\"msg\":\"order confirmation email sent\"}\n"
       },
-      "previous_logs": {}
+      "previous_logs": {},
+      "log_starts": {
+        "checkout": "2026-09-13T01:31:02.492704000Z"
+      }
     },
     {
       "summary": {
