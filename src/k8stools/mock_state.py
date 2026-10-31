@@ -684,6 +684,15 @@ class MockState:
         return "".join(f"{k8s_tools.LOG_NOTE_PREFIX}{n}\n" for n in self._otel_note([])) + noted
 
     @_pinned_query
+    def get_log_start(self, pod_name: str, namespace: str = "default",
+                      container_name: Optional[str] = None,
+                      previous: bool = False) -> Optional[datetime.datetime]:
+        """The recorded start, moved with the log; None when the capture didn't
+        record it (unknown, never "the first recorded line")."""
+        _, recorded, stamp = self._recorded_log(pod_name, namespace, container_name, previous)
+        return None if k8s_tools._is_reclaimed_log(recorded) else self._log_start(stamp)
+
+    @_pinned_query
     def get_log_pattern_summary(self, pod_name: str, namespace: str = "default",
                                 container_name: Optional[str] = None,
                                 pattern: Optional[str] = None, previous: bool = False,

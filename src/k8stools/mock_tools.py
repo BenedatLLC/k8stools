@@ -12,6 +12,7 @@ synthesized answers, the tools agree with each other: a pod that is not in the
 capture does not exist for *any* tool, and a pod that is has consistent statuses,
 events, spec and logs.
 """
+import datetime
 import sys
 from pathlib import Path
 from typing import Optional, Any
@@ -118,6 +119,14 @@ def get_log_pattern_summary(pod_name: str, namespace: str = "default",
         bucket_seconds=bucket_seconds, max_samples=max_samples)
 
 get_log_pattern_summary.__doc__ = k8s_tools.get_log_pattern_summary.__doc__
+
+
+def get_log_start(pod_name: str, namespace: str = "default",
+                  container_name: Optional[str] = None,
+                  previous: bool = False) -> Optional[datetime.datetime]:
+    return _state().get_log_start(pod_name, namespace, container_name, previous)
+
+get_log_start.__doc__ = k8s_tools.get_log_start.__doc__
 
 
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[k8s_tools.DeploymentSummary]:

@@ -39,7 +39,7 @@ from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, Hp
                         K8sForbidden, K8sLogReclaimed, K8sNotRecorded, LastChange, LOG_NOTE_PREFIX, LOG_RECLAIMED_REASON,
                         LOG_LINE_CHARS, LogTail, NamespaceHealth, NOTE_INIT_NOT_RECORDED, NOTE_INIT_PENDING,
                         NOTE_RECOVERING, NOTE_RESTART_HISTORY, PVCSummary,
-                        Termination, WorkloadHealth, WorkloadReport, _init_completed,
+                        Termination, WorkloadHealth, WorkloadReport, _clip, _init_completed, _line_time,
                         _now, _to_whole_seconds)
 
 
@@ -783,6 +783,11 @@ def _recovering_line(w: WorkloadHealth) -> str:
 
 _MAX_LOG_LINES = 100
 _MAX_LINE_CHARS = LOG_LINE_CHARS
+#: With grep, how many pods' logs are searched; without, how many pods besides
+#: the focus pod get a tail, and of how many lines.
+_MAX_GREP_PODS = 10
+_OTHER_LOG_PODS = 5
+_OTHER_LOG_LINES = 5
 _MAX_EVENTS = 20
 
 
@@ -901,6 +906,13 @@ def _events(api, namespace: str, names: list[str], kinds: set[str],
     return lines[:_MAX_EVENTS]
 
 
+def _log_start(api, pod: str, namespace: str, container: str, previous: bool):
+    try:
+        return api.get_log_start(pod, namespace, container, previous)
+    except K8sApiError:
+        return None  # unknown
+
+
 def _tail(api, pod: str, namespace: str, container: str, previous: bool,
           lines: int, grep: Optional[str]) -> Optional[LogTail]:
     try:
@@ -918,13 +930,16 @@ def _tail(api, pod: str, namespace: str, container: str, previous: bool,
                        reason=str(e))
     except K8sApiError:
         return None  # e.g. no previous instance
+    began = _log_start(api, pod, namespace, container, previous)
     if grep:
         notes = [n for n in found.notes if not n.startswith("bucket_seconds")]
         if found.matches > len(found.samples):
             notes.append(f"{found.matches} lines match; shown: the first, the last, and "
-                         "evenly spaced between.")
+                         "evenly spaced between." if found.samples else
+                         f"{found.matches} lines match; none shown: the report's "
+                         f"{_MAX_LOG_LINES}-line limit was reached.")
         return LogTail(pod=pod, container=container, previous=previous, lines=found.samples,
-                       matches=found.matches, searched_lines=found.lines,
+                       log_starts=began, matches=found.matches, searched_lines=found.lines,
                        searched_from=found.first_line, notes=notes)
     notes, body = [], []
     for line in (text or "").splitlines():
@@ -932,9 +947,60 @@ def _tail(api, pod: str, namespace: str, container: str, previous: bool,
             notes.append(line[len(LOG_NOTE_PREFIX):])
         else:
             body.append(line)
-    body = [l if len(l) <= _MAX_LINE_CHARS else l[:_MAX_LINE_CHARS] + " ..."
-            for l in body[-lines:]]
-    return LogTail(pod=pod, container=container, previous=previous, lines=body, notes=notes)
+    body = body[-lines:]
+    return LogTail(pod=pod, container=container, previous=previous,
+                   lines=[_clip(l) for l in body],
+                   lines_from=next((t for t in map(_line_time, body) if t), None),
+                   log_starts=began, notes=notes)
+
+
+def _logs(api, namespace: str, pods: list, focus, statuses_by_pod: dict, pending_init,
+          lines: int, grep: Optional[str], notes: list[str]) -> list[LogTail]:
+    """The focus pod's logs in full (current and previous instances), then the
+    other pods' (#35): with grep, every log of up to _MAX_GREP_PODS pods is
+    searched, so each has its match count; without, up to _OTHER_LOG_PODS get a
+    short tail of each current instance. Lines past the focus pod's share the
+    report's _MAX_LOG_LINES."""
+    others = sorted((p for p in pods if p is not focus), key=lambda p: p.name)
+    budget = _MAX_LOG_LINES
+    logs: list[LogTail] = []
+
+    def read(pod, previous_too: bool, want: int) -> None:
+        nonlocal budget
+        for s in statuses_by_pod[pod.name].containers + pending_init(pod):
+            for previous in (False, True):
+                if previous and not (previous_too and s.restart_count):
+                    continue
+                n = want if pod is focus else min(want, budget)
+                if n <= 0 and not grep:
+                    return
+                tail = _tail(api, pod.name, namespace, s.container_name, previous,
+                             max(n, 0), grep)
+                if tail:
+                    logs.append(tail)
+                    budget -= len(tail.lines)
+
+    read(focus, True, lines)
+    if grep:
+        searched, skipped = others[:_MAX_GREP_PODS - 1], others[_MAX_GREP_PODS - 1:]
+        for pod in searched:
+            read(pod, True, lines)
+        if skipped:
+            notes.append(f"Logs of {_pods_text([p.name for p in skipped])} weren't "
+                         f"searched: the report searches {_MAX_GREP_PODS} pods. "
+                         "get_log_pattern_summary searches one.")
+    else:
+        shown = []
+        for pod in others[:_OTHER_LOG_PODS]:
+            if budget <= 0:
+                break
+            read(pod, False, min(lines, _OTHER_LOG_LINES))
+            shown.append(pod.name)
+        if skipped := [p.name for p in others if p.name not in shown]:
+            notes.append(f"No log lines from {_pods_text(skipped)}: the report shows "
+                         f"{_OTHER_LOG_LINES} from each of {_OTHER_LOG_PODS} other pods at "
+                         "most. get_logs_for_pod_and_container reads them.")
+    return logs
 
 
 def workload_report(api, name: str, namespace: str = "default", kind: Optional[str] = None,
@@ -1007,15 +1073,11 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
             api.get_pod_spec(focus.name, namespace),
             focus_statuses.containers + (focus_statuses.init_containers or []))
         lines = max(1, min(log_lines, _MAX_LOG_LINES))
-        for s in focus_statuses.containers + pending_init(focus):
-            for previous in (False, True):
-                if previous and not s.restart_count:
-                    continue
-                tail = _tail(api, focus.name, namespace, s.container_name, previous, lines, grep)
-                if tail:
-                    report.logs.append(tail)
         if len(pods) > 1:
-            report.notes.append(f"containers and logs are from {focus.name}, of {len(pods)} pods.")
+            report.notes.append(f"containers are from {focus.name}, of {len(pods)} pods; "
+                                "logs are from it first, then the others.")
+        report.logs = _logs(api, namespace, pods, focus, statuses_by_pod, pending_init,
+                            lines, grep, report.notes)
     else:
         report.notes.append("No pods: spec, instances and logs are unavailable.")
 

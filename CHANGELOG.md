@@ -8,6 +8,8 @@ dates are release-tag dates.
 ### Issues fixed
 - [#34](https://github.com/BenedatLLC/k8stools/issues/34): Search a log over its
   whole retained span: a pattern summary tool, and grep before tail.
+- [#35](https://github.com/BenedatLLC/k8stools/issues/35): Workload report shows
+  one pod's log, and cuts the matched text from long lines.
 
 ### Added
 - **`get_log_pattern_summary`**: where a pattern occurs across a container
@@ -22,8 +24,26 @@ dates are release-tag dates.
   the kubelet's timestamp on the first line, one small read per log), so replay
   can tell a log the capture kept whole from one it cut at `--max-log-lines`.
   Older captures say the start isn't known.
+- **`LogTail.lines_from` and `LogTail.log_starts`** in the workload report: the
+  first line shown and where the log begins, when known. Equal, the whole log is
+  shown; `log_starts` omitted, where it begins is unknown. With `grep`, `log_starts`
+  sits beside `searched_from`. They give as fields what the tail's note says in text.
 
 ### Changed
+- **The workload report reads every pod's log, not only the focus pod's.** With
+  `grep`, every log of up to 10 pods is searched, so each has its `matches` (0
+  included), the focus pod's first; without, up to 5 other pods get a 5-line
+  tail of each container, enough to show they log something different. Lines
+  beyond the focus pod's share a 100-line limit across the report, and a note
+  names the pods not read. The note "containers and logs are from X, of N pods"
+  is now "containers are from X, of N pods; logs are from it first, then the
+  others". (k8srca's itbench-80: both Kafka pods healthy; the one not shown had
+  the 83 lines that mattered.)
+- **A long matching line keeps what it matched.** A line past 300 characters is
+  cut to its timestamp and a window around the first match (`<timestamp> ...
+  <text around the match> ...`), not from the start, in `get_log_pattern_summary`'s
+  samples and the report's `grep`. In itbench-80 the word sat at character 382 of
+  447, so every sample hid it.
 - **`get_workload_report(grep=...)` searches each whole log**, not its last 1000
   lines. Each log then holds every match, or the first, the last and evenly
   spaced between when there are more than `log_lines`, with `matches`,

@@ -51,6 +51,7 @@ tests/
   test_networkpolicy.py      - get_networkpolicy_summaries: stated effects by the API's rules, selected pods, composites, replay (#31)
   test_forbidden.py          - A 403 is K8sForbidden; capture records an unreadable kind and carries on; replay and composites say so (#33)
   test_log_search.py         - get_log_pattern_summary, grep before tail, where a log starts: live, capture and replay (#34)
+  test_report_logs.py        - The workload report reads every pod's log; a cut line keeps its match; lines_from/log_starts (#35)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
@@ -148,6 +149,16 @@ never times parsed from the message: replay moves only the prefix, with
 everything else. The capture stores each log's start as the kubelet wrote it
 (`log_starts`), like the lines it is compared with; a capture without it says
 the start is unknown, never that the log was whole.
+
+**Every pod's log, and the match in a cut line** (#35). The workload report
+reads the focus pod's logs, then the others' (`_logs`): with `grep`, every log
+of up to `_MAX_GREP_PODS`, so each reports its count; without, a short tail of
+up to `_OTHER_LOG_PODS`. A healthy workload's focus pod is just the first
+listed, and in itbench-80 the other Kafka pod held the evidence. Lines past
+the focus pod's share `_MAX_LOG_LINES`; pods not read are named. `_clip` cuts
+a line past `LOG_LINE_CHARS` around its first match, keeping the timestamp.
+`LogTail.log_starts` comes from `get_log_start`, which is deliberately not in
+`TOOLS` (composites read only `api` functions, and the log tool returns text).
 
 The log readers decode the response themselves and pass `_preload_content=False`.
 The log endpoint is the only call whose body is a bare scalar rather than a model,

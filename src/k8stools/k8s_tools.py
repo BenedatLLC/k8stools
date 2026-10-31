@@ -1532,6 +1532,15 @@ def get_logs_for_pod_and_container(pod_name: str, namespace: str = "default",
                            previous=previous, extent=extent)
 
 
+def get_log_start(pod_name: str, namespace: str = "default",
+                  container_name: Optional[str] = None,
+                  previous: bool = False) -> Optional[datetime.datetime]:
+    """Where a container instance's retained log begins: the kubelet's timestamp
+    on its first line, or None when that is unknown (an empty log, or none). Not
+    a tool: the workload report states each log's start with it (#35)."""
+    return _line_time(_log_start(pod_name, namespace, container_name, previous) or "")
+
+
 def _instance_started(status: Optional["ContainerStatus"],
                       previous: bool) -> Optional[datetime.datetime]:
     """When the instance whose log a read returns started: the previous instance
@@ -4373,20 +4382,41 @@ LATE_NOT_COLLECTED = ("the snapshot holds no earlier records: none were collecte
                       "service exported none until then; which isn't recorded.")
 
 
-def _line_matcher(pattern: Optional[str]) -> Callable[[str], bool]:
-    """A case-insensitive regex, or a substring when it isn't one."""
+def _line_matcher(pattern: Optional[str]) -> Callable[[str], Optional[tuple[int, int]]]:
+    """A case-insensitive regex, or a substring when it isn't one: the span of the
+    first match in a line, or None. Without a pattern every line matches, at 0."""
     if not pattern:
-        return lambda line: True
+        return lambda line: (0, 0)
     try:
         rx = re.compile(pattern, re.IGNORECASE)
-        return lambda line: rx.search(line) is not None
     except re.error:
         lowered = pattern.lower()
-        return lambda line: lowered in line.lower()
+
+        def substring(line: str) -> Optional[tuple[int, int]]:
+            at = line.lower().find(lowered)
+            return (at, at + len(lowered)) if at >= 0 else None
+        return substring
+
+    def regex(line: str) -> Optional[tuple[int, int]]:
+        m = rx.search(line)
+        return m.span() if m else None
+    return regex
 
 
-def _clip(line: str) -> str:
-    return line if len(line) <= LOG_LINE_CHARS else line[:LOG_LINE_CHARS] + " ..."
+def _clip(line: str, span: Optional[tuple[int, int]] = None) -> str:
+    """At most :data:`LOG_LINE_CHARS` of a line (plus the " ..." marks). When the
+    matched ``span`` lies past the cut, the kept text is the kubelet's timestamp
+    and a window around the match, so a sample shows what it matched (#35)."""
+    if len(line) <= LOG_LINE_CHARS:
+        return line
+    if span is None or span[1] <= LOG_LINE_CHARS:
+        return line[:LOG_LINE_CHARS] + " ..."
+    stamp = _LINE_TIME_RE.match(line)
+    head = line[:stamp.end()] if stamp else ""
+    room = LOG_LINE_CHARS - len(head) - len(" ... ")
+    start = max(len(head), min(span[0] - room // 3, len(line) - room))
+    end = start + room
+    return f"{head} ... {line[start:end]}" + (" ..." if end < len(line) else "")
 
 
 def _spread(n: int, k: int) -> list[int]:
@@ -4429,7 +4459,8 @@ def _summarize_log(text: str, *, pod: str, container: str, previous: bool,
     for line in lines:  # a line without a timestamp belongs to the one before it
         last = _line_time(line) or last
         times.append(last)
-    hits = [i for i, line in enumerate(lines) if match(line)]
+    spans = [match(line) for line in lines]
+    hits = [i for i, span in enumerate(spans) if span is not None]
     stamped = [t for t in times if t is not None]
     first_line, last_line = (stamped[0], stamped[-1]) if stamped else (None, None)
     notes = list(notes)
@@ -4451,7 +4482,7 @@ def _summarize_log(text: str, *, pod: str, container: str, previous: bool,
         log_starts=log_starts, instance_started=instance_started, matches=len(hits),
         first_match=next((times[i] for i in hits if times[i]), None),
         last_match=next((times[i] for i in reversed(hits) if times[i]), None),
-        samples=[_clip(lines[hits[j]])
+        samples=[_clip(lines[hits[j]], spans[hits[j]])
                  for j in _spread(len(hits), min(max(max_samples, 0), _LOG_MAX_SAMPLES))],
         notes=notes)
     if first_line is not None:
@@ -4549,6 +4580,11 @@ class LogTail(_Compact):
     available: Optional[bool] = None
     reason: Optional[str] = None
     lines: list[str] = Field(default_factory=list)
+    #: The kubelet's timestamp on the first line shown, and where the log
+    #: begins, when known. Equal: the whole log is shown. log_starts omitted:
+    #: where it begins is unknown, not that lines is all of it.
+    lines_from: Optional[datetime.datetime] = None
+    log_starts: Optional[datetime.datetime] = None
     #: With grep, the whole log was searched: how many lines matched, of how
     #: many, from when (the first line's timestamp). Then lines are matches: all
     #: of them, or the first, the last, and evenly spaced between.
@@ -4624,10 +4660,11 @@ def get_workload_report(name: str, namespace: str = "default", kind: Optional[st
                         log_lines: int = 20, grep: Optional[str] = None) -> WorkloadReport:
     """Everything about one workload in one call: container images, resources
     and probes; each instance's state and last termination; its events,
-    deduplicated; current and previous log tails of its most troubled pod; the
-    last pod-template change; the ConfigMaps and Secrets it uses. kind:
-    Deployment, StatefulSet, DaemonSet or Job (found by name if omitted).
-    log_lines: per log (max 100). grep: search each whole log for this regex."""
+    deduplicated; current and previous log tails of its most troubled pod, and
+    short ones of its other pods; the last pod-template change; the ConfigMaps
+    and Secrets it uses. kind: Deployment, StatefulSet, DaemonSet or Job (found
+    by name if omitted). log_lines: per log (max 100). grep: search each whole
+    log, of every pod (up to 10), for this regex."""
     from .composites import workload_report
     return workload_report(sys.modules[__name__], name, namespace, kind, log_lines, grep)
 

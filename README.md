@@ -147,7 +147,7 @@ it is in `investigate`. Every tool is in `all`.
 | Tool | What it answers | T | I |
 |---|---|:-:|:-:|
 | `get_namespace_health` | What is wrong in a namespace, and where. A full entry for each unhealthy workload (last termination with the exit code's meaning, how long instances live, the restart back-off, memory limit vs request, when the template last changed), pods that can't be scheduled and a Deployment's failing rollout conditions, the same for each *recovering* one (ready, but restarted within the last 24 hours), and one line for each healthy one. Workloads failing the same way are grouped. | ✓ | ✓ |
-| `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails; the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA and resource usage. | ✓ | ✓ |
+| `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails of its most troubled pod, short ones of the others (`grep` searches every pod's whole log); the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA and resource usage. | ✓ | ✓ |
 | `get_cluster_info` | Which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed. | ✓ | ✓ |
 
 These *composite* tools are built from the other tools, and report facts rather
