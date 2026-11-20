@@ -3,6 +3,26 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.7.0 — unreleased
+
+### Issues fixed
+- [#37](https://github.com/BenedatLLC/k8stools/issues/37): Workload report: give
+  each NetworkPolicy's age on its policy lines.
+
+### Changed
+- **The composites' NetworkPolicy lines say when each policy was created.** A
+  policy created just before an alert is a recent change, and agents rarely call
+  `get_networkpolicy_summaries`, the only place its age was. In ITBench
+  Scenario 31 the agent read frontend's report every run and never learned that
+  `frontend-block-all-ports` appeared minutes before. `get_workload_report`:
+  "ingress: allows all ingress (NetworkPolicy/frontend-block-all-ports, created
+  5m55s ago)"; with several policies they are separated by "; " (was ", "),
+  each with its age, still in the line's closing parentheses.
+  `get_namespace_health`: "NetworkPolicy/frontend-block-all-ports (created
+  5m55s ago) selects 1 pod …". The age is the summary's, so replay gives the
+  same one, and older captures have it too. The policies note adds that an edit
+  doesn't change a policy's age.
+
 ## 4.6.2 — 2026-11-19
 
 ### Changed

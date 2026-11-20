@@ -16,7 +16,7 @@ import pytest
 from kubernetes import client as c
 
 from k8stools import k8s_tools, mock_tools
-from k8stools.composites import namespace_health, workload_report
+from k8stools.composites import _human, namespace_health, workload_report
 from k8stools.mock_state import BUILTIN_STATE_FILE, CAPTURE_VERSION, MockState, encode_model
 
 UTC = datetime.timezone.utc
@@ -231,16 +231,17 @@ def test_policies_selecting_a_workload_add_up_per_direction():
     report = workload_report(state, "test-deployment", "default")
     assert report.network_policies == [
         "ingress: allows ingress only from pods with app=frontend-proxy in this namespace on "
-        "TCP 8080 (NetworkPolicy/deny-all, NetworkPolicy/from-proxy)",
+        "TCP 8080 (NetworkPolicy/deny-all, created 5m0s ago; NetworkPolicy/from-proxy, "
+        "created 5m0s ago)",
         "egress: denies all egress; none allows port 53, so these pods can't look up names "
-        "(DNS) (NetworkPolicy/deny-all)",
+        "(DNS) (NetworkPolicy/deny-all, created 5m0s ago)",
         "NetworkPolicy/from-proxy selects 2 of these 3 pods"]
     assert k8s_tools.NOTE_NETWORK_POLICIES in report.notes
     assert namespace_health(state, "default").network_policies == [
-        "NetworkPolicy/deny-all selects 4 pods (test-deployment-7d4b9c85f-4kq9z, "
+        "NetworkPolicy/deny-all (created 5m0s ago) selects 4 pods (test-deployment-7d4b9c85f-4kq9z, "
         "test-deployment-7d4b9c85f-m7xpw, test-deployment-7d4b9c85f-tb2ns, +1): "
         "denies all ingress; denies all egress",
-        "NetworkPolicy/from-proxy selects 2 pods (test-deployment-7d4b9c85f-4kq9z, "
+        "NetworkPolicy/from-proxy (created 5m0s ago) selects 2 pods (test-deployment-7d4b9c85f-4kq9z, "
         "test-deployment-7d4b9c85f-m7xpw): allows ingress only from pods with "
         "app=frontend-proxy in this namespace on TCP 8080"]
 
@@ -248,8 +249,38 @@ def test_policies_selecting_a_workload_add_up_per_direction():
 def test_one_allow_all_policy_outweighs_the_rest_and_egress_unrestricted_says_so():
     state = _fixture(_summary("deny", TEST_PODS), _summary("allow", TEST_PODS, ingress=[ALL]))
     assert workload_report(state, "test-deployment", "default").network_policies == [
-        "ingress: allows all ingress (NetworkPolicy/deny, NetworkPolicy/allow)",
+        "ingress: allows all ingress (NetworkPolicy/deny, created 5m0s ago; "
+        "NetworkPolicy/allow, created 5m0s ago)",
         "egress: not restricted (no NetworkPolicy selects these pods for egress)"]
+
+
+def test_each_policy_line_says_when_the_policy_was_created():
+    """A policy created just before an alert is a recent change (#37): ITBench
+    Scenario 31's agent read frontend's report every run and never learned when
+    frontend-block-all-ports appeared. The age is the policy's own, on the replay
+    clock like get_networkpolicy_summaries': a capture a day old, replayed by a
+    server started 2h ago, says the policy is 2h5m25s old, not a day."""
+    new, old = _summary("new", TEST_PODS), _summary("old", TEST_PODS[:1])
+    new.age = datetime.timedelta(minutes=5, seconds=25)
+    old.age = datetime.timedelta(days=41)
+    started = datetime.datetime.now(UTC).replace(microsecond=0)
+    captured = started - datetime.timedelta(days=1)
+    data = json.loads(BUILTIN_STATE_FILE.read_text())
+    data["networkpolicies"] = [encode_model(p, captured) for p in (new, old)]
+    data["captured_at"] = captured.isoformat()
+    state = MockState(json.loads(json.dumps(data)),
+                      server_start_time=started - datetime.timedelta(hours=2))
+
+    # Compared at the line's precision: 35s of slack before 2h5m25s turns 2h6m.
+    assert [_human(p.age) for p in state.get_networkpolicy_summaries("default")] == [
+        "2h5m", "41d2h"]
+    assert workload_report(state, "test-deployment", "default").network_policies == [
+        "ingress: denies all ingress (NetworkPolicy/new, created 2h5m ago; "
+        "NetworkPolicy/old, created 41d2h ago)",
+        "egress: not restricted (no NetworkPolicy selects these pods for egress)",
+        "NetworkPolicy/old selects 1 of these 3 pods"]
+    assert [line.split(" selects ")[0] for line in namespace_health(state, "default").network_policies] == [
+        "NetworkPolicy/new (created 2h5m ago)", "NetworkPolicy/old (created 41d2h ago)"]
 
 
 def test_policy_kinds_from_custom_resources_are_named():

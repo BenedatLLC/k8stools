@@ -491,7 +491,8 @@ NOTE_NETWORK_POLICIES = (
     "NetworkPolicies are enforced only if the cluster's network plugin implements "
     "them. A connection needs the client's egress and the server's ingress both "
     "allowed; replies on an allowed connection always pass. Only networking.k8s.io "
-    "policies are shown.")
+    "policies are shown. A policy's \"created\" age stays the same when the policy "
+    "is edited.")
 NOTE_CR_NOT_OBSERVED = (
     "observed_generation < generation: its controller hasn't yet acted on the latest "
     "spec change, so the conditions may describe the previous spec.")

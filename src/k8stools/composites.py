@@ -525,9 +525,16 @@ def _pods_text(names: list[str]) -> str:
     return f"{len(names)} pod{'' if len(names) == 1 else 's'} ({shown})"
 
 
+def _created(p: NetworkPolicySummary) -> str:
+    """When a policy was created (its age), so a policy made just before an alert
+    reads as the recent change it is (#37). Not when it last changed: an edit
+    keeps the creation time."""
+    return f"created {_human(p.age)} ago"
+
+
 def _policy_lines(policies: list[NetworkPolicySummary]) -> list[str]:
-    """One line per policy: what it selects and what it allows."""
-    lines = [f"NetworkPolicy/{p.name} selects {_pods_text(p.selected_pods)}: "
+    """One line per policy: when it was created, what it selects and what it allows."""
+    lines = [f"NetworkPolicy/{p.name} ({_created(p)}) selects {_pods_text(p.selected_pods)}: "
              + "; ".join(filter(None, (p.ingress_effect, p.egress_effect)))
              for p in sorted(policies, key=lambda p: p.name)]
     if len(lines) > _MAX_POLICY_LINES:
@@ -553,8 +560,10 @@ def _workload_policy_lines(policies: list[NetworkPolicySummary], pod_names: set[
         effect = network_policy_effect(direction, rules)
         if direction == "Egress" and allows_port(rules, 53) is False:
             effect += "; none allows port 53, so these pods can't look up names (DNS)"
+        # One string, the policies in the closing parentheses: k8srca parses
+        # "(ingress|egress): <effect> (<policies>)".
         lines.append(f"{word}: {effect} ("
-                     + ", ".join(f"NetworkPolicy/{p.name}" for p in these) + ")")
+                     + "; ".join(f"NetworkPolicy/{p.name}, {_created(p)}" for p in these) + ")")
     for p in selecting:
         n = len(pod_names & set(p.selected_pods))
         if n < len(pod_names):
