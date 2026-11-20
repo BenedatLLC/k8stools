@@ -3,6 +3,13 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
+## 4.6.2 — unreleased
+
+### Changed
+- **Releases are published from GitHub Actions with Trusted Publishing and
+  carry PyPI attestations** (PEP 740), so PyPI shows each release's provenance
+  and verifies the repository links. Releases before this one have none.
+
 ## 4.6.1 — 2026-10-31
 
 ### Issues fixed

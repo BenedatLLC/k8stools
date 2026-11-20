@@ -1,0 +1,95 @@
+# Publishes k8stools to PyPI when a vX.Y.Z tag is pushed.
+#
+# Trusted Publishing: PyPI trusts this file by name (release.yml) in
+# BenedatLLC/k8stools, from the `pypi` environment. No API token is used.
+# Renaming this file or the environment breaks publishing until the
+# publisher on PyPI (Manage -> Publishing) is updated to match.
+#
+# The publish action generates and uploads PEP 740 attestations by default,
+# which is what gives a release "Full Provenance" on PyPI. Every file of a
+# release must go through this workflow: a file uploaded by hand alongside
+# it shows as "Incomplete Provenance".
+#
+# Actions are pinned to commit SHAs (tag in the trailing comment): a tag can
+# be moved to other code, a SHA cannot.
+
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install from the lockfile
+        run: uv sync --locked
+      - name: Run tests
+        # Integration tests skip themselves without a cluster.
+        run: uv run --locked pytest
+
+  build:
+    name: Build and check distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Tag matches the project version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv version --short)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
+            exit 1
+          fi
+      - name: Build
+        run: uv build
+      - name: Console scripts run from a clean install of the wheel
+        # Catches a runtime import declared only in the dev group, which the
+        # test suite can't see (rich in k8s-mcp-client, 1.x-2.0.0).
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/clean"
+          uv pip install --python "$RUNNER_TEMP/clean" dist/*.whl
+          for script in k8s-mcp-server k8s-mcp-client k8s-capture-state; do
+            "$RUNNER_TEMP/clean/bin/$script" --help > /dev/null
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/k8stools
+    permissions:
+      id-token: write # Trusted Publishing; this job's only permission
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

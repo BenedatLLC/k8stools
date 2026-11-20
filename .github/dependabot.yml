@@ -1,0 +1,19 @@
+# Keeps the GitHub Actions in .github/workflows/ current. Actions are pinned
+# to commit SHAs with the version in a trailing comment; Dependabot updates
+# both. One grouped PR a month, only for releases at least a week old (a
+# compromised release is usually pulled within days). Nothing merges itself.
+#
+# release.yml runs only on a tag, so its bumps are first exercised at the
+# next release, which waits for approval in the `pypi` environment.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
