@@ -11,6 +11,9 @@ dates are release-tag dates.
 - [#38](https://github.com/BenedatLLC/k8stools/issues/38): What changed recently:
   keep write times in captures, record ResourceQuotas, and a get_recent_changes
   tool.
+- [#43](https://github.com/BenedatLLC/k8stools/issues/43): get_recent_changes and
+  quotas (4.7.0, unreleased): a long not_readable list under a narrow role, and
+  four other problems.
 
 ### Added
 - **`get_recent_changes(namespace, within="30m")`**, in every toolset including
@@ -21,21 +24,26 @@ dates are release-tag dates.
   and for a workload the revision created right after. A new NetworkPolicy, a
   ResourceQuota, a ConfigMap edit now show as changes. It reads metadata only,
   through discovery, so it covers every type the role can list and names the
-  rest; Secrets' values never reach it. Only each client's latest write is kept,
+  rest, refused types on one line without the account. Annotations (a
+  Secret's last-applied-configuration holds its values) are dropped as each
+  item arrives. Only each client's latest write is kept,
   and deletions leave no trace; the result says so. A namespace that doesn't
   exist is an error naming the ones that do, not "no changes". On ITBench Scenario 31 it
   lists the harness's `agent-access` Role and RoleBinding and the
   `frontend-block-all-ports` NetworkPolicy 5m55s before the pull; on 102, the
   `otel-demo-memory` ResourceQuota.
 - **`get_quota_summaries`**: ResourceQuotas (each resource's hard, used and
-  percent, with a note at the limit) and LimitRanges.
+  percent, with a note at the limit) and LimitRanges. A role that may list only
+  one of them gets that half, with a note.
 - **Captures record write records** (`writes`: every object's managedFields
   entries, without their field lists), **ResourceQuotas and LimitRanges**, and
   ITBench imports carry all three from the snapshot. Replay of an older capture
   says what isn't recorded: `get_recent_changes` falls back to objects created
   within the window, from their ages, and says updates aren't recorded.
 - `get_namespace_health` has `resource_quotas`: one line per quota, every
-  resource's used/hard and percent.
+  resource's used/hard and percent; a hard limit in milli-units or plain bytes
+  is shown in used's unit too ("1901Mi/1433.6Mi (132%; hard written as
+  1503238553600m)").
 
 ### Changed
 - **The `triage` toolset has six tools**: `get_recent_changes` joins it, since a

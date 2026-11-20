@@ -15,10 +15,14 @@ Kubernetes keeps no history of an object, but each object's ``managedFields``
 holds one entry per client (manager), operation and subresource, with the time
 of that client's latest such write. :func:`object_writes` reads them for every
 object of every listable resource type, through discovery and metadata-only
-lists, so it never receives an object's contents: a Secret's values never reach
-this process, only its name and write times, and only if the role may list
-Secrets at all. The capture stores the result; :func:`recent_changes` turns it
-into the writes within a window, live and in replay alike.
+lists, so it never receives an object's spec or data. Metadata does include
+annotations, and a Secret made with client-side ``kubectl apply`` carries its
+whole manifest, values included, in ``kubectl.kubernetes.io/last-applied-
+configuration``; so each item is cut to the fields used as soon as it is read
+(:func:`_list`), and nothing else is kept, stored or returned. Secrets are
+read only if the role may list them at all. The capture stores the result;
+:func:`recent_changes` turns it into the writes within a window, live and in
+replay alike.
 
 What it can't show, and says: what a write changed, a client's earlier writes,
 and deletions.
@@ -99,6 +103,8 @@ CREATED_WITHIN = datetime.timedelta(seconds=1)
 REVISION_WITHIN = datetime.timedelta(seconds=5)
 #: How many namespaces a "not found" error lists.
 _NAMESPACES_SHOWN = 20
+#: How many types refused with a 403 are named; the count covers the rest.
+_REFUSED_SHOWN = 40
 
 _REVISION_ANNOTATION = "deployment.kubernetes.io/revision"
 _WORKLOADS = ("Deployment", "StatefulSet", "DaemonSet")
@@ -178,7 +184,7 @@ def _discover(not_readable: dict[str, str]) -> list[_Resource]:
             found += _resources(name, preferred["version"],
                                 _raw_get(f"/apis/{preferred['groupVersion']}"))
         except (ApiException, OSError) as e:
-            not_readable[f"*.{name}"] = k8s_tools._api_error_text(e)
+            not_readable[f"*.{name}"] = k8s_tools._without_user(k8s_tools._api_error_text(e))
     return found
 
 
@@ -188,11 +194,29 @@ def _list(resource: _Resource, namespace: Optional[str]) -> list[dict]:
     items, query = [], {"limit": "500"}
     while True:
         document = _raw_get(path, query, accept=METADATA_ONLY)
-        items += document.get("items") or []
+        items += [_kept(item) for item in document.get("items") or []]
         cont = (document.get("metadata") or {}).get("continue")
         if not cont:
             return items
         query = {"limit": "500", "continue": cont}
+
+
+#: The metadata fields read; everything else is dropped as each item arrives.
+_KEPT_METADATA = ("name", "namespace", "creationTimestamp", "ownerReferences", "managedFields")
+
+
+def _kept(item: dict) -> dict:
+    """An item cut to the fields used. Annotations go: a Secret's
+    last-applied-configuration holds its values. Only a ReplicaSet's revision
+    annotation stays, and managedFields lose their field lists."""
+    meta = item.get("metadata") or {}
+    kept = {k: meta[k] for k in _KEPT_METADATA if k in meta}
+    kept["managedFields"] = [{k: e.get(k) for k in ("manager", "operation", "subresource", "time")}
+                             for e in meta.get("managedFields") or []]
+    revision = (meta.get("annotations") or {}).get(_REVISION_ANNOTATION)
+    if revision is not None:
+        kept["annotations"] = {_REVISION_ANNOTATION: revision}
+    return {"metadata": kept}
 
 
 def _time(text: Optional[str]) -> Optional[datetime.datetime]:
@@ -231,7 +255,7 @@ def object_writes(namespaces: Optional[list[str]] = None) -> ObjectWrites:
         try:
             return job, [_record(resource, item) for item in _list(resource, ns)], None
         except (ApiException, OSError) as e:
-            return job, [], k8s_tools._api_error_text(e)
+            return job, [], k8s_tools._without_user(k8s_tools._api_error_text(e))
 
     objects: list[ObjectRecord] = []
     kinds: list[str] = []
@@ -295,6 +319,29 @@ def _revision(births: Births, o: ObjectRecord, w: WriteEntry) -> Optional[int]:
 
 # --- the result ----------------------------------------------------------------
 
+def _builtin(kind: str) -> bool:
+    """A Kubernetes type ("pods", "roles.rbac.authorization.k8s.io"), as
+    opposed to a custom resource type."""
+    group = kind.partition(".")[2]
+    return not group or "." not in group or group.endswith(".k8s.io")
+
+
+def _not_readable_lines(unreadable: list[UnreadableKind]) -> list[str]:
+    """The types refused with a 403 on one line, Kubernetes' own first: under a
+    narrow role they are dozens, every call. Other failures (an aggregated API's
+    503, a 406) one line each, with their reason. No account names."""
+    refused = sorted((u.kind for u in unreadable if u.reason.startswith("403")),
+                     key=lambda kind: (not _builtin(kind), kind))
+    lines = []
+    if refused:
+        shown = refused[:_REFUSED_SHOWN]
+        more = f", and {len(refused) - len(shown)} more" if len(refused) > len(shown) else ""
+        lines.append(f"403 Forbidden (list): {', '.join(shown)}{more} "
+                     f"({len(refused)} type{'s' if len(refused) != 1 else ''})")
+    return lines + [f"{u.kind}: {k8s_tools._without_user(u.reason)}"
+                    for u in unreadable if not u.reason.startswith("403")]
+
+
 def recent_changes(writes: ObjectWrites, namespace: str, window: datetime.timedelta,
                    now: datetime.datetime, births: Births,
                    source: str = "write records",
@@ -325,8 +372,9 @@ def recent_changes(writes: ObjectWrites, namespace: str, window: datetime.timede
             continue
         creation_entry = False
         for w in o.writes:
-            is_creation = (o.created is not None and w.time is not None
-                           and abs(w.time - o.created) <= CREATED_WITHIN)
+            # A status write by an operator half a second later isn't the creation.
+            is_creation = (w.subresource is None and o.created is not None
+                           and w.time is not None and abs(w.time - o.created) <= CREATED_WITHIN)
             creation_entry = creation_entry or is_creation
             if w.time is None or w.time < since:
                 continue
@@ -351,8 +399,10 @@ def recent_changes(writes: ObjectWrites, namespace: str, window: datetime.timede
         groups[(r.manager, r.kind, r.change, r.subresource)].append(r)
     bulk, collapsed = [], set()
     for (manager, kind, change, sub), members in groups.items():
-        if len(members) > BULK_OVER:
-            bulk.append(f"{manager or 'an unrecorded client'} {change} {len(members)} "
+        # Objects, not records: one client's Update and Apply on one object are two.
+        objects = len({(r.namespace, r.name) for r in members})
+        if objects > BULK_OVER:
+            bulk.append(f"{manager or 'an unrecorded client'} {change} {objects} "
                         f"{kind}{f' ({sub})' if sub else ''}, newest "
                         f"{k8s_tools._format_timedelta(members[0].age)} ago")
             collapsed.update(id(r) for r in members)
@@ -363,7 +413,7 @@ def recent_changes(writes: ObjectWrites, namespace: str, window: datetime.timede
         changes_more=len(records) - MAX_CHANGES if len(records) > MAX_CHANGES else None,
         bulk=bulk,
         left_out=[f"{m}: {n} write{'s' if n != 1 else ''}" for m, n in left_out.most_common()],
-        not_readable=[f"{u.kind}: {u.reason}" for u in writes.not_readable],
+        not_readable=_not_readable_lines(writes.not_readable),
         not_recorded=list(not_recorded or []))
 
 

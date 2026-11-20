@@ -216,11 +216,7 @@ def _status(e: Exception) -> Optional[int]:
     return getattr(e.__cause__, "status", None)
 
 
-def _without_user(reason: str) -> str:
-    """A 403's text without the account it names (``User "system:service
-    account:ns:name" cannot list ...``): captures get published, and what to
-    grant is the resource and group, which stay."""
-    return re.sub(r'User "[^"]*" ', "", reason)
+_without_user = k8s_tools._without_user
 
 
 class _Reader:

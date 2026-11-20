@@ -187,7 +187,7 @@ over the pod's age is not a rate, and pointing to metrics
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
 - **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
 - **`network_policies`** (`list[str]`): one line per NetworkPolicy in the namespace, at most 10, with when it was created (its age), the pods it selects and what it allows, e.g. "NetworkPolicy/frontend-block-all-ports (created 5m55s ago) selects 1 pod (frontend-675fd7b5c5-8qrfh): allows all ingress". The age is since the policy was created, so an edit since then doesn't show; on replay it advances like every other age. Listed whether or not the workloads they select are healthy: a policy can be what a healthy workload's callers fail against. `get_workload_report` combines them per workload. When the policies can't be read, a note says why; a capture that didn't record them names them in the not-recorded note.
-- **`resource_quotas`** (`list[str]`): one line per ResourceQuota in the namespace, at most 10, with when it was created and every resource it limits, used/hard and the percent, e.g. "ResourceQuota/otel-demo-memory (created 4m45s ago): memory 1901Mi/1503238553600m (132%)" (ITBench Scenario 102, whose quota is the fault: hard as the quota states it, in milli-units). Scopes follow the name when set. No threshold picks which resources to show; a namespace has few quotas. A quota at its limit adds its note to `notes`: the API then refuses new pods, so a workload can be short of pods with none failing. Unrecorded or unreadable quotas are named in a note, never read as none.
+- **`resource_quotas`** (`list[str]`): one line per ResourceQuota in the namespace, at most 10, with when it was created and every resource it limits, used/hard and the percent, e.g. "ResourceQuota/otel-demo-memory (created 4m45s ago): memory 1901Mi/1433.6Mi (132%; hard written as 1503238553600m)" (ITBench Scenario 102, whose quota is the fault). A hard limit not in a binary unit (milli-units, plain bytes) is shown in `used`'s binary unit, with the quota's own form after the percent; one already in a binary unit (2Gi against 1536Mi) is as written. Scopes follow the name when set. No threshold picks which resources to show; a namespace has few quotas. A quota at its limit adds its note to `notes`: the API then refuses new pods, so a workload can be short of pods with none failing. Unrecorded or unreadable quotas are named in a note, never read as none.
 - **`recovering`** (`list[WorkloadHealth]`): workloads that pass the healthy rule (all ready, nothing waiting) but have a container that restarted within the last 24 hours: its last termination finished then, and it is running again. Same fields as `workloads`, with `last_termination` the most recent restart. Most recent first, at most 10. A Job's finished container and a completed init container are not restarts. "Ready" is not "healthy": a workload that restarts and recovers would otherwise be listed as healthy, and answers quote that word.
 - **`recovering_more`** (`list[str]`): recovering workloads past the first 10, one line each, e.g. "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)".
 - **`healthy`** (`list[str]`): one line per healthy workload (as defined under `workloads`, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
@@ -796,14 +796,15 @@ limits for containers that set none, and refuses pods outside its bounds.
 
 QuotaSummaries, with:
 
-- **`resource_quotas`** (`Optional[list[ResourceQuotaSummary]]`): None only when a replayed capture doesn't record them (a capture before 4.7.0, or an ITBench pull with no quota batch). Each with:
+- **`resource_quotas`** (`Optional[list[ResourceQuotaSummary]]`): None when unknown: live, the role may not list them; in replay, the capture doesn't record them (a capture before 4.7.0, or an ITBench pull with no quotas). Each with:
   - **`name`**, **`namespace`**, **`age`**
   - **`scopes`** (`list[str]`): which objects it counts ("BestEffort", "NotTerminating", ...); `[]` for all.
   - **`scope_selector`** (`Optional[str]`): e.g. "PriorityClass In (high)".
   - **`resources`** (`list[QuotaResource]`): per limited resource, `resource` (e.g. "limits.memory", "pods"), `hard` and `used` as the API states them, and `percent` (used / hard, rounded down; None when either is unknown, or hard is 0). `used` is None until the quota controller has counted.
   - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 - **`limit_ranges`** (`Optional[list[LimitRangeSummary]]`): None as above. Each with `name`, `namespace`, `age`, and `limits`: per entry, `type` ("Container", "Pod", "PersistentVolumeClaim"), `default` (limits given to a container that sets none), `default_request`, `min`, `max` and `max_limit_request_ratio`.
-- **`notes`** (`list[str]`): says which half a capture doesn't record.
+- **`forbidden`** (`list[str]`): live, the half the role may not list ("ResourceQuotas" or "LimitRanges"). A role that may list only one gets that half; neither raises `K8sForbidden`.
+- **`notes`** (`list[str]`): says which half is unknown, and why: not readable with these credentials, or not recorded by the capture.
 
 ### `get_configmap_summaries`
 
@@ -1286,13 +1287,18 @@ with the time of that client's latest such write. So:
 
 - **Only the latest write** of each client is there, not what it changed, and not its earlier writes. A ConfigMap edited three times by `kubectl-edit` shows once, at the last edit.
 - **A deletion leaves no trace.**
-- **Created or updated.** A write within 1s of the object's creation is its creation. An object created in the window whose creating client has written it again since gets a "created" record without a client, beside that client's "updated" one. An owned object (a pod, a ReplicaSet) was created by its owner's controller, and so was one whose recorded writes are all controllers' (Endpoints the endpoints controller has rewritten since): neither gets one.
+- **Created or updated.** A write to the object itself (no subresource) within 1s of its creation is its creation; an operator's status write half a second later is an update. An object created in the window whose creating client has written it again since gets a "created" record without a client, beside that client's "updated" one. An owned object (a pod, a ReplicaSet) was created by its owner's controller, and so was one whose recorded writes are all controllers' (Endpoints the endpoints controller has rewritten since): neither gets one.
 - **Revision.** For a Deployment, StatefulSet or DaemonSet, a write to the object itself (no subresource) followed within 5s by a new revision gives that revision. That is the timing, not a recorded cause; a write to `scale` makes no revision.
 
 How it reads them: API discovery, then a metadata-only list
 (`PartialObjectMetadataList`) of every resource type that can be listed, in the
-namespace and cluster-wide, so no object's spec or data reaches k8stools. A
-Secret's values are never read: Secrets are listed by name, and only if the
+namespace and cluster-wide, so no object's spec or data reaches k8stools.
+Metadata does include annotations, and a Secret made with client-side `kubectl
+apply` carries its whole manifest, values included, in
+`kubectl.kubernetes.io/last-applied-configuration`: so each item is cut to the
+fields used (name, namespace, creation, owners, the managedFields entries
+without their field lists, and a ReplicaSet's revision) as soon as it is read,
+and nothing else is kept, stored or returned. Secrets are listed only if the
 role may list them, which the README's read-only role doesn't grant (see its
 Permissions section; the result then names Secrets as not readable). Events
 and Leases are skipped: they are written continually. A type that can't be
@@ -1335,9 +1341,9 @@ RecentChanges, with:
   - **`subresource`** (`Optional[str]`): "status", "scale", ...; left out for a write to the object itself.
   - **`revision`** (`Optional[int]`): see above.
 - **`changes_more`** (`Optional[int]`): writes past the first 50.
-- **`bulk`** (`list[str]`): a client writing more than 10 objects of one kind (and subresource) in the window gets one line instead of a record each, e.g. "helm created 21 Deployment, newest 40m0s ago" for an install.
+- **`bulk`** (`list[str]`): a client writing more than 10 objects of one kind (and subresource) in the window gets one line instead of a record each (objects, not records: one client's Update and Apply on one object count once; the line gives the object count), e.g. "helm created 21 Deployment, newest 40m0s ago" for an install.
 - **`left_out`** (`list[str]`): Kubernetes' own controllers' writes in the window, counted per client, e.g. "kube-controller-manager: 121 writes".
-- **`not_readable`** (`list[str]`): resource types that couldn't be listed, with why, e.g. "secrets: 403 Forbidden: ...".
+- **`not_readable`** (`list[str]`): resource types that couldn't be listed. Those refused with a 403 are one line, Kubernetes' own types first, then custom resource types, at most 40 named, with the count: "403 Forbidden (list): secrets, serviceaccounts, roles.rbac.authorization.k8s.io, ... (31 types)". A narrow role refuses dozens, on every call. Any other failure is a line of its own with its reason, e.g. "*.metrics.example.com: 503 Service Unavailable: ...". No line names the account.
 - **`not_recorded`** (`list[str]`): replay only: common kinds the capture's write records don't cover, so writes to them are unknown.
 - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 

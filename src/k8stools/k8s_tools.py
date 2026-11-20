@@ -122,6 +122,14 @@ def _api_error(prefix: str, e: BaseException) -> K8sApiError:
     return cls(f"{prefix}: {_api_error_text(e)}")
 
 
+def _without_user(reason: str) -> str:
+    """A 403's text without the account it names (``User "system:service
+    account:ns:name" cannot list ...``): captures get published, results reach
+    a model's context on every call, and what to grant is the resource and
+    group, which stay."""
+    return re.sub(r'User "[^"]*" ', "", reason)
+
+
 def _api_error_text(e: BaseException) -> str:
     """A Kubernetes client failure as one readable line (#25).
 
@@ -2894,6 +2902,12 @@ NOTE_QUOTAS_NOT_RECORDED = (
     "This capture doesn't record ResourceQuotas, so they are unknown, not absent.")
 NOTE_LIMIT_RANGES_NOT_RECORDED = (
     "This capture doesn't record LimitRanges, so they are unknown, not absent.")
+NOTE_QUOTAS_FORBIDDEN = (
+    "Not readable with these credentials (403 Forbidden), so unknown rather than "
+    "absent: ResourceQuotas.")
+NOTE_LIMIT_RANGES_FORBIDDEN = (
+    "Not readable with these credentials (403 Forbidden), so unknown rather than "
+    "absent: LimitRanges.")
 
 
 def _quantity(text: Optional[str]):
@@ -2969,15 +2983,24 @@ class LimitRangeSummary(BaseModel):
 
 class QuotaSummaries(BaseModel):
     """The ResourceQuotas and LimitRanges of a namespace, or of all of them."""
-    #: None when a replayed capture doesn't record them (never live).
+    #: None when unknown: the role may not list them (live), or a replayed
+    #: capture doesn't record them.
     resource_quotas: Optional[list[ResourceQuotaSummary]] = None
     limit_ranges: Optional[list[LimitRangeSummary]] = None
+    #: Live: which half the role may not list ("ResourceQuotas", "LimitRanges").
+    forbidden: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _derive_notes(self) -> "QuotaSummaries":
-        self.notes = ([NOTE_QUOTAS_NOT_RECORDED] if self.resource_quotas is None else []) + \
-                     ([NOTE_LIMIT_RANGES_NOT_RECORDED] if self.limit_ranges is None else [])
+        def note(value, name, forbidden, not_recorded):
+            if value is not None:
+                return []
+            return [forbidden if name in self.forbidden else not_recorded]
+        self.notes = note(self.resource_quotas, "ResourceQuotas", NOTE_QUOTAS_FORBIDDEN,
+                          NOTE_QUOTAS_NOT_RECORDED) + \
+            note(self.limit_ranges, "LimitRanges", NOTE_LIMIT_RANGES_FORBIDDEN,
+                 NOTE_LIMIT_RANGES_NOT_RECORDED)
         return self
 
 
@@ -3052,8 +3075,20 @@ def get_quota_summaries(namespace: Optional[str] = None) -> QuotaSummaries:
     workload can be short of pods with none failing. namespace: one, or all if
     omitted."""
     logging.info(f"get_quota_summaries(namespace={namespace})")
-    return QuotaSummaries(resource_quotas=get_resourcequota_summaries(namespace),
-                          limit_ranges=get_limitrange_summaries(namespace))
+    # A role may grant one and not the other: the half it can read is still
+    # an answer (as the composites treat a forbidden kind). Both refused raises.
+    halves, refused = {}, []
+    for name, read in (("ResourceQuotas", get_resourcequota_summaries),
+                       ("LimitRanges", get_limitrange_summaries)):
+        try:
+            halves[name] = read(namespace)
+        except K8sForbidden as e:
+            refused.append((name, e))
+    if len(refused) == 2:
+        raise refused[0][1]
+    return QuotaSummaries(resource_quotas=halves.get("ResourceQuotas"),
+                          limit_ranges=halves.get("LimitRanges"),
+                          forbidden=[name for name, _ in refused])
 
 
 class _Compact(BaseModel):
@@ -3182,7 +3217,7 @@ class RecentChanges(_Compact):
     bulk: list[str] = Field(default_factory=list)
     #: Kubernetes' own controllers' writes in the window, counted per client.
     left_out: list[str] = Field(default_factory=list)
-    #: Resource types that couldn't be read, with why.
+    #: Resource types that couldn't be read: the 403s on one line, others each with why.
     not_readable: list[str] = Field(default_factory=list)
     #: Replay: common kinds the capture has no write records of (unknown).
     not_recorded: list[str] = Field(default_factory=list)

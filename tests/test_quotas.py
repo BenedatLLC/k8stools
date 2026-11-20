@@ -83,12 +83,33 @@ def test_a_hard_limit_of_zero_has_no_percent_but_is_at_its_limit(serve):
     assert q.resources[0].percent is None and q.notes == [NOTE_QUOTA_AT_LIMIT]
 
 
-def test_a_403_is_forbidden(monkeypatch):
-    def refuse(**kwargs):
-        raise c.ApiException(status=403, reason="Forbidden")
-    monkeypatch.setattr(k8s_tools, "K8S", NS(list_namespaced_resource_quota=refuse))
+def _refuse(**kwargs):
+    raise c.ApiException(status=403, reason="Forbidden")
+
+
+def test_both_halves_refused_is_forbidden(monkeypatch):
+    monkeypatch.setattr(k8s_tools, "K8S", NS(list_namespaced_resource_quota=_refuse,
+                                             list_namespaced_limit_range=_refuse))
     with pytest.raises(K8sForbidden, match="Error fetching resource quotas"):
         k8s_tools.get_quota_summaries("default")
+
+
+def test_one_half_refused_gives_the_other_and_says_so(monkeypatch):
+    """#43: a role with ResourceQuotas and not LimitRanges, or the reverse,
+    gets the half it can read, as replay already gave."""
+    monkeypatch.setattr(k8s_tools, "_CLOCK", lambda: NOW)
+    monkeypatch.setattr(k8s_tools, "K8S", NS(
+        list_namespaced_resource_quota=lambda namespace: NS(items=[_quota()]),
+        list_namespaced_limit_range=_refuse))
+    result = k8s_tools.get_quota_summaries("default")
+    assert [q.name for q in result.resource_quotas] == ["otel-demo-memory"]
+    assert result.limit_ranges is None and result.notes == [k8s_tools.NOTE_LIMIT_RANGES_FORBIDDEN]
+    monkeypatch.setattr(k8s_tools, "K8S", NS(
+        list_namespaced_resource_quota=_refuse,
+        list_namespaced_limit_range=lambda namespace: NS(items=[_limit_range()])))
+    result = k8s_tools.get_quota_summaries("default")
+    assert result.resource_quotas is None and [lr.name for lr in result.limit_ranges] == ["limits"]
+    assert result.notes == [k8s_tools.NOTE_QUOTAS_FORBIDDEN]
 
 
 # --- capture and replay -------------------------------------------------------------
@@ -133,6 +154,17 @@ def test_the_namespace_view_has_a_line_per_quota(serve):
         "ResourceQuota/otel-demo-memory (created 4m45s ago): limits.memory 2Gi/2Gi (100%), "
         "pods 4/10 (40%)"]
     assert NOTE_QUOTA_AT_LIMIT in health.notes
+
+
+def test_a_hard_limit_not_in_a_binary_unit_is_shown_in_useds(serve):
+    """#43, Scenario 102: 1503238553600m against 1901Mi."""
+    quotas = [encode_model(q, NOW) for q in serve([
+        _quota(hard={"memory": "1503238553600m", "pods": "10", "limits.memory": "2Gi"},
+               used={"memory": "1901Mi", "pods": "3", "limits.memory": "1536Mi"})]).resource_quotas]
+    [line] = namespace_health(_state(resourcequotas=quotas), "default").resource_quotas
+    assert line == ("ResourceQuota/otel-demo-memory (created 4m45s ago): "
+                    "limits.memory 1536Mi/2Gi (75%), "
+                    "memory 1901Mi/1433.6Mi (132%; hard written as 1503238553600m), pods 3/10 (30%)")
 
 
 def test_no_quota_no_line_and_unrecorded_quotas_are_named():

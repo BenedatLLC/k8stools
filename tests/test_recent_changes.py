@@ -17,7 +17,7 @@ from kubernetes import client
 from k8stools import changes, itbench, k8s_tools
 from k8stools.capture import capture_state
 from k8stools.changes import METADATA_ONLY, is_controller, parse_window, recent_changes
-from k8stools.k8s_tools import (K8sApiError, ObjectRecord, ObjectWrites, WriteEntry,
+from k8stools.k8s_tools import (K8sApiError, ObjectRecord, ObjectWrites, UnreadableKind, WriteEntry,
                                 pinned_clock, use_api_client)
 from k8stools.mock_state import BUILTIN_STATE_FILE, CAPTURE_VERSION, MockState, encode_model
 
@@ -198,10 +198,56 @@ def test_lists_ask_for_metadata_only_and_skip_what_is_written_continually(fake):
 def test_what_cant_be_read_is_named_and_the_rest_carry_on(fake):
     result = k8s_tools.get_recent_changes("shop")
     assert result.not_readable == [
+        "403 Forbidden (list): secrets (1 type)",
         "*.broken.example.com: 503 Service Unavailable: the server is currently unable to "
-        "handle the request",
-        'secrets: 403 Forbidden: secrets is forbidden: User "system:serviceaccount:k8s:reader" '
-        'cannot list resource "secrets" in API group "" in the namespace "shop" (namespace shop)']
+        "handle the request"]
+
+
+def test_types_a_narrow_role_refuses_are_one_line_without_the_account():
+    """#43: k8srca's role refuses ~25 built-in types and every custom resource
+    type, each a 160-character line naming the account, on every call."""
+    def refused(kind):
+        return UnreadableKind(kind=kind, reason=f'403 Forbidden: {kind} is forbidden: User '
+                              f'"system:serviceaccount:kube-system:reader" cannot list resource')
+    unreadable = [refused(k) for k in ("widgets.example.com", "secrets",
+                                       "roles.rbac.authorization.k8s.io", "apiservices.apiregistration.k8s.io",
+                                       "certificates.cert-manager.io")]
+    unreadable.append(UnreadableKind(kind="*.metrics.example.com", reason=(
+        '503 Service Unavailable: User "system:serviceaccount:kube-system:reader" can\'t reach it')))
+    r = recent_changes(ObjectWrites(not_readable=unreadable), "shop", 30 * M, AT, lambda *a: [])
+    assert r.not_readable == [
+        "403 Forbidden (list): apiservices.apiregistration.k8s.io, roles.rbac.authorization.k8s.io, "
+        "secrets, certificates.cert-manager.io, widgets.example.com (5 types)",
+        "*.metrics.example.com: 503 Service Unavailable: can't reach it"]
+    many = [refused(f"kind{i:02}.example.com") for i in range(45)]
+    [line] = recent_changes(ObjectWrites(not_readable=many), "shop", 30 * M, AT,
+                            lambda *a: []).not_readable
+    assert line.endswith("kind39.example.com, and 5 more (45 types)")
+
+
+def test_a_live_403_names_no_account(fake):
+    writes = changes.object_writes(["shop"])
+    assert [(u.kind, u.reason) for u in writes.not_readable if u.kind == "secrets"] == [
+        ("secrets", '403 Forbidden: secrets is forbidden: cannot list resource "secrets" in API '
+                    'group "" in the namespace "shop" (namespace shop)')]
+
+
+def test_each_item_is_cut_to_the_fields_used_as_it_is_read():
+    """#43: metadata includes annotations, and a Secret made with client-side
+    kubectl apply carries its values in last-applied-configuration."""
+    secret = _meta("db", AT - M, [_entry("kubectl-client-side-apply", AT - M)], annotations={
+        "kubectl.kubernetes.io/last-applied-configuration": '{"data":{"password":"aHVudGVyMg=="}}'})
+    secret["metadata"]["labels"] = {"app": "db"}
+    kept = changes._kept(secret)
+    assert "aHVudGVyMg" not in json.dumps(kept)
+    assert set(kept["metadata"]) == {"name", "namespace", "creationTimestamp", "managedFields"}
+    assert kept["metadata"]["managedFields"] == [
+        {"manager": "kubectl-client-side-apply", "operation": "Update", "subresource": None,
+         "time": _ts(AT - M)}]
+    rs = changes._kept(_meta("web-2", AT, owner="Deployment/web", annotations={
+        "deployment.kubernetes.io/revision": "2", "other": "x"}))
+    assert rs["metadata"]["annotations"] == {"deployment.kubernetes.io/revision": "2"}
+    assert rs["metadata"]["ownerReferences"][0]["name"] == "web"
 
 
 def test_the_window_is_a_parameter(fake):
@@ -285,6 +331,29 @@ def test_a_revision_is_reported_only_when_it_followed_a_spec_write_within_5s():
                  _obj("c", old, ("kubectl", AT - 10 * M, "scale"), kind="Deployment"),
                  births=births)
     assert {c.name: c.revision for c in r.changes} == {"a": 4, "b": None, "c": None}
+
+
+def test_a_status_write_just_after_creation_is_not_the_creation():
+    """#43: an operator writing status half a second after a client creates
+    the object made two "created" records."""
+    w = ObjectRecord(kind="Widget", namespace="shop", name="w", created=AT - 5 * M, writes=[
+        WriteEntry(manager="kubectl-create", operation="Update", time=AT - 5 * M),
+        WriteEntry(manager="my-operator", operation="Update", subresource="status",
+                   time=AT - 5 * M + datetime.timedelta(milliseconds=500))])
+    assert [(c.change, c.manager, c.subresource) for c in _changes(w).changes] == [
+        ("created", "kubectl-create", None), ("updated", "my-operator", "status")]
+
+
+def test_bulk_counts_objects_not_records():
+    """#43: one client's Update and Apply entries on one object are one object."""
+    def twice(name):
+        return ObjectRecord(kind="ConfigMap", namespace="shop", name=name, created=AT - 60 * M,
+                            writes=[WriteEntry(manager="helm", operation=op, time=AT - 3 * M)
+                                    for op in ("Update", "Apply")])
+    r = _changes(*[twice(f"c{i}") for i in range(6)])
+    assert r.bulk == [] and len(r.changes) == 12
+    assert _changes(*[twice(f"c{i}") for i in range(11)]).bulk == [
+        "helm updated 11 ConfigMap, newest 3m0s ago"]
 
 
 def test_one_client_writing_many_objects_of_a_kind_is_one_line():

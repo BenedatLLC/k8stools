@@ -450,10 +450,13 @@ volumes and the like as well, add:
   verbs: [list]
 ```
 
-**Secrets are opt-in.** `get_recent_changes` asks for Secrets' metadata only, so
-their values never reach k8stools, but Kubernetes has no metadata-only
-permission: `list` on `secrets` would let the same account read every value with
-any other client. The role above leaves it out, and the result then names
+**Secrets are opt-in.** `get_recent_changes` asks for Secrets' metadata only,
+and keeps only their names and write times. Metadata still includes
+annotations, and a Secret made with client-side `kubectl apply` carries its
+values in `kubectl.kubernetes.io/last-applied-configuration`: those arrive, and
+are discarded as each item is read, never stored or returned. And Kubernetes has
+no metadata-only permission: `list` on `secrets` would let the same account read
+every value with any other client. The role above leaves it out, and the result then names
 Secrets as not readable. Add it only for an account you would trust with every
 Secret's value:
 

@@ -26,12 +26,13 @@ over the record, not the current rhythm.
 """
 
 import datetime
+from decimal import Decimal
 import functools
 import re
 import signal
 from typing import Any, Optional
 
-from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
+from .k8s_tools import (_quantity, ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
                         IngressSummary, NetworkPolicySummary, NOTE_NETWORK_POLICIES,
                         NOTE_QUOTA_AT_LIMIT, ResourceQuotaSummary,
                         allows_port, network_policy_effect,
@@ -576,13 +577,32 @@ def _workload_policy_lines(policies: list[NetworkPolicySummary], pod_names: set[
 _MAX_QUOTA_LINES = 10
 
 
+_BINARY_UNITS = {"Ki": 1, "Mi": 2, "Gi": 3, "Ti": 4, "Pi": 5, "Ei": 6}
+
+
+def _in_unit_of(hard: str, used: Optional[str]) -> str:
+    """``hard`` in ``used``'s binary unit, when they differ: Scenario 102's
+    quota is written 1503238553600m against a used 1901Mi, which neither a
+    model nor a person compares at a glance. A hard limit already in a binary
+    unit (2Gi against 1536Mi) stays as written."""
+    unit = next((u for u in _BINARY_UNITS if used and used.endswith(u)), None)
+    value = _quantity(hard)
+    if unit is None or value is None or any(hard.endswith(u) for u in _BINARY_UNITS):
+        return hard
+    scaled = (value / (1024 ** _BINARY_UNITS[unit])).quantize(Decimal("0.1"))
+    return f"{scaled.normalize():f}{unit}"
+
+
 def _quota_lines(quotas: list[ResourceQuotaSummary]) -> list[str]:
     """One line per quota: when it was created, then every resource it limits,
     used/hard and percent. No threshold picks which: a namespace has few, and
     the reader sees how close each is (#38)."""
     def resource(r) -> str:
-        percent = f" ({r.percent}%)" if r.percent is not None else ""
-        return f"{r.resource} {r.used or '?'}/{r.hard}{percent}"
+        hard = _in_unit_of(r.hard, r.used)
+        detail = [f"{r.percent}%"] if r.percent is not None else []
+        if hard != r.hard:
+            detail.append(f"hard written as {r.hard}")
+        return f"{r.resource} {r.used or '?'}/{hard}" + (f" ({'; '.join(detail)})" if detail else "")
 
     lines = []
     for q in sorted(quotas, key=lambda q: q.name):

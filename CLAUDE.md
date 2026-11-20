@@ -503,7 +503,10 @@ Invariants worth preserving when touching this code:
   `writes` holds each object's `managedFields` entries (manager, operation,
   subresource, time; never `fieldsV1`) for every listable type, read by
   discovery and `PartialObjectMetadataList` (`changes.METADATA_ONLY`, no
-  fallback to a full list, which for Secrets would carry their values). All
+  fallback to a full list, which for Secrets would carry their values).
+  Metadata includes annotations, and a Secret's
+  `last-applied-configuration` holds its values (#43): `changes._kept` cuts
+  each item to the fields used as it arrives; keep it first in `_list`. All
   objects, not a window: replay applies any. Unlisted types are named
   (`not_readable`, a list of `{kind, reason}`: a map keyed "secrets" got its
   reason redacted), never fatal; reasons drop `User "..."`. Kubernetes' own
@@ -610,7 +613,8 @@ you would guess (toleration keys, `ca.crt`, and `secretKeyRef.key`, which is a
 pointer to a secret, not a secret). Direct Python callers of the tool functions get raw values (no redaction) and
 can call `redaction.redact_object` themselves. We never read a Secret's values:
 no reader returns Secret objects, and `get_recent_changes` lists Secrets
-metadata-only, only when the role grants `list secrets`, which the README's role
+metadata-only (dropping annotations, which can hold values, as each arrives),
+only when the role grants `list secrets`, which the README's role
 leaves out on purpose (that permission reads values through any other client).
 
 Example `mcp.json`:
