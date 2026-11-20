@@ -3,7 +3,7 @@
 All notable changes to k8stools. Versions follow [semantic versioning](https://semver.org/);
 dates are release-tag dates.
 
-## 4.6.2 — unreleased
+## 4.6.2 — 2026-11-19
 
 ### Changed
 - **Releases are published from GitHub Actions with Trusted Publishing and
