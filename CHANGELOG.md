@@ -8,8 +8,40 @@ dates are release-tag dates.
 ### Issues fixed
 - [#37](https://github.com/BenedatLLC/k8stools/issues/37): Workload report: give
   each NetworkPolicy's age on its policy lines.
+- [#38](https://github.com/BenedatLLC/k8stools/issues/38): What changed recently:
+  keep write times in captures, record ResourceQuotas, and a get_recent_changes
+  tool.
+
+### Added
+- **`get_recent_changes(namespace, within="30m")`**, in every toolset including
+  `triage`: the writes within the window to every object in the namespace and
+  every cluster-scoped object, by clients other than Kubernetes' own controllers
+  (whose writes are counted in `left_out`), from each object's `managedFields`.
+  One record per write: kind, name, created or updated, time and age, the client,
+  and for a workload the revision created right after. A new NetworkPolicy, a
+  ResourceQuota, a ConfigMap edit now show as changes. It reads metadata only,
+  through discovery, so it covers every type the role can list and names the
+  rest; Secrets' values never reach it. Only each client's latest write is kept,
+  and deletions leave no trace; the result says so. On ITBench Scenario 31 it
+  lists the harness's `agent-access` Role and RoleBinding and the
+  `frontend-block-all-ports` NetworkPolicy 5m55s before the pull; on 102, the
+  `otel-demo-memory` ResourceQuota.
+- **`get_quota_summaries`**: ResourceQuotas (each resource's hard, used and
+  percent, with a note at the limit) and LimitRanges.
+- **Captures record write records** (`writes`: every object's managedFields
+  entries, without their field lists), **ResourceQuotas and LimitRanges**, and
+  ITBench imports carry all three from the snapshot. Replay of an older capture
+  says what isn't recorded: `get_recent_changes` falls back to objects created
+  within the window, from their ages, and says updates aren't recorded.
+- `get_namespace_health` has `resource_quotas`: one line per quota, every
+  resource's used/hard and percent.
 
 ### Changed
+- **The `triage` toolset has six tools**: `get_recent_changes` joins it, since a
+  tool only the investigator holds goes uncalled (k8srca design 012).
+- **The README's read-only ClusterRole adds `resourcequotas` and `limitranges`**,
+  and shows optional rules for what `get_recent_changes` can also cover (RBAC
+  objects, service accounts, volumes) and, opt-in with its risk, Secrets.
 - **The composites' NetworkPolicy lines say when each policy was created.** A
   policy created just before an alert is a recent change, and agents rarely call
   `get_networkpolicy_summaries`, the only place its age was. In ITBench

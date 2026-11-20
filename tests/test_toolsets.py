@@ -21,11 +21,13 @@ def test_every_tool_is_in_all_and_toolsets_only_name_real_tools():
         assert set(members) <= every, name
 
 
-def test_triage_is_the_composites_plus_events_nodes_and_cluster_info():
-    """#13's composites answer "what is wrong, and where" in one or two calls."""
+def test_triage_is_the_composites_plus_events_nodes_changes_and_cluster_info():
+    """#13's composites answer "what is wrong, and where" in one or two calls;
+    get_recent_changes "what changed" (#38: a tool only the investigator holds
+    goes uncalled)."""
     assert set(TOOLSET_NAMES["triage"]) == {"get_cluster_info", "get_namespace_health",
                                             "get_workload_report", "get_events",
-                                            "get_node_summaries"}
+                                            "get_node_summaries", "get_recent_changes"}
 
 
 def test_toolsets_nest_and_investigate_drops_only_the_overlapping_tools():
@@ -49,7 +51,7 @@ def test_include_and_exclude_adjust_a_toolset_in_tool_order():
     tools = select_tools(k8s_tools.TOOLS, "triage", include=("get_pod_spec",),
                          exclude=("get_events",))
     assert _names(tools) == ["get_cluster_info", "get_namespace_health", "get_workload_report",
-                             "get_node_summaries", "get_pod_spec"]
+                             "get_node_summaries", "get_pod_spec", "get_recent_changes"]
 
 
 @pytest.mark.parametrize("kwargs,match", [
@@ -94,7 +96,8 @@ def test_server_serves_the_chosen_toolset(monkeypatch):
         n for n in _names(k8s_tools.TOOLS) if n in TOOLSET_NAMES["triage"])
     assert _serve(monkeypatch, "--toolset", "triage", "--include", "get_pod_spec",
                   "--exclude", "get_events", "--exclude", "get_cluster_info") == [
-        "get_namespace_health", "get_workload_report", "get_node_summaries", "get_pod_spec"]
+        "get_namespace_health", "get_workload_report", "get_node_summaries", "get_pod_spec",
+        "get_recent_changes"]
 
 
 @pytest.mark.parametrize("argv", [["--toolset", "nope"], ["--include", "get_pods"]])

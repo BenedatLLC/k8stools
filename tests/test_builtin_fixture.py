@@ -325,3 +325,35 @@ def test_custom_resources_agree_with_their_definitions(state):
             assert (r.namespace is not None) == (crd.scope == "Namespaced")
             assert r.age <= crd.age
             assert all(c.since <= r.age for c in r.conditions if c.since is not None)
+
+
+def test_write_records_agree_with_the_objects(state):
+    """#38: every recorded object exists with that creation time, no write
+    predates its object, every Deployment's ReplicaSets carry its revisions, and
+    each listed kind's objects are all there."""
+    data = json.loads(BUILTIN_STATE_FILE.read_text())
+    writes = data["writes"]
+    ages = {("Namespace", None, n["name"]): n["age_seconds"] for n in data["namespaces"]}
+    ages |= {("Node", None, n["name"]): n["age_seconds"] for n in data["nodes"]}
+    for kind, key in (("Deployment", "deployments"), ("ReplicaSet", "replicasets"),
+                      ("StatefulSet", "statefulsets"), ("DaemonSet", "daemonsets"),
+                      ("Service", "services"), ("ConfigMap", "configmaps"),
+                      ("CronJob", "cronjobs"), ("Job", "jobs"),
+                      ("PersistentVolumeClaim", "pvcs"), ("Ingress", "ingresses"),
+                      ("HorizontalPodAutoscaler", "hpas")):
+        ages |= {(kind, r["namespace"], r["name"]): r["age_seconds"] for r in data[key]}
+    ages |= {("Pod", p["summary"]["namespace"], p["summary"]["name"]): p["summary"]["age_seconds"]
+             for p in data["pods"]}
+    recorded = {(o["kind"], o["namespace"], o["name"]): o for o in writes["objects"]}
+    assert set(recorded) == set(ages)
+    for key, o in recorded.items():
+        assert o["created_offset_seconds"] == ages[key], key
+        assert all(w["time_offset_seconds"] <= o["created_offset_seconds"] for w in o["writes"]), key
+    revisions = {(r["namespace"], r["name"]): r["revision"] for r in data["replicasets"]}
+    for (kind, ns, name), o in recorded.items():
+        if kind == "ReplicaSet":
+            assert o["revision"] == revisions[(ns, name)]
+    pods = {(p.namespace, p.name): p.owner for p in state.get_pod_summaries()}
+    for (kind, ns, name), o in recorded.items():
+        if kind == "Pod":
+            assert o["owner"] == pods[(ns, name)]

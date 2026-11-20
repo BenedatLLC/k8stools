@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Eleven models have a
+them when they matter instead of carrying them on every turn. Fifteen models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -35,6 +35,11 @@ notes existed) give the same notes; captures don't store them.
 | `CustomResourceStatus` | no conditions | No status.conditions: this resource reports its state some other way, which this tool doesn't read. |
 | `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
 | `ContainerUsage` | the last instance was OOM-killed, or ended abnormally and the current one started within 10 minutes | "The last instance ended OOMKilled 6m ago; this sample is from the current one, started 58s ago." followed by: A sample averages a short window: a spike that ends in an OOM kill usually never appears in one. |
+| `ResourceQuotaSummary` | a resource's `used` >= `hard` | A resource here is at its hard limit (used >= hard): the API refuses any new object that would add to it, so a controller creating pods reports FailedCreate and the pods never exist. |
+| `QuotaSummaries` | replay only: the capture doesn't record ResourceQuotas, or LimitRanges | This capture doesn't record ResourceQuotas (LimitRanges), so they are unknown, not absent. |
+| `RecentChanges` | from write records (always, live) | Each object keeps only the time of each client's latest write (per operation and subresource), not what it changed or earlier writes; a deletion leaves no trace. An object whose recorded writes are all controllers' counts as theirs. Secrets are listed by name only, and only if the role may list them. Events and Leases are left out: they are written continually. |
+| `RecentChanges` | a change has a `revision` | revision: the workload revision created within 5s after that write. That is when the two happened, not a recorded cause. |
+| `RecentChanges` | replay of a capture without write records | This capture has no write records (made before 4.7.0): only objects created within the window are listed, from their ages, without who created them, and only of the kinds it records. Updates aren't recorded. Objects a controller owns (pods, ReplicaSets) are left out. |
 | `ContainerUsage` | memory at 90% or more of its limit | Memory is the working set: memory in use plus recently used file cache, which the kernel reclaims before an OOM kill. Near the limit is common; it isn't proof a kill is coming. |
 
 `get_workload_history` returns its caveats in the result's `limits` list.
@@ -182,6 +187,7 @@ over the pod's age is not a rate, and pointing to metrics
 - **`services_without_ready_endpoints`** (`list[str]`): Services with nowhere to send traffic, e.g. "Service/ad: 0 ready, 1 not ready".
 - **`ingress_problems`** (`list[str]`): Ingress rules that can't reach a pod: a backend that doesn't resolve, or one with no ready endpoints, e.g. "Ingress/shop: shop.example.com/old -> legacy:80: Service 'legacy' not found".
 - **`network_policies`** (`list[str]`): one line per NetworkPolicy in the namespace, at most 10, with when it was created (its age), the pods it selects and what it allows, e.g. "NetworkPolicy/frontend-block-all-ports (created 5m55s ago) selects 1 pod (frontend-675fd7b5c5-8qrfh): allows all ingress". The age is since the policy was created, so an edit since then doesn't show; on replay it advances like every other age. Listed whether or not the workloads they select are healthy: a policy can be what a healthy workload's callers fail against. `get_workload_report` combines them per workload. When the policies can't be read, a note says why; a capture that didn't record them names them in the not-recorded note.
+- **`resource_quotas`** (`list[str]`): one line per ResourceQuota in the namespace, at most 10, with when it was created and every resource it limits, used/hard and the percent, e.g. "ResourceQuota/otel-demo-memory (created 4m45s ago): memory 1901Mi/1503238553600m (132%)" (ITBench Scenario 102, whose quota is the fault: hard as the quota states it, in milli-units). Scopes follow the name when set. No threshold picks which resources to show; a namespace has few quotas. A quota at its limit adds its note to `notes`: the API then refuses new pods, so a workload can be short of pods with none failing. Unrecorded or unreadable quotas are named in a note, never read as none.
 - **`recovering`** (`list[WorkloadHealth]`): workloads that pass the healthy rule (all ready, nothing waiting) but have a container that restarted within the last 24 hours: its last termination finished then, and it is running again. Same fields as `workloads`, with `last_termination` the most recent restart. Most recent first, at most 10. A Job's finished container and a completed init container are not restarts. "Ready" is not "healthy": a workload that restarts and recovers would otherwise be listed as healthy, and answers quote that word.
 - **`recovering_more`** (`list[str]`): recovering workloads past the first 10, one line each, e.g. "Deployment/w10 1/1, 5 restarts, last terminated 11h0m ago: exit 137 (OOMKilled)".
 - **`healthy`** (`list[str]`): one line per healthy workload (as defined under `workloads`, and no restart within 24 hours), e.g. "Deployment/cart 3/3", with what's worth knowing about it added: restarts, "HPA at max 3", or "memory at 99.8% of limit" when a container is at 90% or more of its memory limit (with the working-set note in `notes`).
@@ -770,6 +776,35 @@ list of NetworkPolicySummary, each with:
 - **`ingress_effect`**, **`egress_effect`** (`Optional[str]`): what it allows, from its rules alone: "allows all ingress", "denies all egress", or "allows ingress only from pods with app=frontend-proxy in this namespace on TCP 8080; or from addresses in 10.0.0.0/8 on any port". None for a direction it doesn't restrict. A namespace selector on the name label every namespace has reads "namespace ingress-nginx". Worked out each time it's read, so a capture replays it as a live call would.
 - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
 
+### `get_quota_summaries`
+
+```python
+get_quota_summaries(namespace: Optional[str] = None) -> QuotaSummaries
+```
+
+The ResourceQuotas and LimitRanges of a namespace, or of all of them. A quota
+at its limit makes the API refuse any object that would add to it: a
+Deployment's ReplicaSet reports `FailedCreate` and the pods never exist, so
+nothing fails that another tool would show. A LimitRange fills in requests and
+limits for containers that set none, and refuses pods outside its bounds.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): one namespace, or all if omitted.
+
+#### Returns
+
+QuotaSummaries, with:
+
+- **`resource_quotas`** (`Optional[list[ResourceQuotaSummary]]`): None only when a replayed capture doesn't record them (a capture before 4.7.0, or an ITBench pull with no quota batch). Each with:
+  - **`name`**, **`namespace`**, **`age`**
+  - **`scopes`** (`list[str]`): which objects it counts ("BestEffort", "NotTerminating", ...); `[]` for all.
+  - **`scope_selector`** (`Optional[str]`): e.g. "PriorityClass In (high)".
+  - **`resources`** (`list[QuotaResource]`): per limited resource, `resource` (e.g. "limits.memory", "pods"), `hard` and `used` as the API states them, and `percent` (used / hard, rounded down; None when either is unknown, or hard is 0). `used` is None until the quota controller has counted.
+  - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+- **`limit_ranges`** (`Optional[list[LimitRangeSummary]]`): None as above. Each with `name`, `namespace`, `age`, and `limits`: per entry, `type` ("Container", "Pod", "PersistentVolumeClaim"), `default` (limits given to a container that sets none), `default_request`, `min`, `max` and `max_limit_request_ratio`.
+- **`notes`** (`list[str]`): says which half a capture doesn't record.
+
 ### `get_configmap_summaries`
 
 ```python
@@ -1232,4 +1267,77 @@ Matching events. Each EventSummary has the following fields:
 - **`object`** (`str`): The involved object as "Kind/name" (or just the name when the kind is unavailable).
 - **`message`** (`str`): Message describing the event.
 - **`notes`** (`list[str]`): Warnings that apply to this item; empty when none do. See [Notes in results](#notes-in-results).
+
+### `get_recent_changes`
+
+```python
+get_recent_changes(namespace: str, within: str = "30m") -> RecentChanges
+```
+
+What changed in a namespace, and when: the writes within the window to every
+object in the namespace and to every cluster-scoped object (a new Namespace, a
+ClusterRole), by clients other than Kubernetes' own controllers. A NetworkPolicy,
+ResourceQuota or ConfigMap edit made minutes before an alert shows here, which
+no other tool shows as a change.
+
+Kubernetes keeps no history of an object. What it keeps is each object's
+`managedFields`: one entry per client (manager), operation and subresource,
+with the time of that client's latest such write. So:
+
+- **Only the latest write** of each client is there, not what it changed, and not its earlier writes. A ConfigMap edited three times by `kubectl-edit` shows once, at the last edit.
+- **A deletion leaves no trace.**
+- **Created or updated.** A write within 1s of the object's creation is its creation. An object created in the window whose creating client has written it again since gets a "created" record without a client, beside that client's "updated" one. An owned object (a pod, a ReplicaSet) was created by its owner's controller, and so was one whose recorded writes are all controllers' (Endpoints the endpoints controller has rewritten since): neither gets one.
+- **Revision.** For a Deployment, StatefulSet or DaemonSet, a write to the object itself (no subresource) followed within 5s by a new revision gives that revision. That is the timing, not a recorded cause; a write to `scale` makes no revision.
+
+How it reads them: API discovery, then a metadata-only list
+(`PartialObjectMetadataList`) of every resource type that can be listed, in the
+namespace and cluster-wide, so no object's spec or data reaches k8stools. A
+Secret's values are never read: Secrets are listed by name, and only if the
+role may list them, which the README's read-only role doesn't grant (see its
+Permissions section; the result then names Secrets as not readable). Events
+and Leases are skipped: they are written continually. A type that can't be
+listed (a 403, an aggregated API that is down) is named in `not_readable`, and
+the rest are still read.
+
+Kubernetes' own controllers are a list (`changes.CONTROLLER_MANAGERS`):
+kube-controller-manager, kube-scheduler, kubelet, kube-apiserver, kube-proxy,
+clusterrole-aggregation-controller, any `*cloud-controller-manager`, the CSI
+sidecars (`csi-*`, `external-*`) and snapshot-controller. Their writes are
+counted in `left_out`, so nothing is hidden without saying so. Operators and
+tools (helm, kops, Argo CD, cilium-operator) are clients, and listed.
+
+**In replay** the window and ages are on the replay clock, as every other age
+is (frozen: as at the capture). A capture stores every object's write records
+(4.7.0 and later); one without them falls back to the objects created in the
+window, from their ages, without who created them, and says that updates
+aren't recorded. Kinds a capture's write records don't cover are named in
+`not_recorded` (an ITBench pull lists only the kinds it pulled).
+
+#### Parameters
+
+- **`namespace`** (`str`): the namespace. Cluster-scoped objects are always included.
+- **`within`** (`str, default="30m"`): the window, as "90s", "30m", "2h", "1d" or a combination ("1h30m").
+
+#### Returns
+
+RecentChanges, with:
+
+- **`namespace`**, **`within`**
+- **`source`** (`str`): "write records", or "creation times" for a replayed capture without them.
+- **`changes`** (`list[ChangeRecord]`): newest first, at most 50; `[]` means none. Each with:
+  - **`kind`**, **`name`**, **`namespace`** (left out for a cluster-scoped object)
+  - **`change`** (`str`): "created" or "updated".
+  - **`time`** (`datetime`), **`age`** (`timedelta`)
+  - **`manager`** (`Optional[str]`): the client, e.g. "helm", "kubectl-edit", "OpenAPI-Generator" (the Kubernetes client library's default name). Left out when not recorded.
+  - **`operation`** (`Optional[str]`): "Update" or "Apply" (server-side apply).
+  - **`subresource`** (`Optional[str]`): "status", "scale", ...; left out for a write to the object itself.
+  - **`revision`** (`Optional[int]`): see above.
+- **`changes_more`** (`Optional[int]`): writes past the first 50.
+- **`bulk`** (`list[str]`): a client writing more than 10 objects of one kind (and subresource) in the window gets one line instead of a record each, e.g. "helm created 21 Deployment, newest 40m0s ago" for an install.
+- **`left_out`** (`list[str]`): Kubernetes' own controllers' writes in the window, counted per client, e.g. "kube-controller-manager: 121 writes".
+- **`not_readable`** (`list[str]`): resource types that couldn't be listed, with why, e.g. "secrets: 403 Forbidden: ...".
+- **`not_recorded`** (`list[str]`): replay only: common kinds the capture's write records don't cover, so writes to them are unknown.
+- **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+
+Empty fields are left out of the result.
 

@@ -8,6 +8,7 @@ Kubernetes monitoring tools for AI agents, exposed as direct Python functions or
 src/k8stools/
   k8s_tools.py   - Core tools: Kubernetes API wrappers with Pydantic return types
   composites.py  - Logic of the composite tools (get_namespace_health, get_workload_report)
+  changes.py     - get_recent_changes: write records from managedFields (discovery, metadata-only lists)
   mock_state.py  - MockState: loads a capture file and serves it to the tool queries
   capture.py     - `k8s-capture-state` CLI: snapshots a live cluster to a capture file
   itbench.py     - `--from-itbench`: serves one pull of an ITBench-Lite snapshot to capture_state
@@ -53,6 +54,8 @@ tests/
   test_log_search.py         - get_log_pattern_summary, grep before tail, where a log starts: live, capture and replay (#34); the capture's byte cap (#36)
   test_report_logs.py        - The workload report reads every pod's log; a cut line keeps its match; lines_from/log_starts (#35)
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
+  test_recent_changes.py     - get_recent_changes: reader, window, controllers, revisions, replay, fallback, capture, ITBench (#38)
+  test_quotas.py             - get_quota_summaries, the namespace view's quota lines, capture and replay (#38)
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_mcp_errors.py         - Anticipated failures reach MCP clients with their reason; crashes stay generic; one-line API errors
@@ -496,6 +499,21 @@ Invariants worth preserving when touching this code:
   replay turns a missing key into `init_containers=None` with
   `NOTE_INIT_NOT_RECORDED`, never `[]`. Native sidecars are stored and served in
   `container_statuses` with `sidecar: true`.
+- **Write records are every object's, and metadata only** (#38). The capture's
+  `writes` holds each object's `managedFields` entries (manager, operation,
+  subresource, time; never `fieldsV1`) for every listable type, read by
+  discovery and `PartialObjectMetadataList` (`changes.METADATA_ONLY`, no
+  fallback to a full list, which for Secrets would carry their values). All
+  objects, not a window: replay applies any. Unlisted types are named
+  (`not_readable`, a list of `{kind, reason}`: a map keyed "secrets" got its
+  reason redacted), never fatal; reasons drop `User "..."`. Kubernetes' own
+  controllers are one tuple, `changes.CONTROLLER_MANAGERS`, counted in
+  `left_out`, never silently dropped. A capture without `writes` falls back to
+  creation ages and says updates aren't recorded; one with them names the
+  `EXPECTED_KINDS` it lacks (an ITBench pull lists only what it pulled).
+  `SnapshotRest` answers discovery from the pull's own kinds. A revision is
+  reported by timing only (created within 5s after a spec write), and the note
+  says so.
 
 The built-in fixture lives under `src/k8stools/` (not `tests/`) because
 `--mock` serves it, so it has to ship in the wheel. It is **hand-maintained**, not
@@ -588,8 +606,10 @@ which 3 were secrets; after, 5. If you widen the name rule, re-measure against a
 real capture rather than reasoning about it — the false positives are not where
 you would guess (toleration keys, `ca.crt`, and `secretKeyRef.key`, which is a
 pointer to a secret, not a secret). Direct Python callers of the tool functions get raw values (no redaction) and
-can call `redaction.redact_object` themselves. We never add a reader for `Secret`
-objects.
+can call `redaction.redact_object` themselves. We never read a Secret's values:
+no reader returns Secret objects, and `get_recent_changes` lists Secrets
+metadata-only, only when the role grants `list secrets`, which the README's role
+leaves out on purpose (that permission reads values through any other client).
 
 Example `mcp.json`:
 ```json

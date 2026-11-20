@@ -79,6 +79,7 @@ _RECORDED_KINDS = {
     "statefulsets": "StatefulSets", "daemonsets": "DaemonSets", "hpas":
     "HorizontalPodAutoscalers", "cronjobs": "CronJobs", "jobs": "Jobs",
     "pvcs": "PersistentVolumeClaims", "events": "events",
+    "resourcequotas": "ResourceQuotas", "limitranges": "LimitRanges",
 }
 
 #: Path of the built-in capture (the OTel Demo on Minikube snapshot).
@@ -164,7 +165,7 @@ def _model_classes(annotation: Any) -> list[type[BaseModel]]:
 #: Fields a model computes from its other fields (`notes`, issue #20). They are
 #: not written to captures: replay recomputes them, so a capture never carries
 #: stale wording, and one recorded before they existed gets them too.
-DERIVED_FIELDS = frozenset({"notes", "ingress_effect", "egress_effect"})
+DERIVED_FIELDS = frozenset({"notes", "ingress_effect", "egress_effect", "percent"})
 
 
 def encode_model(model: BaseModel, captured_at: datetime.datetime) -> dict[str, Any]:
@@ -924,6 +925,113 @@ class MockState:
                                     ) -> list[k8s_tools.NetworkPolicySummary]:
         """Captures from before NetworkPolicies were captured raise K8sNotRecorded."""
         return self._decode_all("networkpolicies", k8s_tools.NetworkPolicySummary, namespace)
+
+    # -- recent changes (#38) ------------------------------------------------
+
+    #: For a capture without write records: (kind, plural, reader, cluster-scoped).
+    _CREATION_SOURCES = (
+        ("Namespace", "namespaces", "get_namespaces", True),
+        ("Node", "nodes", "get_node_summaries", True),
+        ("Deployment", "deployments.apps", "get_deployment_summaries", False),
+        ("StatefulSet", "statefulsets.apps", "get_statefulset_summaries", False),
+        ("DaemonSet", "daemonsets.apps", "get_daemonset_summaries", False),
+        ("Job", "jobs.batch", "get_job_summaries", False),
+        ("CronJob", "cronjobs.batch", "get_cronjob_summaries", False),
+        ("Pod", "pods", "get_pod_summaries", False),
+        ("Service", "services", "get_service_summaries", False),
+        ("ConfigMap", "configmaps", "get_configmap_summaries", False),
+        ("NetworkPolicy", "networkpolicies.networking.k8s.io", "get_networkpolicy_summaries", False),
+        ("Ingress", "ingresses.networking.k8s.io", "get_ingress_summaries", False),
+        ("HorizontalPodAutoscaler", "horizontalpodautoscalers.autoscaling", "get_hpa_summaries", False),
+        ("PersistentVolumeClaim", "persistentvolumeclaims", "get_pvc_summaries", False),
+        ("ResourceQuota", "resourcequotas", "get_resourcequota_summaries", False),
+        ("LimitRange", "limitranges", "get_limitrange_summaries", False),
+    )
+
+    def _now(self) -> datetime.datetime:
+        """The replay's current time: capture time is server start time."""
+        return self._clock.server_start_time + datetime.timedelta(seconds=self._clock.elapsed())
+
+    def _history_births(self, now: datetime.datetime) -> dict[tuple, list]:
+        """Each workload's revisions and when they were created, from the
+        recorded workload histories."""
+        births: dict[tuple, list] = {}
+        for record in self._data.get("workload_histories") or []:
+            history = decode_model(k8s_tools.WorkloadHistory, record, self._clock)
+            births[(history.kind, history.namespace, history.name)] = [
+                (r.revision, now - r.age) for r in history.revisions
+                if r.revision is not None and not r.reused]
+        return births
+
+    def _creation_records(self, namespace: str, now: datetime.datetime
+                          ) -> tuple[k8s_tools.ObjectWrites, list[str]]:
+        """Objects with their creation times only, from the recorded kinds, for
+        a capture without write records; and the kinds it doesn't record."""
+        objects, kinds, missing = [], [], []
+        for kind, plural, reader, cluster in self._CREATION_SOURCES:
+            try:
+                items = getattr(self, reader)() if cluster else getattr(self, reader)(namespace)
+            except k8s_tools.K8sNotRecorded:
+                missing.append(plural)
+                continue
+            kinds.append(plural)
+            objects += [k8s_tools.ObjectRecord(
+                kind=kind, namespace=None if cluster else namespace, name=item.name,
+                created=now - item.age, owner=getattr(item, "owner", None))
+                for item in items if getattr(item, "age", None) is not None]
+        return k8s_tools.ObjectWrites(kinds=kinds, objects=objects), missing
+
+    @_pinned_query
+    def get_recent_changes(self, namespace: str, within: str = "30m") -> k8s_tools.RecentChanges:
+        """From the capture's write records, on its clock. A capture without
+        them (before 4.7.0) gives the objects created in the window, from their
+        ages, and says updates aren't recorded."""
+        from .changes import EXPECTED_KINDS, deployment_births, parse_window, recent_changes
+        window = parse_window(within)
+        now = self._now()
+        recorded = self._data.get("writes")
+        if recorded is None:
+            writes, missing = self._creation_records(namespace, now)
+            source = "creation times"
+        else:
+            writes = decode_model(k8s_tools.ObjectWrites, recorded, self._clock)
+            unreadable = {u.kind for u in writes.not_readable}
+            missing = [k for k in EXPECTED_KINDS if k not in writes.kinds and k not in unreadable]
+            source = "write records"
+        deployments = deployment_births(writes.objects)
+        histories = self._history_births(now)
+
+        def births(kind, ns, name):
+            return deployments.get((kind, ns, name)) or histories.get((kind, ns, name), [])
+
+        return recent_changes(writes, namespace, window, now, births, source=source,
+                              not_recorded=missing)
+
+    @_pinned_query
+    def get_resourcequota_summaries(self, namespace: Optional[str] = None
+                                    ) -> list[k8s_tools.ResourceQuotaSummary]:
+        """Captures from before ResourceQuotas were captured (4.7.0) raise K8sNotRecorded."""
+        return self._decode_all("resourcequotas", k8s_tools.ResourceQuotaSummary, namespace)
+
+    @_pinned_query
+    def get_limitrange_summaries(self, namespace: Optional[str] = None
+                                 ) -> list[k8s_tools.LimitRangeSummary]:
+        return self._decode_all("limitranges", k8s_tools.LimitRangeSummary, namespace)
+
+    @_pinned_query
+    def get_quota_summaries(self, namespace: Optional[str] = None) -> k8s_tools.QuotaSummaries:
+        """Either half the capture doesn't record is None, with a note; both
+        missing raises K8sNotRecorded, as a missing kind does."""
+        def half(read):
+            try:
+                return read(namespace)
+            except k8s_tools.K8sNotRecorded:
+                return None
+        quotas = half(self.get_resourcequota_summaries)
+        limit_ranges = half(self.get_limitrange_summaries)
+        if quotas is None and limit_ranges is None:
+            self.get_resourcequota_summaries(namespace)  # raises, saying why
+        return k8s_tools.QuotaSummaries(resource_quotas=quotas, limit_ranges=limit_ranges)
 
     @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:

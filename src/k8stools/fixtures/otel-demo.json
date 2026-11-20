@@ -1629,6 +1629,8 @@
     }
   ],
   "networkpolicies": [],
+  "resourcequotas": [],
+  "limitranges": [],
   "configmaps": [
     {
       "name": "app-config",
@@ -2545,6 +2547,982 @@
             ]
           }
         ]
+      }
+    ]
+  },
+  "writes": {
+    "kinds": [
+      "configmaps",
+      "cronjobs.batch",
+      "daemonsets.apps",
+      "deployments.apps",
+      "horizontalpodautoscalers.autoscaling",
+      "ingresses.networking.k8s.io",
+      "jobs.batch",
+      "limitranges",
+      "namespaces",
+      "networkpolicies.networking.k8s.io",
+      "nodes",
+      "persistentvolumeclaims",
+      "pods",
+      "replicasets.apps",
+      "resourcequotas",
+      "services",
+      "statefulsets.apps"
+    ],
+    "not_readable": [
+      {
+        "kind": "secrets",
+        "reason": "403 Forbidden: secrets is forbidden: cannot list resource \"secrets\" in API group \"\" at the cluster scope"
+      }
+    ],
+    "objects": [
+      {
+        "kind": "Namespace",
+        "group": "",
+        "namespace": null,
+        "name": "default",
+        "created_offset_seconds": 777610.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kube-apiserver",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 777610.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Namespace",
+        "group": "",
+        "namespace": null,
+        "name": "kube-system",
+        "created_offset_seconds": 777610.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kube-apiserver",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 777610.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Node",
+        "group": "",
+        "namespace": null,
+        "name": "minikube",
+        "created_offset_seconds": 777600.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 777600.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 10.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "ad-d5c94c49b",
+        "created_offset_seconds": 691199.0,
+        "owner": "Deployment/ad",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691199.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 691179.0
+          }
+        ],
+        "revision": 1
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "ad-647b4947cc",
+        "created_offset_seconds": 27240.0,
+        "owner": "Deployment/ad",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 27240.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 27220.0
+          }
+        ],
+        "revision": 2
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "test-deployment-7d4b9c85f",
+        "created_offset_seconds": 7199.0,
+        "owner": "Deployment/test-deployment",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7199.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 7179.0
+          }
+        ],
+        "revision": 1
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "accounting-6c9f8b7d4",
+        "created_offset_seconds": 691199.0,
+        "owner": "Deployment/accounting",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691199.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 691179.0
+          }
+        ],
+        "revision": 1
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "checkout-7b8c6d5f4",
+        "created_offset_seconds": 691199.0,
+        "owner": "Deployment/checkout",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691199.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 691179.0
+          }
+        ],
+        "revision": 1
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "checkout-5f6d8c9b7",
+        "created_offset_seconds": 7200.0,
+        "owner": "Deployment/checkout",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 7180.0
+          }
+        ],
+        "revision": 2
+      },
+      {
+        "kind": "ReplicaSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "quote-6c9d7f8b4",
+        "created_offset_seconds": 1200.0,
+        "owner": "Deployment/quote",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 1200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 1180.0
+          }
+        ],
+        "revision": 1
+      },
+      {
+        "kind": "Deployment",
+        "group": "apps",
+        "namespace": "default",
+        "name": "ad",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691200.0
+          },
+          {
+            "manager": "kubectl-set",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 27241.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 27210.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Deployment",
+        "group": "apps",
+        "namespace": "default",
+        "name": "test-deployment",
+        "created_offset_seconds": 7200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 7169.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Deployment",
+        "group": "apps",
+        "namespace": "default",
+        "name": "accounting",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 691169.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Deployment",
+        "group": "apps",
+        "namespace": "default",
+        "name": "checkout",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7201.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 7170.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Deployment",
+        "group": "apps",
+        "namespace": "default",
+        "name": "quote",
+        "created_offset_seconds": 1200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 1200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 1170.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "StatefulSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "postgres",
+        "created_offset_seconds": 259200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 259200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 259140.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "DaemonSet",
+        "group": "apps",
+        "namespace": "default",
+        "name": "otel-collector-agent",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 691140.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Service",
+        "group": "",
+        "namespace": "default",
+        "name": "ad",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691200.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Service",
+        "group": "",
+        "namespace": "default",
+        "name": "test-service",
+        "created_offset_seconds": 7200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7200.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Service",
+        "group": "",
+        "namespace": "default",
+        "name": "postgres",
+        "created_offset_seconds": 259200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 259200.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "ConfigMap",
+        "group": "",
+        "namespace": "default",
+        "name": "app-config",
+        "created_offset_seconds": 86400.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubectl-create",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 86400.0
+          },
+          {
+            "manager": "kubectl-edit",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 1500.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "ConfigMap",
+        "group": "",
+        "namespace": "kube-system",
+        "name": "kube-root-ca.crt",
+        "created_offset_seconds": 777605.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 777605.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "ConfigMap",
+        "group": "",
+        "namespace": "default",
+        "name": "otel-collector-agent",
+        "created_offset_seconds": 691200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691200.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "CronJob",
+        "group": "batch",
+        "namespace": "default",
+        "name": "cleanup",
+        "created_offset_seconds": 86400.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 86400.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 120.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Job",
+        "group": "batch",
+        "namespace": "default",
+        "name": "cleanup-28999999",
+        "created_offset_seconds": 120.0,
+        "owner": "CronJob/cleanup",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 120.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 60.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "PersistentVolumeClaim",
+        "group": "",
+        "namespace": "default",
+        "name": "data-postgres-0",
+        "created_offset_seconds": 259200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 259200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 259198.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "PersistentVolumeClaim",
+        "group": "",
+        "namespace": "default",
+        "name": "orphaned-session-xyz",
+        "created_offset_seconds": 172800.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubectl-create",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 172800.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 172798.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "PersistentVolumeClaim",
+        "group": "",
+        "namespace": "default",
+        "name": "quote-cache",
+        "created_offset_seconds": 1200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 1200.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 1198.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Ingress",
+        "group": "networking.k8s.io",
+        "namespace": "default",
+        "name": "shop",
+        "created_offset_seconds": 7190.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "helm",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7190.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "HorizontalPodAutoscaler",
+        "group": "autoscaling",
+        "namespace": "default",
+        "name": "test-deployment",
+        "created_offset_seconds": 7195.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubectl-autoscale",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7195.0
+          },
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 15.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "ad-647b4947cc-s5mpm",
+        "created_offset_seconds": 27240.0,
+        "owner": "ReplicaSet/ad-647b4947cc",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 27240.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "test-pod-123",
+        "created_offset_seconds": 7200.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubectl-run",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7200.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "kube-system",
+        "name": "kube-system-pod",
+        "created_offset_seconds": 86400.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 86400.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "cleanup-28999999-t4xk9",
+        "created_offset_seconds": 120.0,
+        "owner": "Job/cleanup-28999999",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 120.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "otel-collector-agent-fxhxp",
+        "created_offset_seconds": 691195.0,
+        "owner": "DaemonSet/otel-collector-agent",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691195.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "test-deployment-7d4b9c85f-4kq9z",
+        "created_offset_seconds": 7198.0,
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7198.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "test-deployment-7d4b9c85f-m7xpw",
+        "created_offset_seconds": 7198.0,
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7198.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "test-deployment-7d4b9c85f-tb2ns",
+        "created_offset_seconds": 7198.0,
+        "owner": "ReplicaSet/test-deployment-7d4b9c85f",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7198.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "postgres-0",
+        "created_offset_seconds": 259190.0,
+        "owner": "StatefulSet/postgres",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 259190.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "accounting-6c9f8b7d4-x2k8p",
+        "created_offset_seconds": 691190.0,
+        "owner": "ReplicaSet/accounting-6c9f8b7d4",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691190.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "checkout-7b8c6d5f4-q9w2r",
+        "created_offset_seconds": 691190.0,
+        "owner": "ReplicaSet/checkout-7b8c6d5f4",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691190.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "checkout-5f6d8c9b7-h4n7t",
+        "created_offset_seconds": 7200.0,
+        "owner": "ReplicaSet/checkout-5f6d8c9b7",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 7200.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "Pod",
+        "group": "",
+        "namespace": "default",
+        "name": "quote-6c9d7f8b4-k2m8p",
+        "created_offset_seconds": 1200.0,
+        "owner": "ReplicaSet/quote-6c9d7f8b4",
+        "writes": [
+          {
+            "manager": "kube-controller-manager",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 1200.0
+          },
+          {
+            "manager": "kubelet",
+            "operation": "Update",
+            "subresource": "status",
+            "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
       }
     ]
   }

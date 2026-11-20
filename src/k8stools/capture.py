@@ -304,6 +304,8 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         "cronjobs": [],
         "jobs": [],
         "pvcs": [],
+        "resourcequotas": [],
+        "limitranges": [],
         "events": [],
     }
 
@@ -323,6 +325,8 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         daemonsets = read("daemonsets", ns, k8s_tools.get_daemonset_summaries, ns)
         state["daemonsets"] += _encode_all(redactor(daemonsets), captured_at)
         kind("hpas", ns, k8s_tools.get_hpa_summaries)
+        kind("resourcequotas", ns, k8s_tools.get_resourcequota_summaries)
+        kind("limitranges", ns, k8s_tools.get_limitrange_summaries)
         # The tool's own result, not raw templates: replay serves it as is, and
         # env values never reach the file. One the role can't read (its
         # ReplicaSets, ControllerRevisions or ConfigMaps) marks the namespace,
@@ -347,10 +351,30 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
                                        include_previous_logs, stats, redactor)
     state["metrics"] = _capture_metrics(target_namespaces, captured_at, redactor, stats)
     state["custom_resources"] = _capture_custom_resources(namespaces, captured_at, redactor, stats)
+    writes = _capture_writes(namespaces, captured_at, redactor)
+    if writes is not None:
+        state["writes"] = writes
     if stats.unreadable:
         state["unreadable"] = stats.unreadable
         state["version"] = CAPTURE_VERSION_WITH_GAPS
     return state
+
+
+def _capture_writes(namespaces: Optional[list[str]], captured_at: datetime.datetime,
+                    redactor: "_Redactor") -> Optional[dict[str, Any]]:
+    """Every object's write records (#38): namespaced ones in the captured
+    namespaces, and every cluster-scoped one, all of them, so replay can apply
+    any window. Types the role can't list are named inside. If discovery itself
+    fails the key is left out, and replay says write records aren't recorded."""
+    try:
+        writes = k8s_tools._object_writes(namespaces)
+    except (k8s_tools.K8sApiError, k8s_tools.K8sConfigError) as e:
+        logging.warning(f"Write records not captured: {e}")
+        return None
+    # Captures get published: a 403's reason keeps what to grant, not who asked.
+    for unreadable in writes.not_readable:
+        unreadable.reason = _without_user(unreadable.reason)
+    return encode_model(redactor(writes), captured_at)
 
 
 #: Instances captured per custom resource type: operators such as Argo can

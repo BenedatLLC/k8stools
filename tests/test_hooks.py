@@ -21,13 +21,18 @@ AT = datetime.datetime(2025, 12, 15, 18, 4, 39, tzinfo=datetime.timezone.utc)
 
 
 class _Response:
-    """Read as kubernetes 36 (data, getheader) and 37 (read(), headers) read one."""
+    """Read as kubernetes 36 (data, getheader) and 37 (read(), headers, and
+    ``response`` for a raw read: the log readers and discovery) read one."""
 
     def __init__(self, status: int, body):
         self.status = status
         self.reason = "OK" if status == 200 else "Not Found"
         self.data = (body if isinstance(body, str) else json.dumps(body)).encode()
         self.headers = {"content-type": "application/json"}
+
+    @property
+    def response(self):
+        return self
 
     def read(self):
         return self.data

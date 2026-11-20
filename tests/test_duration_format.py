@@ -71,7 +71,9 @@ def _placeholder(annotation):
     if typing.get_origin(annotation) is typing.Literal:
         return typing.get_args(annotation)[0]
     origin = typing.get_origin(annotation) or annotation
-    return {str: "x", int: 0, bool: False, float: 0.0, list: [], dict: {}}.get(origin)
+    return {str: "x", int: 0, bool: False, float: 0.0, list: [], dict: {},
+            datetime.datetime: datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            }.get(origin)
 
 
 def _build(model: type[BaseModel], value, overrides=None) -> BaseModel:

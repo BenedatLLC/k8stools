@@ -87,7 +87,7 @@ def test_kinds_the_pull_has_no_batch_of_are_not_recorded(scenario_33):
         with pytest.raises(K8sNotRecorded):
             read()
     assert "Not recorded in this capture, so unknown rather than absent: StatefulSets, " \
-        "DaemonSets, Jobs, HorizontalPodAutoscalers, PersistentVolumeClaims, Ingresses, NetworkPolicies." \
+        "DaemonSets, Jobs, HorizontalPodAutoscalers, PersistentVolumeClaims, Ingresses, NetworkPolicies, ResourceQuotas." \
         in namespace_health(state, "otel-demo").notes
 
 

@@ -70,7 +70,8 @@ CAPTURED_FROM = {
     "endpoints": "endpoints", "ingresses": "ingresses", "networkpolicies": "networkpolicies",
     "configmaps": "configmaps", "statefulsets": "statefulsets", "daemonsets": "daemonsets",
     "hpas": "horizontalpodautoscalers", "cronjobs": "cronjobs", "jobs": "jobs",
-    "pvcs": "persistentvolumeclaims",
+    "pvcs": "persistentvolumeclaims", "resourcequotas": "resourcequotas",
+    "limitranges": "limitranges",
 }
 
 #: The API group each snapshot kind is served under ("" for core).
@@ -391,6 +392,28 @@ def _selected(obj: dict, label_selector: Optional[str], field_selector: Optional
     return True
 
 
+@dataclass(frozen=True)
+class _Served:
+    group: str
+    version: str
+    kind: str
+    namespaced: bool
+
+
+def _served_kinds(objects: dict[str, list[dict]]) -> dict[str, _Served]:
+    """Each pulled kind (plural) as the API serves it, from its first object's
+    apiVersion and kind, and whether objects have a namespace."""
+    served = {}
+    for plural, items in objects.items():
+        if not items or not plural:
+            continue
+        first = items[0]
+        group, _, version = (first.get("apiVersion") or "v1").rpartition("/")
+        served[plural] = _Served(group, version, first.get("kind") or plural,
+                                 "namespace" in (first.get("metadata") or {}))
+    return served
+
+
 class SnapshotRest:
     """Answers the Kubernetes API's GETs from one pull of a snapshot.
 
@@ -401,6 +424,11 @@ class SnapshotRest:
 
     def __init__(self, objects: dict[str, list[dict]], events: list[dict],
                  logs: dict[tuple[str, str, str], str]):
+        # Discovery serves the kinds the pull listed, as their objects say they
+        # are served (#38): the write records then cover exactly those. The
+        # events and EndpointSlices served below are derived, not pulled.
+        self.served = _served_kinds(objects)
+        self.groups = {**_GROUPS, **{plural: k.group for plural, k in self.served.items()}}
         self.objects = dict(objects)
         self.objects["events"] = events
         self.objects["endpointslices"] = _endpoint_slices(objects.get("endpoints", []))
@@ -419,10 +447,36 @@ class SnapshotRest:
         parsed = urlparse(url)
         return self._get(parsed.path, dict(parse_qsl(parsed.query)))
 
+    def _discovery(self, parts: list[str]) -> Optional[_Response]:
+        """/api/v1, /apis and /apis/<group>/<version>, from the pull's kinds."""
+        if parts == ["api", "v1"]:
+            return _Response(200, {"kind": "APIResourceList", "groupVersion": "v1",
+                                   "resources": self._resource_list("", "v1")})
+        if parts == ["apis"]:
+            versions = sorted({(k.group, k.version) for k in self.served.values() if k.group})
+            return _Response(200, {"kind": "APIGroupList", "groups": [
+                {"name": g, "versions": [{"groupVersion": f"{g}/{v}", "version": v}],
+                 "preferredVersion": {"groupVersion": f"{g}/{v}", "version": v}}
+                for g, v in versions]})
+        if len(parts) == 3 and parts[0] == "apis":
+            return _Response(200, {"kind": "APIResourceList",
+                                   "groupVersion": f"{parts[1]}/{parts[2]}",
+                                   "resources": self._resource_list(parts[1], parts[2])})
+        return None
+
+    def _resource_list(self, group: str, version: str) -> list[dict]:
+        return [{"name": plural, "kind": k.kind, "namespaced": k.namespaced,
+                 "verbs": ["get", "list"]}
+                for plural, k in sorted(self.served.items())
+                if (k.group, k.version) == (group, version)]
+
     def _get(self, path: str, query: dict[str, str]):
         parts = path.strip("/").split("/")
         if parts == ["version"]:
             raise _not_found("server version")
+        discovery = self._discovery(parts)
+        if discovery is not None:
+            return discovery
         group = "" if parts[0] == "api" else parts[1]
         if group == "metrics.k8s.io":
             raise _not_found("the metrics API")
@@ -433,7 +487,7 @@ class SnapshotRest:
         kind, name, sub = (parts + [None, None])[:3]
         if sub == "log":
             return self._log(namespace, name, query)
-        served = self.objects.get(kind, []) if _GROUPS.get(kind, "") == group else []
+        served = self.objects.get(kind, []) if self.groups.get(kind, "") == group else []
         items = [o for o in served
                  if namespace is None or (o.get("metadata") or {}).get("namespace") == namespace]
         if name is not None:

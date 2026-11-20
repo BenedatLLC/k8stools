@@ -27,7 +27,7 @@ NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 #: turn of a coordinator, has a budget of its own.
 DESCRIPTION_BUDGET = 700
 AVERAGE_DESCRIPTION_BUDGET = 300
-TRIAGE_DESCRIPTION_BUDGET = 2000
+TRIAGE_DESCRIPTION_BUDGET = 2400
 
 
 # --- descriptions --------------------------------------------------------------

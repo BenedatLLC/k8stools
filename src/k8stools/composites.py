@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from .k8s_tools import (ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
                         IngressSummary, NetworkPolicySummary, NOTE_NETWORK_POLICIES,
+                        NOTE_QUOTA_AT_LIMIT, ResourceQuotaSummary,
                         allows_port, network_policy_effect,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
@@ -94,6 +95,7 @@ _READER_KINDS = {
     "get_hpa_summaries": "HorizontalPodAutoscalers", "get_endpoint_summaries": "Service endpoints",
     "get_ingress_summaries": "Ingresses", "get_networkpolicy_summaries": "NetworkPolicies",
     "get_events": "events", "get_workload_history": "workload history",
+    "get_resourcequota_summaries": "ResourceQuotas",
 }
 
 
@@ -571,6 +573,29 @@ def _workload_policy_lines(policies: list[NetworkPolicySummary], pod_names: set[
     return lines
 
 
+_MAX_QUOTA_LINES = 10
+
+
+def _quota_lines(quotas: list[ResourceQuotaSummary]) -> list[str]:
+    """One line per quota: when it was created, then every resource it limits,
+    used/hard and percent. No threshold picks which: a namespace has few, and
+    the reader sees how close each is (#38)."""
+    def resource(r) -> str:
+        percent = f" ({r.percent}%)" if r.percent is not None else ""
+        return f"{r.resource} {r.used or '?'}/{r.hard}{percent}"
+
+    lines = []
+    for q in sorted(quotas, key=lambda q: q.name):
+        scope = f" [scopes: {', '.join(q.scopes)}]" if q.scopes else ""
+        selector = f" [scope selector: {q.scope_selector}]" if q.scope_selector else ""
+        lines.append(f"ResourceQuota/{q.name} (created {_human(q.age)} ago){scope}{selector}: "
+                     + (", ".join(resource(r) for r in q.resources) or "limits nothing"))
+    if len(lines) > _MAX_QUOTA_LINES:
+        lines[_MAX_QUOTA_LINES:] = [f"and {len(lines) - _MAX_QUOTA_LINES} more: "
+                                    "see get_quota_summaries"]
+    return lines
+
+
 def _policy_kinds(api) -> list[str]:
     """Policy kinds installed as custom resources (Cilium, Calico, Antrea,
     AdminNetworkPolicy): they apply too, and no tool here reads them."""
@@ -760,6 +785,15 @@ def namespace_health(api, namespace: str = "default") -> NamespaceHealth:
         result.notes.append(NOTE_NETWORK_POLICIES)
     if unavailable:
         result.notes.append(unavailable)
+    try:
+        quotas = _recorded(unrecorded, api.get_resourcequota_summaries, namespace)
+    except K8sApiError as e:
+        quotas = ()
+        result.notes.append(f"ResourceQuotas unavailable: {e}")
+    if quotas:
+        result.resource_quotas = _quota_lines(quotas)
+        if any(n == NOTE_QUOTA_AT_LIMIT for q in quotas for n in q.notes):
+            result.notes.append(NOTE_QUOTA_AT_LIMIT)
     if unrecorded:
         result.notes += _not_recorded_notes(unrecorded)
     if by_name:

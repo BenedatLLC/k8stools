@@ -319,7 +319,8 @@ class _FakeCluster:
                      "get_endpoint_summaries", "get_ingress_summaries",
                      "get_networkpolicy_summaries",
                      "get_cronjob_summaries", "get_job_summaries",
-                     "get_pvc_summaries", "get_pod_summaries"):
+                     "get_pvc_summaries", "get_pod_summaries",
+                     "get_resourcequota_summaries", "get_limitrange_summaries"):
             monkeypatch.setattr(k8s_tools, name, lambda ns=None: [])
         monkeypatch.setattr(k8s_tools, "get_events", lambda **kw: [])
         # Cluster-wide steps that would otherwise reach a real cluster from a test.
@@ -336,6 +337,7 @@ class _FakeCluster:
                      "LOG_LEVEL": "info"},
             "binary_data_keys": []})
         monkeypatch.setattr(capture, "_pod_labels", lambda ns: {})
+        monkeypatch.setattr(k8s_tools, "_object_writes", lambda ns=None: k8s_tools.ObjectWrites())
 
 
 def test_capture_redacts_by_default(monkeypatch):

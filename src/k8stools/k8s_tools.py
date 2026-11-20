@@ -21,7 +21,7 @@ import json
 import re
 from typing import Optional, Union, Literal, Any, Annotated, Callable, ClassVar, Iterator
 
-from pydantic import BaseModel, Field, AfterValidator, model_serializer, model_validator
+from pydantic import BaseModel, Field, AfterValidator, field_validator, model_serializer, model_validator
 import yaml
 
 import urllib3
@@ -2882,6 +2882,369 @@ def print_networkpolicy_summaries(namespace: Optional[str] = None) -> None:
                   f"{len(p.selected_pods):<5} {effect}")
 
 
+# ---------------------------------------------------------------------------
+# ResourceQuotas and LimitRanges (#38)
+# ---------------------------------------------------------------------------
+
+NOTE_QUOTA_AT_LIMIT = (
+    "A resource here is at its hard limit (used >= hard): the API refuses any new "
+    "object that would add to it, so a controller creating pods reports FailedCreate "
+    "and the pods never exist.")
+NOTE_QUOTAS_NOT_RECORDED = (
+    "This capture doesn't record ResourceQuotas, so they are unknown, not absent.")
+NOTE_LIMIT_RANGES_NOT_RECORDED = (
+    "This capture doesn't record LimitRanges, so they are unknown, not absent.")
+
+
+def _quantity(text: Optional[str]):
+    """A Kubernetes quantity as a Decimal, or None when it isn't one."""
+    if text is None:
+        return None
+    try:
+        from kubernetes.utils import parse_quantity
+        return parse_quantity(text)
+    except (ValueError, ArithmeticError):
+        return None
+
+
+class QuotaResource(BaseModel):
+    """One resource a ResourceQuota limits, e.g. limits.memory or pods."""
+    resource: str
+    hard: str
+    #: As the quota controller last counted it; None before it has.
+    used: Optional[str] = None
+    #: used / hard, in percent, rounded down. None when either is unknown or
+    #: hard is 0 (then anything more is refused).
+    percent: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _derive_percent(self) -> "QuotaResource":
+        hard, used = _quantity(self.hard), _quantity(self.used)
+        self.percent = int(used * 100 / hard) if hard and used is not None else None
+        return self
+
+    def at_limit(self) -> bool:
+        hard, used = _quantity(self.hard), _quantity(self.used)
+        return hard is not None and used is not None and used >= hard
+
+
+class ResourceQuotaSummary(BaseModel):
+    """A ResourceQuota: the namespace's hard limits and how much is used."""
+    name: str
+    namespace: str
+    #: Which objects it counts ("BestEffort", "NotTerminating", ...); [] for all.
+    scopes: list[str] = Field(default_factory=list)
+    #: e.g. "PriorityClass In (high)"; None when not set.
+    scope_selector: Optional[str] = None
+    resources: list[QuotaResource] = Field(default_factory=list)
+    age: Duration
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "ResourceQuotaSummary":
+        self.notes = [NOTE_QUOTA_AT_LIMIT] if any(r.at_limit() for r in self.resources) else []
+        return self
+
+
+class LimitRangeItem(BaseModel):
+    """One entry of a LimitRange: per-object bounds and defaults for a type."""
+    #: "Container", "Pod" or "PersistentVolumeClaim".
+    type: str
+    #: Limits given to a container that sets none.
+    default: dict[str, str] = Field(default_factory=dict)
+    #: Requests given to a container that sets none.
+    default_request: dict[str, str] = Field(default_factory=dict)
+    min: dict[str, str] = Field(default_factory=dict)
+    max: dict[str, str] = Field(default_factory=dict)
+    max_limit_request_ratio: dict[str, str] = Field(default_factory=dict)
+
+
+class LimitRangeSummary(BaseModel):
+    """A LimitRange: what the API enforces on, and fills into, each new object."""
+    name: str
+    namespace: str
+    limits: list[LimitRangeItem] = Field(default_factory=list)
+    age: Duration
+
+
+class QuotaSummaries(BaseModel):
+    """The ResourceQuotas and LimitRanges of a namespace, or of all of them."""
+    #: None when a replayed capture doesn't record them (never live).
+    resource_quotas: Optional[list[ResourceQuotaSummary]] = None
+    limit_ranges: Optional[list[LimitRangeSummary]] = None
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "QuotaSummaries":
+        self.notes = ([NOTE_QUOTAS_NOT_RECORDED] if self.resource_quotas is None else []) + \
+                     ([NOTE_LIMIT_RANGES_NOT_RECORDED] if self.limit_ranges is None else [])
+        return self
+
+
+def _scope_selector_text(selector) -> Optional[str]:
+    terms = [f"{e.scope_name} {e.operator}" + (f" ({', '.join(e.values)})" if e.values else "")
+             for e in (getattr(selector, "match_expressions", None) or [])]
+    return ", ".join(terms) or None
+
+
+def _quota_summary(quota, now: datetime.datetime) -> ResourceQuotaSummary:
+    spec, status = quota.spec, quota.status
+    hard = dict((spec.hard if spec else None) or {})
+    used = dict((status.used if status else None) or {})
+    created = quota.metadata.creation_timestamp
+    return ResourceQuotaSummary(
+        name=quota.metadata.name, namespace=quota.metadata.namespace,
+        scopes=list((spec.scopes if spec else None) or []),
+        scope_selector=_scope_selector_text(spec.scope_selector if spec else None),
+        resources=[QuotaResource(resource=r, hard=str(hard[r]),
+                                 used=str(used[r]) if r in used else None)
+                   for r in sorted(hard)],
+        age=now - created if created else datetime.timedelta(0))
+
+
+def _limit_range_summary(lr, now: datetime.datetime) -> LimitRangeSummary:
+    def strs(values) -> dict[str, str]:
+        return {k: str(v) for k, v in (values or {}).items()}
+    created = lr.metadata.creation_timestamp
+    return LimitRangeSummary(
+        name=lr.metadata.name, namespace=lr.metadata.namespace,
+        limits=[LimitRangeItem(type=item.type, default=strs(item.default),
+                               default_request=strs(item.default_request),
+                               min=strs(item.min), max=strs(item.max),
+                               max_limit_request_ratio=strs(item.max_limit_request_ratio))
+                for item in ((lr.spec.limits if lr.spec else None) or [])],
+        age=now - created if created else datetime.timedelta(0))
+
+
+def get_resourcequota_summaries(namespace: Optional[str] = None) -> list[ResourceQuotaSummary]:
+    """The ResourceQuotas alone (not a tool: get_quota_summaries serves them,
+    and the capture and the composites read through this)."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    try:
+        items = (K8S.list_namespaced_resource_quota(namespace=namespace) if namespace
+                 else K8S.list_resource_quota_for_all_namespaces()).items
+    except client.ApiException as e:
+        raise _api_error("Error fetching resource quotas", e) from e
+    now = _now()
+    return [_quota_summary(q, now) for q in items]
+
+
+def get_limitrange_summaries(namespace: Optional[str] = None) -> list[LimitRangeSummary]:
+    """The LimitRanges alone (not a tool; see get_resourcequota_summaries)."""
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    try:
+        items = (K8S.list_namespaced_limit_range(namespace=namespace) if namespace
+                 else K8S.list_limit_range_for_all_namespaces()).items
+    except client.ApiException as e:
+        raise _api_error("Error fetching limit ranges", e) from e
+    now = _now()
+    return [_limit_range_summary(lr, now) for lr in items]
+
+
+def get_quota_summaries(namespace: Optional[str] = None) -> QuotaSummaries:
+    """ResourceQuotas (each limited resource's hard limit, how much is used, and
+    the percent) and LimitRanges (per-container and per-pod defaults, minimums
+    and maximums). A quota at its limit makes the API refuse new pods, so a
+    workload can be short of pods with none failing. namespace: one, or all if
+    omitted."""
+    logging.info(f"get_quota_summaries(namespace={namespace})")
+    return QuotaSummaries(resource_quotas=get_resourcequota_summaries(namespace),
+                          limit_ranges=get_limitrange_summaries(namespace))
+
+
+class _Compact(BaseModel):
+    """Serializes without empty fields: these results are one line per workload,
+    and the MCP server sends a result twice (as text and as structured content)."""
+    #: Fields kept when empty, where ``[]`` means "none" and None (still dropped)
+    #: means "not known": dropping ``[]`` too would make the two look the same.
+    _keep_empty: ClassVar[frozenset[str]] = frozenset()
+
+    @model_serializer(mode="wrap")
+    def _drop_empty(self, handler):
+        return {k: v for k, v in handler(self).items()
+                if v is not None and (k in self._keep_empty or v not in ([], {}))}
+
+
+# ---------------------------------------------------------------------------
+# Write records and recent changes (#38)
+# ---------------------------------------------------------------------------
+#
+# Kubernetes keeps no history of an object, but each object's managedFields
+# records the time of the latest write by each client (manager), per operation
+# and subresource. The reader and the logic are in changes.py; the models are
+# here with the others.
+
+class WriteEntry(BaseModel):
+    """One managedFields entry: a client's latest write of one kind."""
+    manager: Optional[str] = None
+    #: "Update" or "Apply".
+    operation: Optional[str] = None
+    #: "status", "scale", ...; None for the object itself.
+    subresource: Optional[str] = None
+    time: Optional[datetime.datetime] = None
+
+
+class ObjectRecord(BaseModel):
+    """An object's identity, creation time and write records."""
+    kind: str
+    #: API group; "" for core.
+    group: str = ""
+    #: None for a cluster-scoped object.
+    namespace: Optional[str] = None
+    name: str
+    created: Optional[datetime.datetime] = None
+    #: "Kind/name" of its controller owner, if any.
+    owner: Optional[str] = None
+    writes: list[WriteEntry] = Field(default_factory=list)
+    #: A ReplicaSet's Deployment revision (its annotation), to date revisions.
+    revision: Optional[int] = None
+
+
+class UnreadableKind(BaseModel):
+    """A resource type that couldn't be listed, and why. A list of these rather
+    than a map keyed by type: under a key named "secrets", redaction's name rule
+    would take the reason for a secret."""
+    #: As in ObjectWrites.kinds; "*.<group>" when the group's discovery failed.
+    kind: str
+    reason: str
+
+
+class ObjectWrites(BaseModel):
+    """Every object read, with its write records: what a capture stores."""
+    #: The resource types read, as "plural" or "plural.group" (kubectl's names).
+    kinds: list[str] = Field(default_factory=list)
+    #: Resource types that couldn't be read (a 403 for Secrets under a role
+    #: without them; an aggregated API that is down).
+    not_readable: list[UnreadableKind] = Field(default_factory=list)
+    objects: list[ObjectRecord] = Field(default_factory=list)
+
+
+NOTE_WRITE_RECORDS = (
+    "Each object keeps only the time of each client's latest write (per operation "
+    "and subresource), not what it changed or earlier writes; a deletion leaves no "
+    "trace. An object whose recorded writes are all controllers' counts as theirs. "
+    "Secrets are listed by name only, and only if the role may list them. Events "
+    "and Leases are left out: they are written continually.")
+NOTE_CHANGE_REVISION = (
+    "revision: the workload revision created within 5s after that write. That is "
+    "when the two happened, not a recorded cause.")
+NOTE_CHANGES_FROM_CREATION = (
+    "This capture has no write records (made before 4.7.0): only objects created "
+    "within the window are listed, from their ages, without who created them, and "
+    "only of the kinds it records. Updates aren't recorded. Objects a controller "
+    "owns (pods, ReplicaSets) are left out.")
+
+
+class ChangeRecord(_Compact):
+    """One write, by a client other than Kubernetes' own controllers."""
+    kind: str
+    #: None for a cluster-scoped object.
+    namespace: Optional[str] = None
+    name: str
+    #: "created" when the write is the object's creation (within 1s of it).
+    change: Literal["created", "updated"]
+    time: datetime.datetime
+    age: Duration
+    #: The client (managedFields manager). None when not recorded: the
+    #: creating entry was since overwritten, or the capture has no write records.
+    manager: Optional[str] = None
+    operation: Optional[str] = None
+    subresource: Optional[str] = None
+    #: For a Deployment, StatefulSet or DaemonSet: the revision created within
+    #: 5s after this write, if one was.
+    revision: Optional[int] = None
+
+    @field_validator("time")
+    @classmethod
+    def _whole_seconds(cls, value: datetime.datetime) -> datetime.datetime:
+        # managedFields times are whole seconds; replay's anchor needn't be.
+        return value.replace(microsecond=0)
+
+
+class RecentChanges(_Compact):
+    """Writes within a window, newest first."""
+    _keep_empty: ClassVar[frozenset[str]] = frozenset({"changes"})
+    namespace: str
+    within: Interval
+    #: "write records" (managedFields), or "creation times" for a replayed
+    #: capture without write records.
+    source: Literal["write records", "creation times"] = "write records"
+    #: At most 50, newest first; [] means none.
+    changes: list[ChangeRecord] = Field(default_factory=list)
+    #: Writes past the first 50.
+    changes_more: Optional[int] = None
+    #: One line for a client, kind and subresource with more than 10 objects
+    #: written, instead of a record each.
+    bulk: list[str] = Field(default_factory=list)
+    #: Kubernetes' own controllers' writes in the window, counted per client.
+    left_out: list[str] = Field(default_factory=list)
+    #: Resource types that couldn't be read, with why.
+    not_readable: list[str] = Field(default_factory=list)
+    #: Replay: common kinds the capture has no write records of (unknown).
+    not_recorded: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "RecentChanges":
+        notes = [NOTE_WRITE_RECORDS] if self.source == "write records" \
+            else [NOTE_CHANGES_FROM_CREATION]
+        if any(c.revision is not None for c in self.changes):
+            notes.append(NOTE_CHANGE_REVISION)
+        self.notes = notes
+        return self
+
+
+def _object_writes(namespaces: Optional[list[str]] = None) -> ObjectWrites:
+    """Every object's write records: namespaced objects in ``namespaces`` (all
+    when None) and every cluster-scoped object. Not a tool; the capture stores
+    it and get_recent_changes reads it."""
+    from .changes import object_writes
+    return object_writes(namespaces)
+
+
+def get_recent_changes(namespace: str, within: str = "30m") -> RecentChanges:
+    """What changed in a namespace, and when: every object in it, and every
+    cluster-scoped one, written within `within` ("30m" default, "2h", "1d") by
+    a client other than Kubernetes' own controllers, from managedFields. One
+    record per write: kind, name, created/updated, time, client, and a
+    workload's new revision. Only each client's latest write is kept; deletions
+    leave no trace."""
+    logging.info(f"get_recent_changes(namespace={namespace}, within={within})")
+    from .changes import recent_changes_live
+    return recent_changes_live(namespace, within)
+
+
+def print_recent_changes(namespace: str, within: str = "30m") -> None:
+    """Calls get_recent_changes and prints the output to stdout, one line per write."""
+    result = get_recent_changes(namespace, within)
+    print(f"{'AGE':<10} {'CHANGE':<8} {'OBJECT':<56} {'CLIENT':<28} REVISION")
+    for c in result.changes:
+        what = f"{c.kind}/{c.name}" + (f" ({c.subresource})" if c.subresource else "")
+        print(f"{_format_timedelta(c.age):<10} {c.change:<8} {what:<56} "
+              f"{c.manager or '(not recorded)':<28} {c.revision or ''}")
+    for line in result.bulk + [f"left out: {x}" for x in result.left_out] + \
+            [f"not readable: {x}" for x in result.not_readable]:
+        print(line)
+
+
+def print_quota_summaries(namespace: Optional[str] = None) -> None:
+    """Calls get_quota_summaries and prints the output to stdout."""
+    result = get_quota_summaries(namespace)
+    print(f"{'QUOTA':<32} {'RESOURCE':<24} {'USED':>10} {'HARD':>10} %")
+    for q in result.resource_quotas or []:
+        for r in q.resources:
+            print(f"{q.name:<32} {r.resource:<24} {r.used or '?':>10} {r.hard:>10} "
+                  f"{'' if r.percent is None else r.percent}")
+    for lr in result.limit_ranges or []:
+        for item in lr.limits:
+            print(f"LimitRange/{lr.name} {item.type}: default {item.default}, "
+                  f"defaultRequest {item.default_request}, min {item.min}, max {item.max}")
+
+
 
 
 class ConfigMapSummary(BaseModel):
@@ -4209,18 +4572,6 @@ def print_cluster_info() -> None:
 # a tool is called so the two modules don't import each other at load time.
 # ---------------------------------------------------------------------------
 
-class _Compact(BaseModel):
-    """Serializes without empty fields: these results are one line per workload,
-    and the MCP server sends a result twice (as text and as structured content)."""
-    #: Fields kept when empty, where ``[]`` means "none" and None (still dropped)
-    #: means "not known": dropping ``[]`` too would make the two look the same.
-    _keep_empty: ClassVar[frozenset[str]] = frozenset()
-
-    @model_serializer(mode="wrap")
-    def _drop_empty(self, handler):
-        return {k: v for k, v in handler(self).items()
-                if v is not None and (k in self._keep_empty or v not in ([], {}))}
-
 
 
 class Termination(_Compact):
@@ -4309,6 +4660,9 @@ class NamespaceHealth(_Compact):
     #: One line per NetworkPolicy, e.g. "NetworkPolicy/deny-all selects 3 pods
     #: (a, b, c): denies all ingress". get_workload_report combines them per workload.
     network_policies: list[str] = Field(default_factory=list)
+    #: One line per ResourceQuota, each limited resource's used/hard and percent:
+    #: "ResourceQuota/mem (created 5m55s ago): limits.memory 2Gi/2Gi (100%)".
+    resource_quotas: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -4714,6 +5068,7 @@ TOOLS = [
     get_endpoint_summaries,
     get_ingress_summaries,
     get_networkpolicy_summaries,
+    get_quota_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,
@@ -4729,6 +5084,7 @@ TOOLS = [
     get_logs_for_cronjob,
     get_pvc_summaries,
     get_events,
+    get_recent_changes,
 ]
 
 
@@ -4759,6 +5115,7 @@ TOOLSET_NAMES: dict[str, tuple[str, ...]] = {
         "get_workload_report",
         "get_events",
         "get_node_summaries",
+        "get_recent_changes",
     ),
     "investigate": tuple(fn.__name__ for fn in TOOLS
                          if fn.__name__ not in OVERLAPPING_TOOLS),

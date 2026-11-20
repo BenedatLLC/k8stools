@@ -3,7 +3,7 @@
 ![Unit Tests](https://github.com/BenedatLLC/k8stools/actions/workflows/unit-tests.yml/badge.svg)
 
 k8stools gives AI agents read-only access to a Kubernetes cluster. It provides
-33 tools: from "what is wrong in this namespace?" down to a single pod's spec or
+35 tools: from "what is wrong in this namespace?" down to a single pod's spec or
 logs. You can use them in two ways:
 
 * **As an MCP server** (`k8s-mcp-server`, included), for Claude Code, Cursor,
@@ -93,14 +93,14 @@ The account it runs as needs only `get` and `list` permissions. See
 
 An MCP client sends every tool's description to the model on every turn, and
 agents choose less reliably when they have many similar tools to pick from. So the
-server doesn't have to offer all 33 tools: it serves a named **toolset**, chosen
+server doesn't have to offer all 35 tools: it serves a named **toolset**, chosen
 with `--toolset`:
 
 | Toolset | What it contains | Use it when |
 |---|---|---|
-| `triage` | 5 tools: `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries` | The agent's job is to find what's wrong and where. The two *composite* tools answer in one call what otherwise takes five or six. |
-| `investigate` **(default)** | 29 tools: every tool except the four that another tool already covers | The agent needs to dig into details: specs, history, logs, networking, storage. |
-| `all` | All 33 tools | You want the full set, as k8stools 2.x served. |
+| `triage` | 6 tools: `get_cluster_info`, `get_namespace_health`, `get_workload_report`, `get_events`, `get_node_summaries`, `get_recent_changes` | The agent's job is to find what's wrong and where, and what changed. The two *composite* tools answer in one call what otherwise takes five or six. |
+| `investigate` **(default)** | 31 tools: every tool except the four that another tool already covers | The agent needs to dig into details: specs, history, logs, networking, storage. |
+| `all` | All 35 tools | You want the full set, as k8stools 2.x served. |
 
 The four tools that `investigate` leaves out, and what to use instead:
 
@@ -149,6 +149,7 @@ it is in `investigate`. Every tool is in `all`.
 | `get_namespace_health` | What is wrong in a namespace, and where. A full entry for each unhealthy workload (last termination with the exit code's meaning, how long instances live, the restart back-off, memory limit vs request, when the template last changed), pods that can't be scheduled and a Deployment's failing rollout conditions, the same for each *recovering* one (ready, but restarted within the last 24 hours), and one line for each healthy one. Workloads failing the same way are grouped. | ✓ | ✓ |
 | `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails of its most troubled pod, short ones of the others (`grep` searches every pod's whole log); the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA and resource usage. | ✓ | ✓ |
 | `get_cluster_info` | Which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed. | ✓ | ✓ |
+| `get_recent_changes` | What changed in a namespace, and when: every write within a window (30 minutes by default) to an object in it or a cluster-scoped object, by a client other than Kubernetes' own controllers (whose writes are counted), from each object's `managedFields`. A new NetworkPolicy, a ResourceQuota, a ConfigMap edit, a rollout with the revision it made. Only each client's latest write is kept, and deletions leave no trace; the result says so. | ✓ | ✓ |
 
 These *composite* tools are built from the other tools, and report facts rather
 than diagnoses: they say "exit code 137, without OOMKilled", not "this was an
@@ -206,6 +207,7 @@ out-of-memory kill".
 | `get_configmap_summaries` | ConfigMaps, like `kubectl get configmaps` | | ✓ |
 | `get_configmap` | The full contents of one ConfigMap (redacted by the server) | | ✓ |
 | `get_pvc_summaries` | PersistentVolumeClaims, like `kubectl get pvc`, with the pods that mount each one, and an unbound claim's events | | ✓ |
+| `get_quota_summaries` | ResourceQuotas (each resource's hard limit, how much is used, the percent) and LimitRanges (per-container defaults, minimums and maximums). A quota at its limit makes the API refuse new pods. | | ✓ |
 
 ### Custom resources
 
@@ -267,7 +269,7 @@ Some common combinations:
 
 ```sh
 k8s-mcp-server                                         # stdio, current kubeconfig context, investigate toolset
-k8s-mcp-server --toolset triage                        # just the five triage tools
+k8s-mcp-server --toolset triage                        # just the six triage tools
 k8s-mcp-server --context prod-eu                       # a specific cluster
 k8s-mcp-server --mock                                  # the built-in snapshot, no cluster needed
 k8s-mcp-server --state-file incident-1234.json         # replay your own capture
@@ -392,7 +394,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [namespaces, nodes, pods, pods/log, events, services, configmaps,
-              persistentvolumeclaims]
+              persistentvolumeclaims, resourcequotas, limitranges]
   verbs: [get, list]
 - apiGroups: [apps]
   resources: [deployments, replicasets, statefulsets, daemonsets, controllerrevisions]
@@ -427,9 +429,45 @@ use, rather than a wildcard:
   verbs: [get, list]
 ```
 
+`get_recent_changes` lists every resource type the API serves, metadata only
+(name, creation time, owners and `managedFields`, never spec or data), and names
+any type it can't list in its result rather than failing. With the role above it
+covers the kinds listed there; to see writes to RBAC objects, service accounts,
+volumes and the like as well, add:
+
+```yaml
+- apiGroups: [""]
+  resources: [serviceaccounts, persistentvolumes]
+  verbs: [list]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+  verbs: [list]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [list]
+- apiGroups: [storage.k8s.io]
+  resources: [storageclasses]
+  verbs: [list]
+```
+
+**Secrets are opt-in.** `get_recent_changes` asks for Secrets' metadata only, so
+their values never reach k8stools, but Kubernetes has no metadata-only
+permission: `list` on `secrets` would let the same account read every value with
+any other client. The role above leaves it out, and the result then names
+Secrets as not readable. Add it only for an account you would trust with every
+Secret's value:
+
+```yaml
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [list]
+```
+
 `get_cluster_info` also reads the server version (`/version`), which every
-authenticated user can read by default. No tool reads Secrets: `get_workload_history`
-names the Secrets a workload uses, from its pod template, without reading them.
+authenticated user can read by default. No tool reads a Secret's values:
+`get_workload_history` names the Secrets a workload uses, from its pod template,
+without reading them, and `get_recent_changes` lists Secrets by name only, and
+only with the permission above.
 
 ### The HTTP transport
 
@@ -701,6 +739,10 @@ or didn't collect it:
   makes its tool raise `K8sNotRecorded`, an error saying the kind is unknown
   rather than absent. `get_namespace_health` and `get_workload_report` name such
   kinds in one note instead of failing.
+- A capture without write records (made before 4.7.0) can't say what was
+  updated. `get_recent_changes` then lists the objects created within the
+  window, from their ages, without who created them, and says so. One with
+  write records names the common kinds they don't cover.
 - A container log that wasn't recorded (unreadable when captured, or
   `--no-logs`) raises `K8sNotRecorded` too, and so does a previous-instance log
   of a container that restarted, when its previous log wasn't captured. A
@@ -744,6 +786,9 @@ recorded:
   instance's records are kept (those since it started). A container with no
   records at all is not recorded, and previous-instance logs never are.
 - **Metrics and custom resource instances** were never collected, and say so.
+- **Write records** come from each pulled object's `managedFields`, for the kinds
+  the pull lists (RBAC objects, quotas and service accounts included; no
+  Secrets). `get_recent_changes` names the common kinds a pull has none of.
 - Events are those that existed at the pull (each recorded twice in the
   snapshot, kept once). Endpoints are the core `Endpoints` objects, served as
   EndpointSlices.

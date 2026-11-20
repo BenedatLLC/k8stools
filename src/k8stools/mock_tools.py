@@ -179,6 +179,30 @@ def get_networkpolicy_summaries(namespace: Optional[str] = None) -> list[k8s_too
 get_networkpolicy_summaries.__doc__ = k8s_tools.get_networkpolicy_summaries.__doc__
 
 
+def get_resourcequota_summaries(namespace: Optional[str] = None) -> list[k8s_tools.ResourceQuotaSummary]:
+    return _state().get_resourcequota_summaries(namespace)
+
+get_resourcequota_summaries.__doc__ = k8s_tools.get_resourcequota_summaries.__doc__
+
+
+def get_limitrange_summaries(namespace: Optional[str] = None) -> list[k8s_tools.LimitRangeSummary]:
+    return _state().get_limitrange_summaries(namespace)
+
+get_limitrange_summaries.__doc__ = k8s_tools.get_limitrange_summaries.__doc__
+
+
+def get_quota_summaries(namespace: Optional[str] = None) -> k8s_tools.QuotaSummaries:
+    return _state().get_quota_summaries(namespace)
+
+get_quota_summaries.__doc__ = k8s_tools.get_quota_summaries.__doc__
+
+
+def get_recent_changes(namespace: str, within: str = "30m") -> k8s_tools.RecentChanges:
+    return _state().get_recent_changes(namespace, within)
+
+get_recent_changes.__doc__ = k8s_tools.get_recent_changes.__doc__
+
+
 def get_endpoint_summaries(namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
     return _state().get_endpoint_summaries(namespace)
 
@@ -311,6 +335,7 @@ TOOLS = [
     get_endpoint_summaries,
     get_ingress_summaries,
     get_networkpolicy_summaries,
+    get_quota_summaries,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,
@@ -326,6 +351,7 @@ TOOLS = [
     get_logs_for_cronjob,
     get_pvc_summaries,
     get_events,
+    get_recent_changes,
 ]
 
 #: The mock versions of `k8s_tools.TOOLSETS`, selected by the same names.

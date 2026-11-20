@@ -39,6 +39,8 @@ READERS = {
     "jobs": lambda s: s.get_job_summaries(),
     "pvcs": lambda s: s.get_pvc_summaries(),
     "events": lambda s: s.get_events(),
+    "resourcequotas": lambda s: s.get_resourcequota_summaries(),
+    "limitranges": lambda s: s.get_limitrange_summaries(),
 }
 
 
@@ -141,8 +143,10 @@ def _scenario_33_shape(**extra):
         statefulsets=[], jobs=[], pvcs=[], events=[])
 
 
-NOTE = ("Not recorded in this capture, so unknown rather than absent: DaemonSets, "
-        "HorizontalPodAutoscalers, Service endpoints, Ingresses, NetworkPolicies.")
+# The namespace view reads ResourceQuotas too (#38); the workload report doesn't.
+REPORT_NOTE = ("Not recorded in this capture, so unknown rather than absent: DaemonSets, "
+               "HorizontalPodAutoscalers, Service endpoints, Ingresses, NetworkPolicies.")
+NOTE = REPORT_NOTE[:-1] + ", ResourceQuotas."
 
 
 def test_the_namespace_view_names_what_wasnt_recorded_in_one_note():
@@ -153,7 +157,7 @@ def test_the_namespace_view_names_what_wasnt_recorded_in_one_note():
 
 def test_the_report_names_it_too_and_an_unrecorded_log_is_unavailable():
     r = workload_report(_scenario_33_shape(), "ad", "default")
-    assert NOTE in r.notes
+    assert REPORT_NOTE in r.notes
     [tail] = r.logs
     assert (tail.container, tail.available, tail.lines) == ("ad", False, [])
     assert "wasn't recorded in this capture" in tail.reason
