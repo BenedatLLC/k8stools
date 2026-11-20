@@ -1300,9 +1300,11 @@ listed (a 403, an aggregated API that is down) is named in `not_readable`, and
 the rest are still read.
 
 Kubernetes' own controllers are a list (`changes.CONTROLLER_MANAGERS`):
-kube-controller-manager, kube-scheduler, kubelet, kube-apiserver, kube-proxy,
-clusterrole-aggregation-controller, any `*cloud-controller-manager`, the CSI
-sidecars (`csi-*`, `external-*`) and snapshot-controller. Their writes are
+kube-controller-manager, kube-scheduler, kubelet, kube-apiserver and its own
+controllers (`api-priority-and-fairness-config-*`, the service-CIDR
+controllers), kube-proxy, clusterrole-aggregation-controller, any
+`*cloud-controller-manager`, the CSI sidecars (`csi-*`, `external-*`),
+snapshot-controller and minikube's storage-provisioner. Their writes are
 counted in `left_out`, so nothing is hidden without saying so. Operators and
 tools (helm, kops, Argo CD, cilium-operator) are clients, and listed.
 
@@ -1315,7 +1317,7 @@ aren't recorded. Kinds a capture's write records don't cover are named in
 
 #### Parameters
 
-- **`namespace`** (`str`): the namespace. Cluster-scoped objects are always included.
+- **`namespace`** (`str`): the namespace. Cluster-scoped objects are always included. A namespace that isn't among the Namespaces read (live, or the capture's) raises `K8sApiError` naming the ones that are, rather than answering "no changes": listing in a misspelt namespace finds nothing. A role that can't list Namespaces gets no check.
 - **`within`** (`str, default="30m"`): the window, as "90s", "30m", "2h", "1d" or a combination ("1h30m").
 
 #### Returns

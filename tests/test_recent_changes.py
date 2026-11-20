@@ -112,7 +112,10 @@ class FakeApi:
         if path == "/version":
             raise client.ApiException(http_resp=_Response(404, {"message": "no version"}))
         body = self.routes.get(path, {"items": []})
-        if "items" in body and headers.get("Accept") != METADATA_ONLY:
+        if path == "/api/v1/namespaces" and headers.get("Accept") != METADATA_ONLY:
+            # A cluster always has namespaces: typed reads see these, Active.
+            body = {"items": [{**i, "status": {"phase": "Active"}} for i in body["items"]]}
+        elif "items" in body and headers.get("Accept") != METADATA_ONLY:
             body = {"items": []}  # these lists hold metadata only; typed reads see none
         return _Response(200, body)
 
@@ -208,6 +211,25 @@ def test_the_window_is_a_parameter(fake):
         k8s_tools.get_recent_changes("shop", "half an hour")
 
 
+def test_a_namespace_that_doesnt_exist_is_an_error_not_no_changes(fake):
+    """Listing in a misspelt namespace finds nothing, which read as "nothing
+    changed": live, replayed, and from an older capture's creation times."""
+    with pytest.raises(K8sApiError, match=r"Namespace 'shpo' not found \(namespaces: agent, shop\)"):
+        k8s_tools.get_recent_changes("shpo")
+    with pytest.raises(K8sApiError, match="Namespace 'shpo' not found"):
+        MockState(json.loads(json.dumps(_captured())), frozen=True).get_recent_changes("shpo")
+    data = json.loads(BUILTIN_STATE_FILE.read_text())
+    data.pop("writes", None)
+    with pytest.raises(K8sApiError, match="Namespace 'otel-demo' not found"):
+        MockState(data, frozen=True).get_recent_changes("otel-demo")
+
+
+def test_without_namespace_records_the_namespace_isnt_checked():
+    """A role that can't list Namespaces says nothing of which exist."""
+    writes = ObjectWrites(kinds=["pods"], objects=[])
+    assert recent_changes(writes, "shop", parse_window("30m"), AT, lambda *a: []).changes == []
+
+
 def test_a_failed_discovery_is_an_error_an_agent_can_read():
     api = FakeApi(ROUTES, {"/apis": (403, "forbidden")})
     with use_api_client(api.client()), pinned_clock(AT):
@@ -297,6 +319,8 @@ def test_other_windows_are_refused(text):
     ("kube-controller-manager", True), ("aws-cloud-controller-manager", True),
     ("csi-attacher", True), ("kubelet", True), ("helm", False), ("kops", False),
     ("cilium-operator", False), ("OpenAPI-Generator", False), ("kubectl-rollout", False),
+    ("api-priority-and-fairness-config-producer-v1", True), ("service-cidr-controller", True),
+    ("storage-provisioner", True), ("kubeadm", False), ("kubectl-client-side-apply", False),
     (None, False)])
 def test_which_clients_are_kubernetes_own_controllers(manager, controller):
     assert is_controller(manager) is controller

@@ -22,7 +22,8 @@ dates are release-tag dates.
   ResourceQuota, a ConfigMap edit now show as changes. It reads metadata only,
   through discovery, so it covers every type the role can list and names the
   rest; Secrets' values never reach it. Only each client's latest write is kept,
-  and deletions leave no trace; the result says so. On ITBench Scenario 31 it
+  and deletions leave no trace; the result says so. A namespace that doesn't
+  exist is an error naming the ones that do, not "no changes". On ITBench Scenario 31 it
   lists the harness's `agent-access` Role and RoleBinding and the
   `frontend-block-all-ports` NetworkPolicy 5m55s before the pull; on 102, the
   `otel-demo-memory` ResourceQuota.

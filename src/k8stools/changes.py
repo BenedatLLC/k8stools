@@ -54,6 +54,10 @@ CONTROLLER_MANAGERS = (
     "kube-scheduler",
     "kubelet",
     "kube-apiserver",
+    # kube-apiserver's own controllers, under their own names
+    "api-priority-and-fairness-config-*",   # FlowSchemas and their status
+    "service-cidr-controller",
+    "kubernetes-service-cidr-controller",
     "kube-proxy",
     "clusterrole-aggregation-controller",
     "*cloud-controller-manager",
@@ -63,6 +67,7 @@ CONTROLLER_MANAGERS = (
     "external-resizer",
     "external-snapshotter",
     "snapshot-controller",
+    "storage-provisioner",     # minikube's hostpath provisioner
 )
 
 #: Resource types never listed: written continually, so noise in any window.
@@ -92,6 +97,8 @@ BULK_OVER = 10
 CREATED_WITHIN = datetime.timedelta(seconds=1)
 #: A revision created this soon after a spec write is reported with it.
 REVISION_WITHIN = datetime.timedelta(seconds=5)
+#: How many namespaces a "not found" error lists.
+_NAMESPACES_SHOWN = 20
 
 _REVISION_ANNOTATION = "deployment.kubernetes.io/revision"
 _WORKLOADS = ("Deployment", "StatefulSet", "DaemonSet")
@@ -293,7 +300,14 @@ def recent_changes(writes: ObjectWrites, namespace: str, window: datetime.timede
                    source: str = "write records",
                    not_recorded: Optional[list[str]] = None) -> RecentChanges:
     """The writes within ``window`` before ``now`` to objects in ``namespace``
-    and to cluster-scoped objects, Kubernetes' own controllers' counted apart."""
+    and to cluster-scoped objects, Kubernetes' own controllers' counted apart.
+    A namespace that isn't among the recorded Namespaces raises: listing in it
+    finds nothing, which would read as "nothing changed"."""
+    if "namespaces" in writes.kinds:
+        known = sorted(o.name for o in writes.objects if o.kind == "Namespace")
+        if namespace not in known:
+            shown = ", ".join(known[:_NAMESPACES_SHOWN]) + (", ..." if len(known) > _NAMESPACES_SHOWN else "")
+            raise k8s_tools.K8sApiError(f"Namespace '{namespace}' not found (namespaces: {shown}).")
     since = now - window
     records: list[ChangeRecord] = []
     left_out: collections.Counter = collections.Counter()

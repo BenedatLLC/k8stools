@@ -511,6 +511,8 @@ Invariants worth preserving when touching this code:
   `left_out`, never silently dropped. A capture without `writes` falls back to
   creation ages and says updates aren't recorded; one with them names the
   `EXPECTED_KINDS` it lacks (an ITBench pull lists only what it pulled).
+  A namespace not among the recorded Namespaces raises (listing in a
+  misspelt one finds nothing, which read as "nothing changed").
   `SnapshotRest` answers discovery from the pull's own kinds. A revision is
   reported by timing only (created within 5s after a spec write), and the note
   says so.
