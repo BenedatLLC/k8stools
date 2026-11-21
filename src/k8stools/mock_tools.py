@@ -203,6 +203,12 @@ def get_webhook_configurations(namespace: Optional[str] = None) -> k8s_tools.Web
 get_webhook_configurations.__doc__ = k8s_tools.get_webhook_configurations.__doc__
 
 
+def get_namespace_webhooks(namespace: str) -> k8s_tools.WebhookConfigurations:
+    return _state().get_namespace_webhooks(namespace)
+
+get_namespace_webhooks.__doc__ = k8s_tools.get_namespace_webhooks.__doc__
+
+
 def get_recent_changes(namespace: str, within: str = "30m") -> k8s_tools.RecentChanges:
     return _state().get_recent_changes(namespace, within)
 

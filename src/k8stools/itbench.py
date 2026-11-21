@@ -462,7 +462,7 @@ class SnapshotRest:
                 {"name": g, "versions": [{"groupVersion": f"{g}/{v}", "version": v}],
                  "preferredVersion": {"groupVersion": f"{g}/{v}", "version": v}}
                 for g, v in versions]})
-        if len(parts) == 2 and parts[0] == "apis":  # one group, as a webhook check asks
+        if len(parts) == 2 and parts[0] == "apis":  # one group: 404 for a group the pull lacks
             versions = sorted({k.version for k in self.served.values() if k.group == parts[1]})
             if not versions:
                 raise _not_found(f"API group {parts[1]}")
@@ -620,10 +620,13 @@ def import_snapshot(directory: Path, pull: Optional[int] = None,
         if kind not in recorded:
             del state[key]
             stats.not_recorded.append(key)
-    if "services" not in recorded:
-        # A webhook's backend Service "not found" would only mean none were pulled.
-        for key in ("mutatingwebhooks", "validatingwebhooks"):
-            for record in state.get(key, []):
+    for key in ("mutatingwebhooks", "validatingwebhooks"):
+        for record in state.get(key, []):
+            # The import's discovery serves only the pull's kinds, so any other
+            # resource, built-in or not, would read as unserved.
+            record["unserved_resources"] = None
+            if "services" not in recorded:
+                # A backend Service "not found" would only mean none were pulled.
                 record.pop("backend_ready", None)
                 record.pop("backend_problem", None)
     state["workload_histories"] = _histories(state)

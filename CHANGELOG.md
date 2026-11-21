@@ -37,8 +37,9 @@ dates are release-tag dates.
   gets that one, with a note.
 - **`get_workload_report` has `admission_webhooks`**: the webhooks called when
   the workload's pods are created, one line each with failurePolicy, selector
-  and backend state, or "no admission webhook is called when these pods are
-  created". In SREGym's fault (a webhook rewriting the first container's memory
+  and backend state, and what a backend that can't answer does ("the API server
+  refuses these pod creates"), or "no admission webhook is called when these
+  pods are created". In SREGym's fault (a webhook rewriting the first container's memory
   on create) the agent saw the pod differ from its template and couldn't see why.
 - **`NamespaceSummary.labels`**, which namespace selectors match. Captures
   record them and both webhook kinds; replay of an older capture says webhooks

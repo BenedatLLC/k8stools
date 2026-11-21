@@ -3310,7 +3310,8 @@ def _webhook_backend(config, services: dict[str, Optional[dict[str, "ServiceSumm
     return out
 
 
-def _webhook_summaries(configs: list, mutating: bool) -> list[WebhookSummary]:
+def _webhook_summaries(configs: list, mutating: bool, check_served: bool = True
+                       ) -> list[WebhookSummary]:
     hooks = [(cfg, hook) for cfg in configs for hook in cfg.webhooks or []]
     services: dict[str, Optional[dict[str, ServiceSummary]]] = {}
     for ns in {h.client_config.service.namespace for _, h in hooks
@@ -3326,7 +3327,8 @@ def _webhook_summaries(configs: list, mutating: bool) -> list[WebhookSummary]:
                                  resources=list(r.resources or []), scope=r.scope or "*")
                      for r in h.rules or []] for _, h in hooks}
     served = _served_resources({g for rs in rules.values() for r in rs
-                                for g in r.api_groups if g != "*"}) if hooks else {}
+                                for g in r.api_groups if g != "*"}) \
+        if hooks and check_served else {}
     now = _now()
     summaries = []
     for cfg, h in hooks:
@@ -3341,7 +3343,7 @@ def _webhook_summaries(configs: list, mutating: bool) -> list[WebhookSummary]:
             failure_policy=h.failure_policy or "Fail", match_policy=h.match_policy,
             side_effects=h.side_effects, timeout_seconds=h.timeout_seconds,
             reinvocation_policy=(h.reinvocation_policy or "Never") if mutating else None,
-            unserved_resources=_unserved(rules[id(h)], served),
+            unserved_resources=_unserved(rules[id(h)], served) if check_served else None,
             **_webhook_backend(h.client_config, services)))
     return summaries
 
@@ -3353,23 +3355,24 @@ def _admission_api() -> client.AdmissionregistrationV1Api:
     return ADMISSION_V1_API
 
 
-def get_mutating_webhook_summaries() -> list[WebhookSummary]:
+def get_mutating_webhook_summaries(check_served: bool = True) -> list[WebhookSummary]:
     """Every MutatingWebhookConfiguration's webhooks (not a tool:
-    get_webhook_configurations serves them; the capture reads through this)."""
+    get_webhook_configurations serves them; the capture reads through this).
+    check_served=False skips discovery: unserved_resources is then None."""
     try:
         configs = _admission_api().list_mutating_webhook_configuration().items
     except client.ApiException as e:
         raise _api_error("Error fetching mutating webhook configurations", e) from e
-    return _webhook_summaries(configs, mutating=True)
+    return _webhook_summaries(configs, mutating=True, check_served=check_served)
 
 
-def get_validating_webhook_summaries() -> list[WebhookSummary]:
+def get_validating_webhook_summaries(check_served: bool = True) -> list[WebhookSummary]:
     """Every ValidatingWebhookConfiguration's webhooks (not a tool)."""
     try:
         configs = _admission_api().list_validating_webhook_configuration().items
     except client.ApiException as e:
         raise _api_error("Error fetching validating webhook configurations", e) from e
-    return _webhook_summaries(configs, mutating=False)
+    return _webhook_summaries(configs, mutating=False, check_served=check_served)
 
 
 def webhooks_in_namespace(result: WebhookConfigurations, namespace: str,
@@ -3413,11 +3416,22 @@ def get_webhook_configurations(namespace: Optional[str] = None) -> WebhookConfig
     one can refuse it. namespace: only webhooks whose namespaceSelector
     matches it, with objectSelectors matched to its pods."""
     logging.info(f"get_webhook_configurations(namespace={namespace})")
+    return _webhook_configurations(namespace, check_served=True)
+
+
+def get_namespace_webhooks(namespace: str) -> WebhookConfigurations:
+    """get_webhook_configurations(namespace) without the discovery behind
+    unserved_resources (None here). Not a tool: the workload report reads it,
+    and lists only webhooks covering pod CREATE, which pods always serve."""
+    return _webhook_configurations(namespace, check_served=False)
+
+
+def _webhook_configurations(namespace: Optional[str], check_served: bool) -> WebhookConfigurations:
     halves, refused = {}, []
     for kind, read in (("MutatingWebhookConfigurations", get_mutating_webhook_summaries),
                        ("ValidatingWebhookConfigurations", get_validating_webhook_summaries)):
         try:
-            halves[kind] = read()
+            halves[kind] = read(check_served)
         except K8sForbidden as e:
             refused.append((kind, e))
     if len(refused) == 2:

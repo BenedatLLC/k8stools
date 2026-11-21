@@ -276,7 +276,12 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   capture's pod labels, so replay filters as live. Unknown namespace labels
   filter nothing, with a note; webhooks unrecorded or unreadable give no line,
   never "no admission webhook". Backend state and `unserved_resources` are
-  stored as read, like `ServiceSummary.ready_endpoints`.
+  stored as read, like `ServiceSummary.ready_endpoints`; an ITBench import
+  sets `unserved_resources` to None (its discovery serves only the pull's
+  kinds). A webhook's consequences go on its report line, not in detached
+  notes ("its backend" can't name one of several). The report reads
+  `get_namespace_webhooks` (not a tool), which skips the discovery: every
+  report pays for it, and a listed webhook's pod rule is always served.
 - New data sources (HPA, endpoints, metrics: #14-#16) extend `WorkloadHealth`
   and `WorkloadReport` with fields, rather than adding tools to `triage`.
 

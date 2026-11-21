@@ -1085,6 +1085,10 @@ class MockState:
 
         return k8s_tools.webhooks_in_namespace(result, namespace, labels, pod_labels)
 
+    def get_namespace_webhooks(self, namespace: str) -> k8s_tools.WebhookConfigurations:
+        """The workload report's read: as get_webhook_configurations(namespace)."""
+        return self.get_webhook_configurations(namespace)
+
     @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:
         """Captures from before endpoints were captured replay none."""

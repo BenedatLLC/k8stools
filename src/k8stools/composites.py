@@ -98,7 +98,7 @@ _READER_KINDS = {
     "get_ingress_summaries": "Ingresses", "get_networkpolicy_summaries": "NetworkPolicies",
     "get_events": "events", "get_workload_history": "workload history",
     "get_resourcequota_summaries": "ResourceQuotas", "get_service_summaries": "Services",
-    "get_webhook_configurations": "admission webhooks",
+    "get_namespace_webhooks": "admission webhooks",
 }
 
 
@@ -518,7 +518,10 @@ def _webhook_lines(result: WebhookConfigurations, pod_names: set[str]
     """The admission webhooks called when one of these pods is created (#39):
     rules covering pod CREATE, a namespaceSelector matching the namespace (the
     tool filtered those), and an objectSelector that is empty or matches one of
-    the pods (or can't be matched: no pods, or labels unknown). And the notes."""
+    the pods (or can't be matched: no pods, or labels unknown). And the notes.
+    What a webhook's own notes say goes on its line, so several lines can't
+    leave a note's "its" ambiguous; the unserved-rules note is left out: these
+    webhooks' pod rules are served, so it would only be about other rules."""
     lines, notes = [], []
     mutating = False
     for kind, hooks in (("MutatingWebhookConfiguration", result.mutating),
@@ -539,8 +542,10 @@ def _webhook_lines(result: WebhookConfigurations, pod_names: set[str]
                 state = (f" ({w.backend_problem})" if w.backend_problem else
                          f" ({w.backend_ready} ready)" if w.backend_ready is not None else "")
                 parts.append(f"backend {backend}{state}")
+            if w.backend_problem:
+                parts.append("pod creates go ahead without it" if w.failure_policy == "Ignore"
+                             else "the API server refuses these pod creates")
             lines.append("; ".join(parts))
-            notes += [n for n in w.notes if n not in notes]
             mutating |= kind.startswith("Mutating")
     if mutating:
         notes.append(NOTE_WEBHOOK_PATCH)
@@ -1283,7 +1288,7 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                                 "these pods, and aren't shown.")
     if unavailable:
         report.notes.append(unavailable)
-    webhooks = _recorded(unrecorded, api.get_webhook_configurations, namespace, default=None)
+    webhooks = _recorded(unrecorded, api.get_namespace_webhooks, namespace, default=None)
     if webhooks is not None:
         report.admission_webhooks, webhook_notes = _webhook_lines(webhooks, {p.name for p in pods})
         report.notes += [n for n in webhook_notes if n not in report.notes]

@@ -401,11 +401,14 @@ def test_the_report_names_the_webhooks_called_when_its_pods_are_created(monkeypa
     report = workload_report(_replay(_captured(monkeypatch)), "test-deployment", "default")
     assert report.admission_webhooks == [
         "MutatingWebhookConfiguration/mem-override: webhook all.example.com; failurePolicy Fail; "
-        "backend webhooks/mem-svc:443/mutate (Service webhooks/mem-svc not found)",
+        "backend webhooks/mem-svc:443/mutate (Service webhooks/mem-svc not found); "
+        "the API server refuses these pod creates",
         "MutatingWebhookConfiguration/mem-override: webhook cart.example.com; failurePolicy Fail; "
         "objectSelector app=cart; backend webhooks/mem-svc:443/mutate "
-        "(Service webhooks/mem-svc not found)"]
-    assert NOTE_WEBHOOK_PATCH in report.notes and NOTE_WEBHOOK_FAILS_CLOSED in report.notes
+        "(Service webhooks/mem-svc not found); the API server refuses these pod creates"]
+    # What a webhook's notes say is on its line: a note's "its" can't name one of several.
+    assert NOTE_WEBHOOK_PATCH in report.notes
+    assert not {NOTE_WEBHOOK_FAILS_CLOSED, NOTE_WEBHOOK_FAILS_OPEN} & set(report.notes)
     # Another workload's pods don't carry app=cart.
     ad = workload_report(_replay(_captured(monkeypatch)), "ad", "default")
     assert [line.split(";")[0] for line in ad.admission_webhooks] == [
@@ -433,7 +436,7 @@ def test_a_role_without_webhooks_still_gets_its_report():
         def __getattr__(self, name):
             return getattr(state, name)
 
-        def get_webhook_configurations(self, namespace=None):
+        def get_namespace_webhooks(self, namespace):
             raise K8sForbidden("403 Forbidden: mutatingwebhookconfigurations")
     report = workload_report(Refusing(), "test-deployment", "default")
     assert report.admission_webhooks == []
@@ -453,6 +456,44 @@ def test_without_pods_a_webhook_with_an_object_selector_is_still_named():
         "objectSelector app=cart"]
     assert _webhook_lines(result, {"cart-1"})[0] == [
         "no admission webhook is called when these pods are created"]
+
+
+def test_the_report_puts_each_webhooks_consequences_on_its_line():
+    """Not in detached notes: with several webhooks, "its backend" names none.
+    Rules on unserved resources aren't mentioned: a listed webhook covers pod
+    CREATE, which is always served, so the note would be about other rules."""
+    rule = WebhookRule(operations=["CREATE"], api_groups=["", "example.com"],
+                       api_versions=["v1"], resources=["pods", "widgets"])
+    hooks = [WebhookSummary(configuration="m", name=name, age=DAY, rules=[rule],
+                            failure_policy=policy, service="hooks/svc:443",
+                            backend_problem="no ready endpoints", backend_ready=0,
+                            match_conditions=["skip-system: true"],
+                            unserved_resources=["widgets.example.com"])
+             for name, policy in (("a.example.com", "Fail"), ("b.example.com", "Ignore"))]
+    assert all(NOTE_WEBHOOK_UNSERVED in w.notes for w in hooks)
+    result = WebhookConfigurations(namespace="default", namespace_labels={}, mutating=hooks,
+                                   validating=[])
+    lines, notes = _webhook_lines(result, {"cart-1"})
+    assert lines == [
+        "MutatingWebhookConfiguration/m: webhook a.example.com; failurePolicy Fail; "
+        "1 matchConditions (not evaluated); backend hooks/svc:443 (no ready endpoints); "
+        "the API server refuses these pod creates",
+        "MutatingWebhookConfiguration/m: webhook b.example.com; failurePolicy Ignore; "
+        "1 matchConditions (not evaluated); backend hooks/svc:443 (no ready endpoints); "
+        "pod creates go ahead without it"]
+    assert notes == [NOTE_WEBHOOK_PATCH]
+
+
+def test_the_reports_read_skips_discovery(monkeypatch):
+    """The report doesn't use unserved_resources, so its read doesn't pay for them."""
+    _shop_cluster(monkeypatch)
+
+    def no_discovery(groups):
+        raise AssertionError("discovery on the report's path")
+    monkeypatch.setattr(k8s_tools, "_served_resources", no_discovery)
+    r = k8s_tools.get_namespace_webhooks("shop")
+    assert len(r.mutating) == 4 and all(w.unserved_resources is None for w in r.mutating)
+    assert {w.name: w.object_selector_pods for w in r.mutating}["cart.example.com"] == ["cart-1"]
 
 
 def test_one_kind_not_recorded_gives_no_none_line():
@@ -498,6 +539,7 @@ def test_an_itbench_pull_with_a_webhook_carries_it(tmp_path):
     assert (w.configuration, w.failure_policy, w.service) == ("mem-override", "Ignore", "shop/mem:443")
     # The pull has no Services, so the backend is unknown, not "not found".
     assert (w.backend_ready, w.backend_problem) == (None, None)
-    # The pull's discovery serves pods but no example.com group.
-    assert w.unserved_resources == ["widgets.example.com"]
+    # The pull's discovery serves only its own kinds, so neither the CRD nor
+    # any other resource it lacks can be told unserved: unknown.
+    assert w.unserved_resources is None and NOTE_WEBHOOK_UNSERVED not in w.notes
     assert r.validating is None and NOTE_VALIDATING_NOT_RECORDED in r.notes

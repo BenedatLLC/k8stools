@@ -233,7 +233,7 @@ def test_a_webhook_the_namespace_selects_and_one_whose_rules_match_nothing(apis,
         assert report.admission_webhooks == [
             f"MutatingWebhookConfiguration/{config}: webhook pods.k8stools.test; "
             f"failurePolicy Ignore; backend {namespace}/no-such-svc:443 "
-            f"(Service {namespace}/no-such-svc not found)"]
+            f"(Service {namespace}/no-such-svc not found); pod creates go ahead without it"]
         assert k8s_tools.NOTE_WEBHOOK_PATCH in report.notes
     finally:
         admission.delete_mutating_webhook_configuration(config)
