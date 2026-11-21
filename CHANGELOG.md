@@ -19,8 +19,31 @@ dates are release-tag dates.
 - [#41](https://github.com/BenedatLLC/k8stools/issues/41): DeploymentSummary: add
   the rollout strategy (type, maxUnavailable, maxSurge) and flag one that takes
   every replica down.
+- [#39](https://github.com/BenedatLLC/k8stools/issues/39): Add a read-only tool
+  for mutating and validating webhook configurations.
 
 ### Added
+- **`get_webhook_configurations(namespace=None)`**, in `investigate` and `all`:
+  every webhook of every Mutating- and ValidatingWebhookConfiguration, with what
+  decides whether it is called (rules, namespace and object selectors,
+  matchConditions, shown and not evaluated) and whether its backend can answer
+  (the Service exists, has the port, has ready endpoints). Rules on resources the
+  API server doesn't serve (a CRD not installed) are named, from discovery, and
+  `failurePolicy: Fail` with a backend that can't answer gets a note: every
+  matching request is refused. With a namespace, only the webhooks whose
+  namespaceSelector matches its labels (the rest named in `left_out`), with each
+  objectSelector matched to its pods. A mutating webhook comes with the note that
+  the API doesn't record what it changed. A role that may list only one kind
+  gets that one, with a note.
+- **`get_workload_report` has `admission_webhooks`**: the webhooks called when
+  the workload's pods are created, one line each with failurePolicy, selector
+  and backend state, or "no admission webhook is called when these pods are
+  created". In SREGym's fault (a webhook rewriting the first container's memory
+  on create) the agent saw the pod differ from its template and couldn't see why.
+- **`NamespaceSummary.labels`**, which namespace selectors match. Captures
+  record them and both webhook kinds; replay of an older capture says webhooks
+  aren't recorded, and a capture without namespace labels filters nothing by
+  namespaceSelector, with a note.
 - **`get_recent_changes(namespace, within="30m")`**, in every toolset including
   `triage`: the writes within the window to every object in the namespace and
   every cluster-scoped object, by clients other than Kubernetes' own controllers
@@ -72,7 +95,8 @@ dates are release-tag dates.
 ### Changed
 - **The `triage` toolset has six tools**: `get_recent_changes` joins it, since a
   tool only the investigator holds goes uncalled (k8srca design 012).
-- **The README's read-only ClusterRole adds `resourcequotas` and `limitranges`**,
+- **The README's read-only ClusterRole adds `resourcequotas`, `limitranges`,
+  and `mutatingwebhookconfigurations` and `validatingwebhookconfigurations`**,
   and shows optional rules for what `get_recent_changes` can also cover (RBAC
   objects, service accounts, volumes) and, opt-in with its risk, Secrets.
 - **The composites' NetworkPolicy lines say when each policy was created.** A

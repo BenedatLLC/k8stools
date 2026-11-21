@@ -80,6 +80,8 @@ _RECORDED_KINDS = {
     "HorizontalPodAutoscalers", "cronjobs": "CronJobs", "jobs": "Jobs",
     "pvcs": "PersistentVolumeClaims", "events": "events",
     "resourcequotas": "ResourceQuotas", "limitranges": "LimitRanges",
+    "mutatingwebhooks": "MutatingWebhookConfigurations",
+    "validatingwebhooks": "ValidatingWebhookConfigurations",
 }
 
 #: Path of the built-in capture (the OTel Demo on Minikube snapshot).
@@ -165,7 +167,9 @@ def _model_classes(annotation: Any) -> list[type[BaseModel]]:
 #: Fields a model computes from its other fields (`notes`, issue #20). They are
 #: not written to captures: replay recomputes them, so a capture never carries
 #: stale wording, and one recorded before they existed gets them too.
-DERIVED_FIELDS = frozenset({"notes", "ingress_effect", "egress_effect", "percent"})
+DERIVED_FIELDS = frozenset({"notes", "ingress_effect", "egress_effect", "percent",
+                            # matched to one namespace's pods at query time
+                            "object_selector_pods"})
 
 
 def encode_model(model: BaseModel, captured_at: datetime.datetime) -> dict[str, Any]:
@@ -1032,6 +1036,54 @@ class MockState:
         if quotas is None and limit_ranges is None:
             self.get_resourcequota_summaries(namespace)  # raises, saying why
         return k8s_tools.QuotaSummaries(resource_quotas=quotas, limit_ranges=limit_ranges)
+
+    @_pinned_query
+    def get_mutating_webhook_summaries(self) -> list[k8s_tools.WebhookSummary]:
+        """Captures from before webhooks were captured (4.7.0) raise K8sNotRecorded."""
+        return self._decode_all("mutatingwebhooks", k8s_tools.WebhookSummary, None)
+
+    @_pinned_query
+    def get_validating_webhook_summaries(self) -> list[k8s_tools.WebhookSummary]:
+        return self._decode_all("validatingwebhooks", k8s_tools.WebhookSummary, None)
+
+    @_pinned_query
+    def get_webhook_configurations(self, namespace: Optional[str] = None
+                                   ) -> k8s_tools.WebhookConfigurations:
+        """As live, from the recorded webhooks, namespace labels and pod labels.
+        Either kind the capture doesn't record is None, with a note; both
+        missing raises K8sNotRecorded. A namespace whose labels weren't recorded
+        (before 4.7.0) filters nothing, and says so."""
+        def half(read):
+            try:
+                return read()
+            except k8s_tools.K8sNotRecorded:
+                return None
+        mutating = half(self.get_mutating_webhook_summaries)
+        validating = half(self.get_validating_webhook_summaries)
+        if mutating is None and validating is None:
+            try:
+                self.get_mutating_webhook_summaries()
+            except k8s_tools.K8sNotRecorded as e:  # one name for the pair
+                raise k8s_tools.K8sNotRecorded(str(e), what="admission webhooks",
+                                               reason=e.reason) from e
+        result = k8s_tools.WebhookConfigurations(mutating=mutating, validating=validating)
+        if namespace is None:
+            return result
+        labels = None
+        recorded = self._data.get("namespaces")
+        if recorded is not None:
+            record = next((r for r in recorded if r.get("name") == namespace), None)
+            if record is None:
+                raise k8s_tools.K8sApiError(f"Namespace '{namespace}' not found.")
+            labels = record.get("labels")
+
+        def pod_labels() -> Optional[dict[str, dict[str, str]]]:
+            pods = [r for (ns, _), r in self._pods.items() if ns == namespace]
+            if any("labels" not in r for r in pods):
+                return None
+            return {r.get("summary", {}).get("name"): r["labels"] for r in pods}
+
+        return k8s_tools.webhooks_in_namespace(result, namespace, labels, pod_labels)
 
     @_pinned_query
     def get_endpoint_summaries(self, namespace: Optional[str] = None) -> list[k8s_tools.EndpointSummary]:

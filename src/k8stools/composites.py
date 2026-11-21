@@ -35,7 +35,7 @@ from typing import Any, Optional
 from .k8s_tools import (_quantity, ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
                         IngressSummary, NetworkPolicySummary, NOTE_NETWORK_POLICIES,
                         NOTE_QUOTA_AT_LIMIT, NOTE_SERVICE_ROUTING_NOT_RECORDED, ResourceQuotaSummary,
-                        ServiceSummary,
+                        ServiceSummary, NOTE_WEBHOOK_PATCH, WebhookConfigurations,
                         allows_port, network_policy_effect,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
@@ -98,6 +98,7 @@ _READER_KINDS = {
     "get_ingress_summaries": "Ingresses", "get_networkpolicy_summaries": "NetworkPolicies",
     "get_events": "events", "get_workload_history": "workload history",
     "get_resourcequota_summaries": "ResourceQuotas", "get_service_summaries": "Services",
+    "get_webhook_configurations": "admission webhooks",
 }
 
 
@@ -510,6 +511,43 @@ def _routing_lines(services: list[ServiceSummary], endpoints: list[EndpointSumma
         lines.append(f"Service/{s.name}: " + "; ".join(changes))
         notes += [n for n in s.notes if n not in notes]
     return lines, list(dict.fromkeys(notes))
+
+
+def _webhook_lines(result: WebhookConfigurations, pod_names: set[str]
+                   ) -> tuple[list[str], list[str]]:
+    """The admission webhooks called when one of these pods is created (#39):
+    rules covering pod CREATE, a namespaceSelector matching the namespace (the
+    tool filtered those), and an objectSelector that is empty or matches one of
+    the pods (or can't be matched: no pods, or labels unknown). And the notes."""
+    lines, notes = [], []
+    mutating = False
+    for kind, hooks in (("MutatingWebhookConfiguration", result.mutating),
+                        ("ValidatingWebhookConfiguration", result.validating)):
+        for w in hooks or []:
+            if not w.acts_on_pods("CREATE"):
+                continue
+            if pod_names and w.object_selector_pods is not None \
+                    and not set(w.object_selector_pods) & pod_names:
+                continue
+            parts = [f"{kind}/{w.configuration}: webhook {w.name}",
+                     f"failurePolicy {w.failure_policy}"]
+            if w.object_selector:
+                parts.append(f"objectSelector {w.object_selector}")
+            if w.match_conditions:
+                parts.append(f"{len(w.match_conditions)} matchConditions (not evaluated)")
+            if backend := (w.service or w.url):
+                state = (f" ({w.backend_problem})" if w.backend_problem else
+                         f" ({w.backend_ready} ready)" if w.backend_ready is not None else "")
+                parts.append(f"backend {backend}{state}")
+            lines.append("; ".join(parts))
+            notes += [n for n in w.notes if n not in notes]
+            mutating |= kind.startswith("Mutating")
+    if mutating:
+        notes.append(NOTE_WEBHOOK_PATCH)
+    if not lines and result.mutating is not None and result.validating is not None:
+        lines.append("no admission webhook is called when these pods are created")
+    notes += [n for n in result.notes if n != NOTE_WEBHOOK_PATCH and n not in notes]
+    return lines, notes
 
 
 def _services_for(endpoints: list[EndpointSummary], pod_names: set[str]) -> list[EndpointSummary]:
@@ -1245,6 +1283,10 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
                                 "these pods, and aren't shown.")
     if unavailable:
         report.notes.append(unavailable)
+    webhooks = _recorded(unrecorded, api.get_webhook_configurations, namespace, default=None)
+    if webhooks is not None:
+        report.admission_webhooks, webhook_notes = _webhook_lines(webhooks, {p.name for p in pods})
+        report.notes += [n for n in webhook_notes if n not in report.notes]
     if unrecorded:
         report.notes += _not_recorded_notes(unrecorded)
     usage, usage_unavailable = _usage(api, namespace)

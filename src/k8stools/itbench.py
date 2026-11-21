@@ -72,6 +72,8 @@ CAPTURED_FROM = {
     "hpas": "horizontalpodautoscalers", "cronjobs": "cronjobs", "jobs": "jobs",
     "pvcs": "persistentvolumeclaims", "resourcequotas": "resourcequotas",
     "limitranges": "limitranges",
+    "mutatingwebhooks": "mutatingwebhookconfigurations",
+    "validatingwebhooks": "validatingwebhookconfigurations",
 }
 
 #: The API group each snapshot kind is served under ("" for core).
@@ -80,7 +82,9 @@ _GROUPS = {"deployments": "apps", "replicasets": "apps", "statefulsets": "apps",
            "ingresses": "networking.k8s.io", "networkpolicies": "networking.k8s.io",
            "customresourcedefinitions": "apiextensions.k8s.io",
            "endpointslices": "discovery.k8s.io", "events": "",
-           "horizontalpodautoscalers": "autoscaling"}
+           "horizontalpodautoscalers": "autoscaling",
+           "mutatingwebhookconfigurations": "admissionregistration.k8s.io",
+           "validatingwebhookconfigurations": "admissionregistration.k8s.io"}
 
 #: Kinds an import can't do without: a pull missing one is refused.
 REQUIRED_KINDS = ("namespaces", "nodes", "pods")
@@ -458,6 +462,12 @@ class SnapshotRest:
                 {"name": g, "versions": [{"groupVersion": f"{g}/{v}", "version": v}],
                  "preferredVersion": {"groupVersion": f"{g}/{v}", "version": v}}
                 for g, v in versions]})
+        if len(parts) == 2 and parts[0] == "apis":  # one group, as a webhook check asks
+            versions = sorted({k.version for k in self.served.values() if k.group == parts[1]})
+            if not versions:
+                raise _not_found(f"API group {parts[1]}")
+            return _Response(200, {"kind": "APIGroup", "name": parts[1], "versions": [
+                {"groupVersion": f"{parts[1]}/{v}", "version": v} for v in versions]})
         if len(parts) == 3 and parts[0] == "apis":
             return _Response(200, {"kind": "APIResourceList",
                                    "groupVersion": f"{parts[1]}/{parts[2]}",
@@ -610,6 +620,12 @@ def import_snapshot(directory: Path, pull: Optional[int] = None,
         if kind not in recorded:
             del state[key]
             stats.not_recorded.append(key)
+    if "services" not in recorded:
+        # A webhook's backend Service "not found" would only mean none were pulled.
+        for key in ("mutatingwebhooks", "validatingwebhooks"):
+            for record in state.get(key, []):
+                record.pop("backend_ready", None)
+                record.pop("backend_problem", None)
     state["workload_histories"] = _histories(state)
     state["metrics"] = {"available": False, "reason": METRICS_REASON}
     if "customresourcedefinitions" not in recorded:

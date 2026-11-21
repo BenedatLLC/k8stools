@@ -302,6 +302,12 @@ def _capture(namespaces, include_logs, max_log_lines, include_previous_logs,
         "pvcs": [],
         "resourcequotas": [],
         "limitranges": [],
+        # Cluster-scoped, so whole even with --namespace; each backend's
+        # readiness as the capture saw it. Matched to a namespace on replay.
+        "mutatingwebhooks": _encode_all(redactor(read(
+            "mutatingwebhooks", None, k8s_tools.get_mutating_webhook_summaries)), captured_at),
+        "validatingwebhooks": _encode_all(redactor(read(
+            "validatingwebhooks", None, k8s_tools.get_validating_webhook_summaries)), captured_at),
         "events": [],
     }
 

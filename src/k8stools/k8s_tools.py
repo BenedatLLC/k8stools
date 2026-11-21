@@ -13,6 +13,7 @@
 """
 
 import contextlib
+import functools
 import sys
 import os
 import logging
@@ -36,6 +37,7 @@ AUTOSCALING_V2_API:Optional[client.AutoscalingV2Api] = None
 DISCOVERY_V1_API:Optional[client.DiscoveryV1Api] = None
 NETWORKING_V1_API:Optional[client.NetworkingV1Api] = None
 APIEXTENSIONS_V1_API:Optional[client.ApiextensionsV1Api] = None
+ADMISSION_V1_API:Optional[client.AdmissionregistrationV1Api] = None
 
 #: When set, what every tool reads as the current time (see :func:`pinned_clock`).
 _CLOCK: Optional[Callable[[], datetime.datetime]] = None
@@ -278,7 +280,8 @@ def configure(kubeconfig: Optional[str] = None, context: Optional[str] = None) -
 
 #: The API-group clients built on the binding; replaced whenever it is.
 _GROUP_CLIENTS = ("K8S", "APPS_V1_API", "BATCH_V1_API", "AUTOSCALING_V2_API",
-                  "DISCOVERY_V1_API", "NETWORKING_V1_API", "APIEXTENSIONS_V1_API")
+                  "DISCOVERY_V1_API", "NETWORKING_V1_API", "APIEXTENSIONS_V1_API",
+                  "ADMISSION_V1_API")
 
 
 def _set_binding(binding: Optional[_Binding]) -> None:
@@ -416,6 +419,9 @@ class NamespaceSummary(BaseModel):
     name: str
     status: str
     age: Duration
+    #: What namespaceSelectors (webhooks, NetworkPolicy peers) match against.
+    #: None when a replayed capture didn't record them (before 4.7.0).
+    labels: Optional[dict[str, str]] = None
 
 
 def get_namespaces() -> list[NamespaceSummary]:
@@ -432,7 +438,8 @@ def get_namespaces() -> list[NamespaceSummary]:
     return [
         NamespaceSummary(name=namespace.metadata.name,
                         status=namespace.status.phase,
-                        age=now-namespace.metadata.creation_timestamp)
+                        age=now-namespace.metadata.creation_timestamp,
+                        labels=dict(getattr(namespace.metadata, "labels", None) or {}))
         for namespace in namespaces
     ]
 
@@ -3033,6 +3040,438 @@ def print_networkpolicy_summaries(namespace: Optional[str] = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Admission webhooks (#39)
+# ---------------------------------------------------------------------------
+
+NOTE_WEBHOOK_FAILS_CLOSED = (
+    "Its backend can't answer (see backend_problem) and failurePolicy is Fail: the API "
+    "server refuses every request its rules match, e.g. a controller's pod creates "
+    "(FailedCreate events), until the backend is back.")
+NOTE_WEBHOOK_FAILS_OPEN = (
+    "Its backend can't answer (see backend_problem) and failurePolicy is Ignore: "
+    "requests its rules match go ahead without it.")
+NOTE_WEBHOOK_UNSERVED = (
+    "Some of its rules name resources this API server doesn't serve "
+    "(unserved_resources): those rules match nothing until the resource is served "
+    "(for a custom resource, until its CRD is installed).")
+NOTE_WEBHOOK_MATCH_CONDITIONS = (
+    "It is called only for requests its matchConditions (CEL expressions) accept; "
+    "k8stools doesn't evaluate them.")
+NOTE_WEBHOOK_SELECTS_NO_POD = (
+    "Its objectSelector matches none of the namespace's current pods: it acts on a "
+    "new pod only if that pod's labels match.")
+NOTE_WEBHOOK_PATCH = (
+    "The API doesn't record what a mutating webhook changed. A pod it changed at "
+    "creation differs from its workload's template: compare the pod's spec "
+    "(get_pod_spec) with what the workload asks for.")
+NOTE_WEBHOOK_LABELS_UNKNOWN = (
+    "The namespace's labels aren't known (not readable with these credentials, or "
+    "not recorded in this capture), so webhooks weren't filtered by namespaceSelector.")
+NOTE_MUTATING_FORBIDDEN = (
+    "Not readable with these credentials (403 Forbidden), so unknown rather than "
+    "absent: MutatingWebhookConfigurations.")
+NOTE_VALIDATING_FORBIDDEN = (
+    "Not readable with these credentials (403 Forbidden), so unknown rather than "
+    "absent: ValidatingWebhookConfigurations.")
+NOTE_MUTATING_NOT_RECORDED = (
+    "This capture doesn't record MutatingWebhookConfigurations, so they are unknown, "
+    "not absent.")
+NOTE_VALIDATING_NOT_RECORDED = (
+    "This capture doesn't record ValidatingWebhookConfigurations, so they are unknown, "
+    "not absent.")
+
+
+class WebhookRule(BaseModel):
+    """One rule of a webhook: the operations on resources it is called for. "*"
+    is every value; in api_groups, "" is the core group."""
+    operations: list[str] = Field(default_factory=list)
+    api_groups: list[str] = Field(default_factory=list)
+    api_versions: list[str] = Field(default_factory=list)
+    #: e.g. "pods", "pods/status" (a subresource), "*" (every resource, no
+    #: subresources), "*/*" (every resource and subresource).
+    resources: list[str] = Field(default_factory=list)
+    #: "Namespaced", "Cluster" or "*" (both).
+    scope: str = "*"
+
+    def covers(self, group: str, resource: str, operation: Optional[str] = None,
+               namespaced: bool = True) -> bool:
+        """Whether the rule matches ``operation`` (any, if None) on a resource
+        (not a subresource) of ``group``, by the API's matching rules."""
+        return ((operation is None or bool({operation, "*"} & set(self.operations)))
+                and bool({group, "*"} & set(self.api_groups))
+                and bool({resource, "*", "*/*"} & set(self.resources))
+                and self.scope in ("*", "Namespaced" if namespaced else "Cluster"))
+
+
+def webhook_rule_text(rule: WebhookRule) -> str:
+    """A rule as a phrase: "CREATE,UPDATE pods (core/v1)"."""
+    groups = ",".join(g or "core" for g in rule.api_groups)
+    scope = "" if rule.scope == "*" else f", {rule.scope}"
+    return (f"{','.join(rule.operations)} {','.join(rule.resources)} "
+            f"({groups}/{','.join(rule.api_versions)}{scope})")
+
+
+class WebhookSummary(BaseModel):
+    """One webhook of a MutatingWebhookConfiguration or
+    ValidatingWebhookConfiguration, with what decides whether it is called and
+    whether its backend can answer."""
+    #: The configuration it belongs to (cluster-scoped).
+    configuration: str
+    #: The webhook's own name, e.g. "memory.example.com".
+    name: str
+    #: The configuration's age.
+    age: Duration
+    rules: list[WebhookRule] = Field(default_factory=list)
+    #: Label selectors in kubectl syntax ("env=prod,tier in (a,b)"); "" matches
+    #: everything. The namespace selector is matched against the labels of the
+    #: request's namespace, the object selector against the object's labels.
+    namespace_selector: str = ""
+    object_selector: str = ""
+    #: "name: CEL expression"; the webhook is called only when all hold.
+    match_conditions: list[str] = Field(default_factory=list)
+    #: "Fail" (the default): a request is refused when the webhook can't be
+    #: reached or errs; "Ignore": it goes ahead.
+    failure_policy: str = "Fail"
+    #: "Equivalent" (the default) or "Exact".
+    match_policy: Optional[str] = None
+    side_effects: Optional[str] = None
+    #: The API server's wait for an answer (default 10).
+    timeout_seconds: Optional[int] = None
+    #: Mutating only: "Never" (the default) or "IfNeeded". None for validating.
+    reinvocation_policy: Optional[str] = None
+    #: The backend: a Service, "namespace/name:port" plus its path, or a URL.
+    service: Optional[str] = None
+    url: Optional[str] = None
+    #: Ready endpoints of the backend Service; None when unknown or a URL.
+    backend_ready: Optional[int] = None
+    #: Why the backend can't answer: "Service x/y not found", "Service x/y has
+    #: no port 443", "no ready endpoints". None when it can, or it is unknown.
+    backend_problem: Optional[str] = None
+    #: Resources its rules name that the API server doesn't serve, e.g.
+    #: "widgets.example.com". None when that couldn't be checked.
+    unserved_resources: Optional[list[str]] = None
+    #: With a namespace, for a webhook whose rules cover pods and with an
+    #: objectSelector: the namespace's current pods the selector matches. None
+    #: otherwise (no objectSelector matches every pod).
+    object_selector_pods: Optional[list[str]] = None
+    notes: list[str] = Field(default_factory=list)
+
+    def acts_on_pods(self, operation: Optional[str] = None) -> bool:
+        return any(r.covers("", "pods", operation) for r in self.rules)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "WebhookSummary":
+        notes = []
+        if self.backend_problem:
+            notes.append(NOTE_WEBHOOK_FAILS_OPEN if self.failure_policy == "Ignore"
+                         else NOTE_WEBHOOK_FAILS_CLOSED)
+        if self.unserved_resources:
+            notes.append(NOTE_WEBHOOK_UNSERVED)
+        if self.match_conditions:
+            notes.append(NOTE_WEBHOOK_MATCH_CONDITIONS)
+        if self.object_selector_pods == []:
+            notes.append(NOTE_WEBHOOK_SELECTS_NO_POD)
+        self.notes = notes
+        return self
+
+
+class WebhookConfigurations(BaseModel):
+    """The cluster's admission webhooks, mutating and validating, or those
+    whose namespaceSelector matches one namespace."""
+    #: The namespace asked about; None for every webhook.
+    namespace: Optional[str] = None
+    #: The labels its namespaceSelectors were matched against; None when no
+    #: namespace was given, or its labels aren't known (then nothing was left out).
+    namespace_labels: Optional[dict[str, str]] = None
+    #: None when unknown: the role may not list them (live), or a replayed
+    #: capture doesn't record them.
+    mutating: Optional[list[WebhookSummary]] = None
+    validating: Optional[list[WebhookSummary]] = None
+    #: With a namespace: the webhooks left out because their namespaceSelector
+    #: doesn't match its labels, e.g. "MutatingWebhookConfiguration/x: webhook
+    #: y (namespaceSelector env=prod)".
+    left_out: list[str] = Field(default_factory=list)
+    #: Live: which kinds the role may not list.
+    forbidden: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "WebhookConfigurations":
+        notes = []
+        for value, kind, forbidden, not_recorded in (
+                (self.mutating, "MutatingWebhookConfigurations", NOTE_MUTATING_FORBIDDEN,
+                 NOTE_MUTATING_NOT_RECORDED),
+                (self.validating, "ValidatingWebhookConfigurations", NOTE_VALIDATING_FORBIDDEN,
+                 NOTE_VALIDATING_NOT_RECORDED)):
+            if value is None:
+                notes.append(forbidden if kind in self.forbidden else not_recorded)
+        if self.namespace is not None and self.namespace_labels is None:
+            notes.append(NOTE_WEBHOOK_LABELS_UNKNOWN)
+        if self.mutating:
+            notes.append(NOTE_WEBHOOK_PATCH)
+        self.notes = notes
+        return self
+
+
+def _split_selector(text: str) -> list[str]:
+    """The requirements of a kubectl-syntax selector; commas inside "(...)" are values."""
+    parts, depth, current = [], 0, ""
+    for ch in text:
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    return parts + ([current] if current else [])
+
+
+def selector_text_matches(text: str, labels: dict[str, str]) -> bool:
+    """Whether a selector as ``_selector_text`` writes it selects these labels;
+    "" selects everything. The text form is what a capture stores."""
+    for part in _split_selector(text):
+        m = re.fullmatch(r"(\S+) (in|notin) \((.*)\)", part)
+        if m:
+            key, values = m.group(1), m.group(3).split(",") if m.group(3) else []
+            if (m.group(2) == "in") != (key in labels and labels[key] in values):
+                return False
+        elif " " in part:
+            return False  # an operator the API rejects (see _selector_text)
+        elif part.startswith("!"):
+            if part[1:] in labels:
+                return False
+        elif "=" in part:
+            key, _, value = part.partition("=")
+            if labels.get(key) != value:
+                return False
+        elif part not in labels:
+            return False
+    return True
+
+
+def _served_resources(groups: set[str]) -> dict[str, Optional[set[str]]]:
+    """Each API group's served resource names (all versions, subresources as
+    "pods/status"): set() for a group the server doesn't serve, None when its
+    discovery failed."""
+    from .changes import _raw_get
+    served: dict[str, Optional[set[str]]] = {}
+    for group in sorted(groups):
+        try:
+            paths = ["/api/v1"] if group == "" else \
+                [f"/apis/{v['groupVersion']}"
+                 for v in _raw_get(f"/apis/{group}").get("versions") or []]
+            served[group] = {r["name"] for p in paths for r in _raw_get(p).get("resources") or []}
+        except ApiException as e:
+            served[group] = set() if e.status == 404 else None
+        except (OSError, ValueError, urllib3.exceptions.HTTPError):
+            served[group] = None
+    return served
+
+
+def _unserved(rules: list[WebhookRule], served: dict[str, Optional[set[str]]]
+              ) -> Optional[list[str]]:
+    out = []
+    for rule in rules:
+        for group in rule.api_groups:
+            if group == "*":
+                continue
+            for resource in rule.resources:
+                base = resource.split("/")[0]
+                if base == "*":
+                    continue
+                names = served.get(group)
+                if names is None:
+                    return None
+                if resource not in names and not (resource.endswith("/*") and base in names):
+                    out.append(f"{resource}.{group}" if group else resource)
+    return sorted(set(out))
+
+
+def _webhook_backend(config, services: dict[str, Optional[dict[str, "ServiceSummary"]]]
+                     ) -> dict[str, Any]:
+    """The backend fields of a webhook's clientConfig."""
+    ref = getattr(config, "service", None) if config else None
+    if ref is None:
+        return {"url": getattr(config, "url", None) if config else None}
+    port = ref.port or 443
+    out: dict[str, Any] = {"service": f"{ref.namespace}/{ref.name}:{port}{ref.path or ''}"}
+    known = services.get(ref.namespace)
+    if known is None:
+        return out
+    svc = known.get(ref.name)
+    if svc is None:
+        out["backend_problem"] = f"Service {ref.namespace}/{ref.name} not found"
+    elif svc.type != "ExternalName" and port not in {p.port for p in svc.ports}:
+        out["backend_problem"] = f"Service {ref.namespace}/{ref.name} has no port {port}"
+    else:
+        out["backend_ready"] = svc.ready_endpoints
+        if svc.ready_endpoints == 0:
+            out["backend_problem"] = "no ready endpoints"
+    return out
+
+
+def _webhook_summaries(configs: list, mutating: bool) -> list[WebhookSummary]:
+    hooks = [(cfg, hook) for cfg in configs for hook in cfg.webhooks or []]
+    services: dict[str, Optional[dict[str, ServiceSummary]]] = {}
+    for ns in {h.client_config.service.namespace for _, h in hooks
+               if h.client_config and h.client_config.service}:
+        try:
+            services[ns] = {s.name: s for s in get_service_summaries(ns)}
+        except (K8sApiError, K8sConfigError) as e:
+            logging.warning(f"webhook backends in namespace '{ns}' unknown: {e}")
+            services[ns] = None
+    rules = {id(h): [WebhookRule(operations=list(r.operations or []),
+                                 api_groups=list(r.api_groups or []),
+                                 api_versions=list(r.api_versions or []),
+                                 resources=list(r.resources or []), scope=r.scope or "*")
+                     for r in h.rules or []] for _, h in hooks}
+    served = _served_resources({g for rs in rules.values() for r in rs
+                                for g in r.api_groups if g != "*"}) if hooks else {}
+    now = _now()
+    summaries = []
+    for cfg, h in hooks:
+        created = cfg.metadata.creation_timestamp
+        summaries.append(WebhookSummary(
+            configuration=cfg.metadata.name, name=h.name,
+            age=now - created if created else datetime.timedelta(0),
+            rules=rules[id(h)],
+            namespace_selector=_selector_text(h.namespace_selector),
+            object_selector=_selector_text(h.object_selector),
+            match_conditions=[f"{c.name}: {c.expression}" for c in h.match_conditions or []],
+            failure_policy=h.failure_policy or "Fail", match_policy=h.match_policy,
+            side_effects=h.side_effects, timeout_seconds=h.timeout_seconds,
+            reinvocation_policy=(h.reinvocation_policy or "Never") if mutating else None,
+            unserved_resources=_unserved(rules[id(h)], served),
+            **_webhook_backend(h.client_config, services)))
+    return summaries
+
+
+def _admission_api() -> client.AdmissionregistrationV1Api:
+    global ADMISSION_V1_API
+    if ADMISSION_V1_API is None:
+        ADMISSION_V1_API = client.AdmissionregistrationV1Api(_binding().api_client)
+    return ADMISSION_V1_API
+
+
+def get_mutating_webhook_summaries() -> list[WebhookSummary]:
+    """Every MutatingWebhookConfiguration's webhooks (not a tool:
+    get_webhook_configurations serves them; the capture reads through this)."""
+    try:
+        configs = _admission_api().list_mutating_webhook_configuration().items
+    except client.ApiException as e:
+        raise _api_error("Error fetching mutating webhook configurations", e) from e
+    return _webhook_summaries(configs, mutating=True)
+
+
+def get_validating_webhook_summaries() -> list[WebhookSummary]:
+    """Every ValidatingWebhookConfiguration's webhooks (not a tool)."""
+    try:
+        configs = _admission_api().list_validating_webhook_configuration().items
+    except client.ApiException as e:
+        raise _api_error("Error fetching validating webhook configurations", e) from e
+    return _webhook_summaries(configs, mutating=False)
+
+
+def webhooks_in_namespace(result: WebhookConfigurations, namespace: str,
+                          labels: Optional[dict[str, str]],
+                          pod_labels: Callable[[], Optional[dict[str, dict[str, str]]]]
+                          ) -> WebhookConfigurations:
+    """The webhooks whose namespaceSelector matches the namespace's labels
+    (all, when those are unknown), the others named in ``left_out``, with each
+    objectSelector matched against the namespace's pods (``pod_labels``, read
+    only if needed). Shared by the live tool and replay."""
+    left_out: list[str] = []
+
+    def keep(kind: str, hooks: Optional[list[WebhookSummary]]) -> Optional[list[WebhookSummary]]:
+        if hooks is None:
+            return None
+        kept = []
+        for w in hooks:
+            if labels is not None and not selector_text_matches(w.namespace_selector, labels):
+                left_out.append(f"{kind}/{w.configuration}: webhook {w.name} "
+                                f"(namespaceSelector {w.namespace_selector})")
+                continue
+            selected = None
+            if w.object_selector and w.acts_on_pods() and (pods := pod_labels()) is not None:
+                selected = sorted(p for p, ls in pods.items()
+                                  if selector_text_matches(w.object_selector, ls))
+            kept.append(WebhookSummary.model_validate(
+                {**dict(w), "object_selector_pods": selected}))
+        return kept
+
+    return WebhookConfigurations(
+        namespace=namespace, namespace_labels=labels,
+        mutating=keep("MutatingWebhookConfiguration", result.mutating),
+        validating=keep("ValidatingWebhookConfiguration", result.validating),
+        left_out=left_out, forbidden=result.forbidden)
+
+
+def get_webhook_configurations(namespace: Optional[str] = None) -> WebhookConfigurations:
+    """Admission webhooks (Mutating/ValidatingWebhookConfigurations): rules,
+    selectors, failurePolicy, and backend (a Service and its ready endpoints,
+    or a URL). A mutating one can change a pod as it is created; a validating
+    one can refuse it. namespace: only webhooks whose namespaceSelector
+    matches it, with objectSelectors matched to its pods."""
+    logging.info(f"get_webhook_configurations(namespace={namespace})")
+    halves, refused = {}, []
+    for kind, read in (("MutatingWebhookConfigurations", get_mutating_webhook_summaries),
+                       ("ValidatingWebhookConfigurations", get_validating_webhook_summaries)):
+        try:
+            halves[kind] = read()
+        except K8sForbidden as e:
+            refused.append((kind, e))
+    if len(refused) == 2:
+        raise refused[0][1]
+    result = WebhookConfigurations(mutating=halves.get("MutatingWebhookConfigurations"),
+                                   validating=halves.get("ValidatingWebhookConfigurations"),
+                                   forbidden=[kind for kind, _ in refused])
+    if namespace is None:
+        return result
+    global K8S
+    if K8S is None:
+        K8S = _get_api_client()
+    try:
+        ns = K8S.read_namespace(namespace)
+        labels: Optional[dict[str, str]] = dict(ns.metadata.labels or {})
+    except client.ApiException as e:
+        if e.status == 404:
+            raise K8sApiError(f"Namespace '{namespace}' not found.") from e
+        if e.status != 403:
+            raise _api_error(f"Error reading namespace '{namespace}'", e) from e
+        labels = None
+
+    def pod_labels() -> Optional[dict[str, dict[str, str]]]:
+        try:
+            pods = K8S.list_namespaced_pod(namespace=namespace).items
+        except client.ApiException as e:
+            logging.warning(f"get_webhook_configurations: pod labels unknown: {e}")
+            return None
+        return {p.metadata.name: dict(p.metadata.labels or {}) for p in pods}
+
+    return webhooks_in_namespace(result, namespace, labels, functools.cache(pod_labels))
+
+
+def print_webhook_configurations(namespace: Optional[str] = None) -> None:
+    """Calls get_webhook_configurations and prints the output to stdout, one
+    line per webhook."""
+    result = get_webhook_configurations(namespace)
+    print(f"{'KIND':<11} {'CONFIGURATION/WEBHOOK':<56} {'FAILURE':<8} {'BACKEND':<40} RULES")
+    for kind, hooks in (("Mutating", result.mutating), ("Validating", result.validating)):
+        for w in hooks or []:
+            backend = w.service or w.url or "-"
+            if w.backend_problem:
+                backend += f" ({w.backend_problem})"
+            elif w.backend_ready is not None:
+                backend += f" ({w.backend_ready} ready)"
+            print(f"{kind:<11} {w.configuration + '/' + w.name:<56} {w.failure_policy:<8} "
+                  f"{backend:<40} {'; '.join(webhook_rule_text(r) for r in w.rules)}")
+    for line in result.left_out:
+        print(f"left out: {line}")
+    for note in result.notes:
+        print(f"note: {note}")
+
+
+# ---------------------------------------------------------------------------
 # ResourceQuotas and LimitRanges (#38)
 # ---------------------------------------------------------------------------
 
@@ -5206,6 +5645,11 @@ class WorkloadReport(_Compact):
     #: allows all ingress (NetworkPolicy/x)", or "no NetworkPolicy
     #: (networking.k8s.io) selects these pods".
     network_policies: list[str] = Field(default_factory=list)
+    #: The admission webhooks called when its pods are created (rules covering
+    #: pod CREATE, selectors matching), e.g. "MutatingWebhookConfiguration/x:
+    #: webhook y; failurePolicy Fail; backend ns/svc:443 (1 ready)", or "no
+    #: admission webhook is called when these pods are created".
+    admission_webhooks: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -5254,6 +5698,7 @@ TOOLS = [
     get_ingress_summaries,
     get_networkpolicy_summaries,
     get_quota_summaries,
+    get_webhook_configurations,
     get_configmap_summaries,
     get_configmap,
     get_statefulset_summaries,
