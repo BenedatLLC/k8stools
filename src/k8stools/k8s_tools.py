@@ -1597,6 +1597,28 @@ class ResourceCondition(BaseModel):
     since: Optional[Duration] = None
 
 
+NOTE_ROLLOUT_TAKES_ALL = (
+    "This Deployment's rollout strategy lets an update take every replica out of "
+    "service at once (Recreate, or maxUnavailable resolving to at least the replica "
+    "count): if the new revision's pods don't become ready, none are serving.")
+NOTE_STRATEGY_NOT_RECORDED = (
+    "This capture doesn't record the rollout strategy (made before 4.7.0), so it is "
+    "unknown, not the default.")
+
+
+def _scaled(value: Union[int, str, None], replicas: int, round_up: bool) -> Optional[int]:
+    """An int-or-percent strategy value as a pod count, rounded as the
+    Deployment controller rounds it (maxSurge up, maxUnavailable down)."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.endswith("%") and value[:-1].isdigit():
+        scaled = int(value[:-1]) * replicas
+        return -(-scaled // 100) if round_up else scaled // 100
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
 class DeploymentSummary(BaseModel):
     """A summary of a deployment's status like returned by `kubectl get deployments`"""
     name: str
@@ -1611,11 +1633,52 @@ class DeploymentSummary(BaseModel):
     #: ReplicaFailure (pods it couldn't create). None when a replayed capture
     #: didn't record them.
     conditions: Optional[list[ResourceCondition]] = None
+    #: "RollingUpdate" or "Recreate". None when a replayed capture didn't record
+    #: the strategy (before 4.7.0); then so are the fields below.
+    strategy_type: Optional[str] = None
+    #: As the spec gives them: a pod count or a percent ("25%"). None for Recreate.
+    max_unavailable: Optional[Union[int, str]] = None
+    max_surge: Optional[Union[int, str]] = None
+    #: How long a new pod must be ready before it counts as available.
+    min_ready_seconds: Optional[int] = None
+    #: How long a rollout may make no progress before Progressing=False.
+    progress_deadline_seconds: Optional[int] = None
+    #: How many old ReplicaSets are kept to roll back to.
+    revision_history_limit: Optional[int] = None
+    notes: list[str] = Field(default_factory=list)
+
+    def update_limits(self) -> Optional[tuple[int, int]]:
+        """(at most unavailable, at most extra) pods during an update, of
+        total_replicas, as the controller resolves them; None when unknown."""
+        if self.strategy_type == "Recreate":
+            return self.total_replicas, 0
+        if self.strategy_type != "RollingUpdate":
+            return None
+        surge = _scaled(self.max_surge, self.total_replicas, round_up=True)
+        unavailable = _scaled(self.max_unavailable, self.total_replicas, round_up=False)
+        if surge is None or unavailable is None:
+            return None
+        # Both zero would make no progress: the controller allows one unavailable.
+        # Its MaxUnavailable() then caps that at the replica count (0 for none).
+        unavailable = 1 if surge == 0 and unavailable == 0 else unavailable
+        return min(unavailable, self.total_replicas), surge
+
+    def takes_every_replica(self) -> bool:
+        """An update may leave no replica serving."""
+        limits = self.update_limits()
+        return limits is not None and self.total_replicas > 0 and limits[0] >= self.total_replicas
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "DeploymentSummary":
+        self.notes = ([NOTE_STRATEGY_NOT_RECORDED] if self.strategy_type is None else []) + \
+                     ([NOTE_ROLLOUT_TAKES_ALL] if self.takes_every_replica() else [])
+        return self
 
 def get_deployment_summaries(namespace: Optional[str] = None) -> list[DeploymentSummary]:
     """Deployments, like `kubectl get deployments`: desired, ready, up-to-date
-    and available replicas, age, and conditions (e.g. Progressing=False when a
-    rollout passed its deadline). namespace: one, or all if omitted."""
+    and available replicas, age, conditions (e.g. Progressing=False when a
+    rollout passed its deadline), and the rollout strategy (maxUnavailable,
+    maxSurge). namespace: one, or all if omitted."""
     global APPS_V1_API
     
     # Load Kubernetes configuration and initialize client only once
@@ -1650,6 +1713,11 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
         if deployment.metadata.creation_timestamp:
             age = current_time_utc - deployment.metadata.creation_timestamp
         
+        # The API defaults every strategy field, and omits a zero minReadySeconds.
+        spec = deployment.spec
+        strategy = getattr(spec, "strategy", None)
+        strategy_type = getattr(strategy, "type", None)
+        rolling = getattr(strategy, "rolling_update", None) if strategy_type == "RollingUpdate" else None
         deployment_summary = DeploymentSummary(
             name=deployment_name,
             namespace=deployment_namespace,
@@ -1662,6 +1730,12 @@ def get_deployment_summaries(namespace: Optional[str] = None) -> list[Deployment
                 type=c.type, status=c.status, reason=c.reason, message=c.message,
                 since=current_time_utc - c.last_transition_time if c.last_transition_time else None)
                 for c in getattr(deployment.status, "conditions", None) or []],
+            strategy_type=strategy_type,
+            max_unavailable=getattr(rolling, "max_unavailable", None),
+            max_surge=getattr(rolling, "max_surge", None),
+            min_ready_seconds=(getattr(spec, "min_ready_seconds", None) or 0) if strategy_type else None,
+            progress_deadline_seconds=getattr(spec, "progress_deadline_seconds", None),
+            revision_history_limit=getattr(spec, "revision_history_limit", None),
         )
         deployment_summaries.append(deployment_summary)
     
@@ -2259,9 +2333,26 @@ class PortInfo(BaseModel):
     port: int
     protocol: str
 
+NOTE_INTERNAL_TRAFFIC_LOCAL = (
+    "internalTrafficPolicy Local: kube-proxy sends traffic from inside the cluster "
+    "only to the Service's endpoints on the caller's own node. A caller on a node "
+    "with no ready endpoint has its connections dropped: no error and no response, "
+    "until its own timeout.")
+NOTE_EXTERNAL_TRAFFIC_LOCAL = (
+    "externalTrafficPolicy Local: traffic reaching a node from outside the cluster "
+    "(NodePort, load balancer) goes only to endpoints on that node, keeping the "
+    "client's source IP. A node with no ready endpoint drops it; for a LoadBalancer "
+    "Service, that node also fails the load balancer's health check.")
+NOTE_SERVICE_ROUTING_NOT_RECORDED = (
+    "This capture doesn't record the Service's routing fields (traffic policies, "
+    "session affinity, traffic distribution, publishNotReadyAddresses; made before "
+    "4.7.0), so they are unknown, not the defaults.")
+
+
 class ServiceSummary(BaseModel):
     """A summary of a service's status like returned by `kubectl get services`,
-    plus the pod `selector` and the service's labels/annotations."""
+    plus the pod `selector`, the service's labels/annotations, and the fields
+    that decide where kube-proxy sends its traffic."""
     name: str
     namespace: str
     type: str
@@ -2277,11 +2368,54 @@ class ServiceSummary(BaseModel):
     #: before these were recorded.
     ready_endpoints: Optional[int] = None
     not_ready_endpoints: Optional[int] = None
+    #: "Cluster" (the default) or "Local": in-cluster traffic only to endpoints
+    #: on the caller's node. None for an ExternalName Service. kube-proxy doesn't
+    #: proxy a headless Service, so there it has no effect (no note, no change).
+    internal_traffic_policy: Optional[str] = None
+    #: "Cluster" (the default) or "Local", for NodePort and LoadBalancer
+    #: Services; None for other types.
+    external_traffic_policy: Optional[str] = None
+    #: Kubernetes' "None" (the default) or "ClientIP": each client sticks to one backend.
+    session_affinity: Optional[str] = None
+    #: e.g. "PreferClose"; None when unset.
+    traffic_distribution: Optional[str] = None
+    #: Not-ready pods are endpoints too. None only when a replayed capture
+    #: didn't record the routing fields (before 4.7.0); then all of these are None.
+    publish_not_ready_addresses: Optional[bool] = None
+    notes: list[str] = Field(default_factory=list)
+
+    def headless(self) -> bool:
+        """clusterIP None: DNS names the pods, and kube-proxy doesn't proxy it."""
+        return self.type == "ClusterIP" and self.cluster_ip is None
+
+    def internal_policy_applies(self) -> bool:
+        return self.internal_traffic_policy not in (None, "Cluster") and not self.headless()
+
+    def routing_changes(self) -> list[str]:
+        """The routing fields not at their defaults and in effect, e.g.
+        "internalTrafficPolicy Local"."""
+        return [text for text, differs in (
+            (f"internalTrafficPolicy {self.internal_traffic_policy}", self.internal_policy_applies()),
+            (f"externalTrafficPolicy {self.external_traffic_policy}",
+             self.external_traffic_policy not in (None, "Cluster")),
+            (f"sessionAffinity {self.session_affinity}", self.session_affinity not in (None, "None")),
+            (f"trafficDistribution {self.traffic_distribution}", self.traffic_distribution is not None),
+            ("publishNotReadyAddresses true", bool(self.publish_not_ready_addresses))) if differs]
+
+    @model_validator(mode="after")
+    def _derive_notes(self) -> "ServiceSummary":
+        self.notes = ([NOTE_SERVICE_ROUTING_NOT_RECORDED] if self.publish_not_ready_addresses is None
+                      else []) + \
+                     ([NOTE_INTERNAL_TRAFFIC_LOCAL] if self.internal_traffic_policy == "Local"
+                      and not self.headless() else []) + \
+                     ([NOTE_EXTERNAL_TRAFFIC_LOCAL] if self.external_traffic_policy == "Local" else [])
+        return self
 
 def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummary]:
     """Services, like `kubectl get services`: type, cluster and external IP,
-    ports, selector, labels, annotations, age, and how many ready and not-ready
-    endpoints (backends) each has. namespace: one, or all if omitted."""
+    ports, selector, labels, annotations, age, how many ready and not-ready
+    endpoints (backends) each has, and its traffic policies and session
+    affinity. namespace: one, or all if omitted."""
     global K8S
     
     # Load Kubernetes configuration and initialize client only once
@@ -2363,6 +2497,14 @@ def get_service_summaries(namespace: Optional[str] = None) -> list[ServiceSummar
             annotations=annotations,
             ready_endpoints=counts[0],
             not_ready_endpoints=counts[1],
+            # The API defaults these (and omits a false publishNotReadyAddresses).
+            internal_traffic_policy=getattr(service.spec, "internal_traffic_policy", None)
+            if service_type != "ExternalName" else None,
+            external_traffic_policy=getattr(service.spec, "external_traffic_policy", None)
+            if service_type in ("NodePort", "LoadBalancer") else None,
+            session_affinity=getattr(service.spec, "session_affinity", None),
+            traffic_distribution=getattr(service.spec, "traffic_distribution", None),
+            publish_not_ready_addresses=bool(getattr(service.spec, "publish_not_ready_addresses", None)),
         )
         service_summaries.append(service_summary)
     
@@ -5042,11 +5184,19 @@ class WorkloadReport(_Compact):
     events: list[EventLine] = Field(default_factory=list)
     logs: list[LogTail] = Field(default_factory=list)
     last_change: Optional[LastChange] = None
+    #: A Deployment's rollout strategy and what it allows during an update, e.g.
+    #: "RollingUpdate: maxUnavailable 100%, maxSurge 0; of 1 replica, at most 1
+    #: unavailable and 0 extra during an update".
+    rollout_strategy: Optional[str] = None
     config: list[ConfigReference] = Field(default_factory=list)
     #: Its HorizontalPodAutoscaler, if one scales it.
     autoscaler: Optional[HpaSummary] = None
     #: Services sending traffic to its pods, with each pod's endpoint state.
     services: list[EndpointSummary] = Field(default_factory=list)
+    #: Its Services' routing fields that aren't the defaults, e.g.
+    #: "Service/x: internalTrafficPolicy Local; ready endpoints on node b",
+    #: with the nodes holding a ready endpoint wherever a policy is Local.
+    service_routing: list[str] = Field(default_factory=list)
     #: Its containers' current usage against requests and limits.
     usage: list[ContainerUsage] = Field(default_factory=list)
     #: Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/

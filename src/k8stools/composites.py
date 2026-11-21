@@ -34,7 +34,8 @@ from typing import Any, Optional
 
 from .k8s_tools import (_quantity, ContainerEssentials, ContainerUsage, EndpointSummary, HpaSummary,
                         IngressSummary, NetworkPolicySummary, NOTE_NETWORK_POLICIES,
-                        NOTE_QUOTA_AT_LIMIT, ResourceQuotaSummary,
+                        NOTE_QUOTA_AT_LIMIT, NOTE_SERVICE_ROUTING_NOT_RECORDED, ResourceQuotaSummary,
+                        ServiceSummary,
                         allows_port, network_policy_effect,
                         K8sMetricsUnavailable, NOTE_WORKING_SET, ContainerStateRunning, ContainerStateTerminated,
                         ContainerStateWaiting, EventLine, FailureGroup, Instance, K8sApiError,
@@ -96,7 +97,7 @@ _READER_KINDS = {
     "get_hpa_summaries": "HorizontalPodAutoscalers", "get_endpoint_summaries": "Service endpoints",
     "get_ingress_summaries": "Ingresses", "get_networkpolicy_summaries": "NetworkPolicies",
     "get_events": "events", "get_workload_history": "workload history",
-    "get_resourcequota_summaries": "ResourceQuotas",
+    "get_resourcequota_summaries": "ResourceQuotas", "get_service_summaries": "Services",
 }
 
 
@@ -463,6 +464,52 @@ def _autoscalers(api, namespace: str, unrecorded: list[str]) -> dict[str, HpaSum
 def _endpoint_line(e: EndpointSummary) -> str:
     return (f"Service/{e.service}: {e.ready} ready, {e.not_ready} not ready"
             + (f", {e.terminating} terminating" if e.terminating else ""))
+
+
+def _strategy_line(d) -> Optional[str]:
+    """A Deployment's rollout strategy, and the pods it lets an update take out
+    of service or add, as the controller resolves the percents (#41)."""
+    if d.strategy_type is None:
+        return None
+    plural = "s" if d.total_replicas != 1 else ""
+    if d.strategy_type == "Recreate":
+        line = "Recreate: every pod is stopped before any of the new revision's pods start"
+    else:
+        line = (f"{d.strategy_type}: maxUnavailable {d.max_unavailable}, maxSurge {d.max_surge}")
+        if (limits := d.update_limits()) is not None:
+            line += (f"; of {d.total_replicas} replica{plural}, at most {limits[0]} unavailable "
+                     f"and {limits[1]} extra during an update")
+    if d.min_ready_seconds:
+        line += f"; minReadySeconds {d.min_ready_seconds}"
+    if d.progress_deadline_seconds not in (None, 600):
+        line += f"; progressDeadlineSeconds {d.progress_deadline_seconds}"
+    return line
+
+
+def _routing_lines(services: list[ServiceSummary], endpoints: list[EndpointSummary]
+                   ) -> tuple[list[str], list[str]]:
+    """Each of these Services whose routing isn't the default, with the nodes
+    holding a ready endpoint where a policy is Local (#40); and the notes."""
+    by_name = {e.service: e for e in endpoints}
+    lines, notes = [], []
+    for s in sorted(services, key=lambda s: s.name):
+        if s.publish_not_ready_addresses is None:
+            notes.append(NOTE_SERVICE_ROUTING_NOT_RECORDED)
+            continue
+        changes = s.routing_changes()
+        if not changes:
+            continue
+        if (s.internal_traffic_policy == "Local" and s.internal_policy_applies()) \
+                or s.external_traffic_policy == "Local":
+            e = by_name.get(s.name)
+            ready = [a for a in (e.addresses if e else []) if a.ready]
+            nodes = sorted({a.node for a in ready if a.node})
+            changes.append(f"ready endpoints on node{'s' if len(nodes) != 1 else ''} "
+                           f"{', '.join(nodes)}" if nodes else
+                           "ready endpoints' nodes not known" if ready else "no ready endpoints")
+        lines.append(f"Service/{s.name}: " + "; ".join(changes))
+        notes += [n for n in s.notes if n not in notes]
+    return lines, list(dict.fromkeys(notes))
 
 
 def _services_for(endpoints: list[EndpointSummary], pod_names: set[str]) -> list[EndpointSummary]:
@@ -1173,6 +1220,18 @@ def workload_report(api, name: str, namespace: str = "default", kind: Optional[s
     report.autoscaler = _autoscalers(api, namespace, unrecorded).get(f"{kind}/{name}")
     report.services = _services_for(_recorded(unrecorded, api.get_endpoint_summaries, namespace),
                                     {p.name for p in pods})
+    if report.services:
+        names = {e.service for e in report.services}
+        services = [s for s in _recorded(unrecorded, api.get_service_summaries, namespace)
+                    if s.name in names]
+        report.service_routing, routing_notes = _routing_lines(services, report.services)
+        report.notes += routing_notes
+    if kind == "Deployment":
+        deployment = next((d for d in _recorded(unrecorded, api.get_deployment_summaries, namespace)
+                           if d.name == name), None)
+        if deployment is not None:
+            report.rollout_strategy = _strategy_line(deployment)
+            report.notes += deployment.notes
     report.ingresses = _ingress_lines(_recorded(unrecorded, api.get_ingress_summaries, namespace),
                                       services={e.service for e in report.services})
     policies, unavailable = _network_policies(api, namespace, unrecorded)

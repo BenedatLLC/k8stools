@@ -14,6 +14,11 @@ dates are release-tag dates.
 - [#43](https://github.com/BenedatLLC/k8stools/issues/43): get_recent_changes and
   quotas (4.7.0, unreleased): a long not_readable list under a narrow role, and
   four other problems.
+- [#40](https://github.com/BenedatLLC/k8stools/issues/40): ServiceSummary: add
+  internalTrafficPolicy, externalTrafficPolicy and sessionAffinity.
+- [#41](https://github.com/BenedatLLC/k8stools/issues/41): DeploymentSummary: add
+  the rollout strategy (type, maxUnavailable, maxSurge) and flag one that takes
+  every replica down.
 
 ### Added
 - **`get_recent_changes(namespace, within="30m")`**, in every toolset including
@@ -40,6 +45,25 @@ dates are release-tag dates.
   ITBench imports carry all three from the snapshot. Replay of an older capture
   says what isn't recorded: `get_recent_changes` falls back to objects created
   within the window, from their ages, and says updates aren't recorded.
+- **`ServiceSummary` has the fields that decide where kube-proxy sends traffic**:
+  `internal_traffic_policy`, `external_traffic_policy`, `session_affinity`,
+  `traffic_distribution` and `publish_not_ready_addresses`, with a note on a
+  `Local` policy (none for `internalTrafficPolicy` on a headless Service, which
+  kube-proxy doesn't proxy). With `internalTrafficPolicy: Local`, a caller on a node without
+  a ready endpoint gets no answer while every health signal looks normal; no
+  tool showed it. `get_workload_report` has `service_routing`: a line for each
+  of the workload's Services whose routing isn't the default, naming the nodes
+  with a ready endpoint where a policy is `Local`.
+- **`DeploymentSummary` has the rollout strategy**: `strategy_type`,
+  `max_unavailable`, `max_surge` (as the spec gives them),
+  `min_ready_seconds`, `progress_deadline_seconds` and
+  `revision_history_limit`, with a note when an update may take every replica
+  out of service (`Recreate`, or `maxUnavailable` resolving to at least the
+  replica count, as with 100% and maxSurge 0). `get_workload_report` has
+  `rollout_strategy`: the strategy and what it resolves to ("of 1 replica, at
+  most 1 unavailable and 0 extra during an update"), capped at the replica
+  count as the controller caps it. Captures made before
+  4.7.0 replay both sets of fields as unknown, with a note, not as defaults.
 - `get_namespace_health` has `resource_quotas`: one line per quota, every
   resource's used/hard and percent; a hard limit in milli-units or plain bytes
   is shown in used's unit too ("1901Mi/1433.6Mi (132%; hard written as

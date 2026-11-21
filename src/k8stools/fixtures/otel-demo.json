@@ -1220,7 +1220,13 @@
           "message": "ReplicaSet \"ad-647b4947cc\" has timed out progressing.",
           "since_seconds": 26640.0
         }
-      ]
+      ],
+      "strategy_type": "RollingUpdate",
+      "max_unavailable": "25%",
+      "max_surge": "25%",
+      "min_ready_seconds": 0,
+      "progress_deadline_seconds": 600,
+      "revision_history_limit": 10
     },
     {
       "name": "test-deployment",
@@ -1245,7 +1251,13 @@
           "message": "ReplicaSet \"test-deployment-7d4b9c85f\" has successfully progressed.",
           "since_seconds": 7150.0
         }
-      ]
+      ],
+      "strategy_type": "RollingUpdate",
+      "max_unavailable": "25%",
+      "max_surge": "25%",
+      "min_ready_seconds": 0,
+      "progress_deadline_seconds": 600,
+      "revision_history_limit": 10
     },
     {
       "name": "accounting",
@@ -1270,7 +1282,13 @@
           "message": "ReplicaSet \"accounting-6c9f8b7d4\" has successfully progressed.",
           "since_seconds": 691150.0
         }
-      ]
+      ],
+      "strategy_type": "RollingUpdate",
+      "max_unavailable": "25%",
+      "max_surge": "25%",
+      "min_ready_seconds": 0,
+      "progress_deadline_seconds": 600,
+      "revision_history_limit": 10
     },
     {
       "name": "checkout",
@@ -1295,7 +1313,13 @@
           "message": "ReplicaSet \"checkout-5f6d8c9b7\" has timed out progressing.",
           "since_seconds": 6600.0
         }
-      ]
+      ],
+      "strategy_type": "RollingUpdate",
+      "max_unavailable": "25%",
+      "max_surge": "25%",
+      "min_ready_seconds": 0,
+      "progress_deadline_seconds": 600,
+      "revision_history_limit": 10
     },
     {
       "name": "quote",
@@ -1320,7 +1344,13 @@
           "message": "ReplicaSet \"quote-6c9d7f8b4\" has timed out progressing.",
           "since_seconds": 600.0
         }
-      ]
+      ],
+      "strategy_type": "RollingUpdate",
+      "max_unavailable": "25%",
+      "max_surge": "25%",
+      "min_ready_seconds": 0,
+      "progress_deadline_seconds": 600,
+      "revision_history_limit": 10
     }
   ],
   "replicasets": [
@@ -1436,7 +1466,12 @@
       "labels": {},
       "annotations": {},
       "ready_endpoints": 0,
-      "not_ready_endpoints": 1
+      "not_ready_endpoints": 1,
+      "internal_traffic_policy": "Cluster",
+      "external_traffic_policy": null,
+      "session_affinity": "None",
+      "traffic_distribution": null,
+      "publish_not_ready_addresses": false
     },
     {
       "name": "test-service",
@@ -1461,7 +1496,12 @@
       "labels": {},
       "annotations": {},
       "ready_endpoints": 3,
-      "not_ready_endpoints": 0
+      "not_ready_endpoints": 0,
+      "internal_traffic_policy": "Cluster",
+      "external_traffic_policy": "Cluster",
+      "session_affinity": "None",
+      "traffic_distribution": null,
+      "publish_not_ready_addresses": false
     },
     {
       "name": "postgres",
@@ -1482,7 +1522,12 @@
       "labels": {},
       "annotations": {},
       "ready_endpoints": 1,
-      "not_ready_endpoints": 0
+      "not_ready_endpoints": 0,
+      "internal_traffic_policy": "Cluster",
+      "external_traffic_policy": null,
+      "session_affinity": "None",
+      "traffic_distribution": null,
+      "publish_not_ready_addresses": false
     }
   ],
   "endpoints": [
