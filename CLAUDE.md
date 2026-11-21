@@ -56,6 +56,7 @@ tests/
   test_custom_resources.py   - CRDs and custom-resource conditions; per-type permissions in capture
   test_recent_changes.py     - get_recent_changes: reader, window, controllers, revisions, replay, fallback, capture, ITBench (#38)
   test_quotas.py             - get_quota_summaries, the namespace view's quota lines, capture and replay (#38)
+  test_routing_and_rollout.py - Service routing fields (#40) and Deployment rollout strategy (#41): summaries, report lines, replay
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_mcp_errors.py         - Anticipated failures reach MCP clients with their reason; crashes stay generic; one-line API errors

@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Fifteen models have a
+them when they matter instead of carrying them on every turn. Seventeen models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -36,7 +36,13 @@ notes existed) give the same notes; captures don't store them.
 | `ContainerUsage` | no reading | No reading: the container isn't running, or started within about one metrics-server scrape interval. |
 | `ContainerUsage` | the last instance was OOM-killed, or ended abnormally and the current one started within 10 minutes | "The last instance ended OOMKilled 6m ago; this sample is from the current one, started 58s ago." followed by: A sample averages a short window: a spike that ends in an OOM kill usually never appears in one. |
 | `ResourceQuotaSummary` | a resource's `used` >= `hard` | A resource here is at its hard limit (used >= hard): the API refuses any new object that would add to it, so a controller creating pods reports FailedCreate and the pods never exist. |
-| `QuotaSummaries` | replay only: the capture doesn't record ResourceQuotas, or LimitRanges | This capture doesn't record ResourceQuotas (LimitRanges), so they are unknown, not absent. |
+| `QuotaSummaries` | replay: the capture doesn't record ResourceQuotas, or LimitRanges | This capture doesn't record ResourceQuotas (LimitRanges), so they are unknown, not absent. |
+| `QuotaSummaries` | live: the role may not list ResourceQuotas, or LimitRanges | Not readable with these credentials (403 Forbidden), so unknown rather than absent: ResourceQuotas (LimitRanges). |
+| `DeploymentSummary` | an update may take every replica out of service | This Deployment's rollout strategy lets an update take every replica out of service at once (Recreate, or maxUnavailable resolving to at least the replica count): if the new revision's pods don't become ready, none are serving. |
+| `DeploymentSummary` | replay of a capture made before 4.7.0 | This capture doesn't record the rollout strategy (made before 4.7.0), so it is unknown, not the default. |
+| `ServiceSummary` | `internal_traffic_policy` is `Local` | internalTrafficPolicy Local: kube-proxy sends traffic from inside the cluster only to the Service's endpoints on the caller's own node. A caller on a node with no ready endpoint has its connections dropped: no error and no response, until its own timeout. |
+| `ServiceSummary` | `external_traffic_policy` is `Local` | externalTrafficPolicy Local: traffic reaching a node from outside the cluster (NodePort, load balancer) goes only to endpoints on that node, keeping the client's source IP. A node with no ready endpoint drops it, and fails the load balancer's health check. |
+| `ServiceSummary` | replay of a capture made before 4.7.0 | This capture doesn't record the Service's routing fields (traffic policies, session affinity, traffic distribution, publishNotReadyAddresses; made before 4.7.0), so they are unknown, not the defaults. |
 | `RecentChanges` | from write records (always, live) | Each object keeps only the time of each client's latest write (per operation and subresource), not what it changed or earlier writes; a deletion leaves no trace. An object whose recorded writes are all controllers' counts as theirs. Secrets are listed by name only, and only if the role may list them. Events and Leases are left out: they are written continually. |
 | `RecentChanges` | a change has a `revision` | revision: the workload revision created within 5s after that write. That is when the two happened, not a recorded cause. |
 | `RecentChanges` | replay of a capture without write records | This capture has no write records (made before 4.7.0): only objects created within the window are listed, from their ages, without who created them, and only of the kinds it records. Updates aren't recorded. Objects a controller owns (pods, ReplicaSets) are left out. |
@@ -224,9 +230,11 @@ those tools, so it answers the same way from a replayed capture.
 - **`events`** (`list[EventLine]`): events for the workload, its ReplicaSets and its pods, merged where they differ only in which object they name (`objects` counts them, and `count` sums them), newest first, at most 20. Events for other kinds that share the name (a Service called like the Deployment) are left out.
 - **`logs`** (`list[LogTail]`): current and previous log tails of the focus pod, the one most in trouble: a waiting container first, then most restarts (on a tie, the first listed). Then the other pods', by name: with `grep`, every log of up to 10 pods, each with its `matches` (0 included); without, a 5-line tail of each current container for up to 5 other pods. Lines past the focus pod's share a 100-line limit across the report; a pod whose log wasn't read is named in `notes`. `lines_from` is the timestamp of the first line shown and `log_starts` where the log begins, when known: equal, the whole log is shown; `log_starts` omitted, where it begins is unknown (a capture before 4.6.0), never that the lines are all of it. A note line the log tool added (e.g. that a waiting container's log is its last instance's) is moved into the tail's `notes`. Without `grep`, a tail cut from a longer log has the log tool's note saying where the log starts. With `grep`, `matches` (how many lines matched), `searched_lines` and `searched_from` (the first searched line's timestamp) say how much was searched. When that instance's log file is gone, the tail has `available: false`, `reason` (`LOG_RECLAIMED_REASON`) and no `lines`; so does a log a replayed capture didn't record, with a reason saying so. `available` is omitted when the log was read.
 - **`last_change`** (`LastChange`): the current revision from `get_workload_history`: `revision`, `age`, `reused`, `rollout_restart`, and `changes` as "field: before -> after".
+- **`rollout_strategy`** (`Optional[str]`): a Deployment's rollout strategy and what it lets an update do, with the percents resolved as the Deployment controller resolves them (maxUnavailable rounded down, maxSurge up, and one unavailable when both come to 0): "RollingUpdate: maxUnavailable 100%, maxSurge 0; of 1 replica, at most 1 unavailable and 0 extra during an update", or "Recreate: every pod is stopped before any of the new revision's start". `minReadySeconds` follows when not 0, `progressDeadlineSeconds` when not 600. When an update may take every replica out of service, `notes` says so: a new revision whose pods never become ready then leaves none serving. None for other kinds, and for a capture made before 4.7.0 (with a note).
 - **`config`** (`list[ConfigReference]`): the ConfigMaps and Secrets it uses, as in `get_workload_history`.
 - **`autoscaler`** (`HpaSummary`): its HPA, if one scales it.
 - **`services`** (`list[EndpointSummary]`): Services sending traffic to its pods, with each backend's state.
+- **`service_routing`** (`list[str]`): those Services' routing fields that aren't the defaults, one line per Service, e.g. "Service/checkout: internalTrafficPolicy Local; ready endpoints on node worker-2". Where a traffic policy is `Local`, the line ends with the nodes holding a ready endpoint (or "no ready endpoints"), to compare with a caller's node, and `notes` gives what the policy does. Empty when every Service has the defaults; a capture made before 4.7.0 says in `notes` that the fields aren't recorded.
 - **`usage`** (`list[ContainerUsage]`): its containers' current usage, as from `get_container_metrics`. When metrics aren't available, `notes` says why.
 - **`ingresses`** (`list[str]`): Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/ -> test-service:80 (3 ready)".
 - **`network_policies`** (`list[str]`): the NetworkPolicies selecting its pods, combined per direction, since a pod's allowed traffic is the union of every policy selecting it: "ingress: allows all ingress (NetworkPolicy/frontend-block-all-ports, created 5m55s ago)", "egress: not restricted (no NetworkPolicy selects these pods for egress)", or "egress: denies all egress; none allows port 53, so these pods can't look up names (DNS) (NetworkPolicy/deny-all, created 41d2h ago)". Each line is one string, with the policies in the closing parentheses, each with when it was created, separated by "; ": a policy created just before an alert is a recent change. The age is since creation, as in `get_networkpolicy_summaries`, so an edit since then doesn't show. A policy selecting only some of its pods adds "NetworkPolicy/x selects 2 of these 3 pods". When none selects them, the one line "no NetworkPolicy (networking.k8s.io) selects these pods". Empty when the policies weren't recorded or couldn't be read, with a note saying which. Policy kinds installed as custom resources (Cilium, Calico, Antrea, AdminNetworkPolicy) are named in a note: they apply too, and aren't read.
@@ -543,6 +551,14 @@ A list of DeploymentSummary objects, each providing a summary of a deployment's 
 - **`available_replicas`** (`int`): Number of replicas that are available.
 - **`age`** (`datetime.timedelta`): Age of the deployment (current time minus creation timestamp).
 - **`conditions`** (`Optional[list[ResourceCondition]]`): Its status conditions, each with `type`, `status`, `reason`, `message` and `since` (time since its status last changed): `Available`; `Progressing` (`True` while a rollout progresses or once it completed, `False` with reason `ProgressDeadlineExceeded` when it stopped progressing); `ReplicaFailure` (`True` when pods couldn't be created, e.g. `FailedCreate` from a ResourceQuota). Mid-rollout `ready_replicas` counts the old revision's pods too, so these say whether the rollout itself is moving. None when a replayed capture didn't record them (made before 4.1.0).
+- **`strategy_type`** (`Optional[str]`): `RollingUpdate` or `Recreate`.
+- **`max_unavailable`**, **`max_surge`** (`Optional[int | str]`): as the spec gives them, a pod count or a percent ("25%"); None for `Recreate`.
+- **`min_ready_seconds`** (`Optional[int]`): how long a new pod must be ready before it counts as available (0 by default).
+- **`progress_deadline_seconds`** (`Optional[int]`): how long a rollout may make no progress before `Progressing=False` (600 by default).
+- **`revision_history_limit`** (`Optional[int]`): how many old ReplicaSets are kept to roll back to (10 by default).
+- **`notes`** (`list[str]`): when an update may take every replica out of service (`Recreate`, or `maxUnavailable` resolving to at least `total_replicas`); see [Notes in results](#notes-in-results).
+
+The strategy fields are None when a replayed capture didn't record them (made before 4.7.0), with a note: unknown, not the defaults. `get_workload_report` states the strategy with what it resolves to.
 
 ### `get_replicaset_summaries`
 
@@ -660,6 +676,14 @@ A list of ServiceSummary objects, each providing a summary of a service's status
 - **`labels`** (`dict[str, str]`): Labels on the service object.
 - **`annotations`** (`dict[str, str]`): Annotations on the service object.
 - **`ready_endpoints`**, **`not_ready_endpoints`** (`Optional[int]`): its ready and not-ready backends, from `get_endpoint_summaries`. 0 for a Service whose selector matches no pods. None when unknown: an ExternalName Service, EndpointSlices not readable with the server's permissions, or a capture taken before 3.0.0.
+- **`internal_traffic_policy`** (`Optional[str]`): `Cluster` (the default) or `Local`: traffic from inside the cluster goes only to endpoints on the caller's own node, and a caller on a node with none gets no answer. None for an ExternalName Service.
+- **`external_traffic_policy`** (`Optional[str]`): `Cluster` (the default) or `Local`, for NodePort and LoadBalancer Services: traffic from outside goes only to endpoints on the node it reaches, keeping the client's source IP. None for other types.
+- **`session_affinity`** (`Optional[str]`): Kubernetes' `None` (the default) or `ClientIP`: each client sticks to one backend.
+- **`traffic_distribution`** (`Optional[str]`): e.g. `PreferClose`; None when unset.
+- **`publish_not_ready_addresses`** (`Optional[bool]`): not-ready pods are endpoints too.
+- **`notes`** (`list[str]`): what a `Local` policy does; see [Notes in results](#notes-in-results).
+
+The routing fields are None when a replayed capture didn't record them (made before 4.7.0), with a note: unknown, not the defaults. `get_workload_report` lists the ones that aren't the defaults for a workload's Services.
 
 
 ### `get_endpoint_summaries`

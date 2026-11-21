@@ -180,7 +180,7 @@ out-of-memory kill".
 
 | Tool | What it answers | T | I |
 |---|---|:-:|:-:|
-| `get_deployment_summaries` | Deployments, like `kubectl get deployments` | | ✓ |
+| `get_deployment_summaries` | Deployments, like `kubectl get deployments`, with conditions and the rollout strategy | | ✓ |
 | `get_statefulset_summaries` | StatefulSets, like `kubectl get statefulsets` | | ✓ |
 | `get_daemonset_summaries` | DaemonSets, like `kubectl get daemonsets -o wide`, with node selector and images | | ✓ |
 | `get_workload_history` | What changed in a Deployment, StatefulSet or DaemonSet, and when: each retained revision compared with the one before (images, resources, probes, command and args, env var *names*, volumes, scheduling), plus the ConfigMaps and Secrets it references. It also says what the history cannot show. | | ✓ |
@@ -195,7 +195,7 @@ out-of-memory kill".
 
 | Tool | What it answers | T | I |
 |---|---|:-:|:-:|
-| `get_service_summaries` | Services, like `kubectl get services`, with selector, labels, annotations, and ready / not-ready endpoint counts | | ✓ |
+| `get_service_summaries` | Services, like `kubectl get services`, with selector, labels, annotations, ready / not-ready endpoint counts, traffic policies and session affinity | | ✓ |
 | `get_endpoint_summaries` | Each Service's backends, from its EndpointSlices: every address's ready / serving / terminating state, pod and node | | ✓ |
 | `get_ingress_summaries` | Ingresses, like `kubectl get ingress` plus `describe`: each host/path rule with its backend Service and port resolved (flagged when the Service or port doesn't exist), TLS hosts and Secret names, load-balancer addresses | | ✓ |
 | `get_networkpolicy_summaries` | NetworkPolicies: the pods each selects, its rules, and what it allows per direction in plain words ("allows all ingress", "denies all egress", "allows ingress only from ..."), by the API's rules rather than the policy's name | | ✓ |
