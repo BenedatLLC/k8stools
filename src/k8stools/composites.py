@@ -518,7 +518,8 @@ def _webhook_lines(result: WebhookConfigurations, pod_names: set[str]
     """The admission webhooks called when one of these pods is created (#39):
     rules covering pod CREATE, a namespaceSelector matching the namespace (the
     tool filtered those), and an objectSelector that is empty or matches one of
-    the pods (or can't be matched: no pods, or labels unknown). And the notes.
+    the pods (or can't be matched: no pods, or labels unknown, which the line
+    says, since then the webhook may not be called at all). And the notes.
     What a webhook's own notes say goes on its line, so several lines can't
     leave a note's "its" ambiguous; the unserved-rules note is left out: these
     webhooks' pod rules are served, so it would only be about other rules."""
@@ -535,7 +536,10 @@ def _webhook_lines(result: WebhookConfigurations, pod_names: set[str]
             parts = [f"{kind}/{w.configuration}: webhook {w.name}",
                      f"failurePolicy {w.failure_policy}"]
             if w.object_selector:
-                parts.append(f"objectSelector {w.object_selector}")
+                unmatched = (" (no pods to match it against)" if not pod_names else
+                             " (not matched: pod labels unknown)"
+                             if w.object_selector_pods is None else "")
+                parts.append(f"objectSelector {w.object_selector}{unmatched}")
             if w.match_conditions:
                 parts.append(f"{len(w.match_conditions)} matchConditions (not evaluated)")
             if backend := (w.service or w.url):

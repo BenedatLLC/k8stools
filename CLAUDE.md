@@ -270,7 +270,7 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   report's `admission_webhooks` lists those covering pod CREATE whose
   namespaceSelector matches the namespace's labels and whose objectSelector is
   empty or matches one of the pods (any, when there are no pods: a webhook
-  refusing creates leaves none). Selectors are stored as text, as
+  refusing creates leaves none; the line says the selector wasn't matched). Selectors are stored as text, as
   `_selector_text` writes them, and matched at query time
   (`selector_text_matches`) against `NamespaceSummary.labels` and the
   capture's pod labels, so replay filters as live. Unknown namespace labels

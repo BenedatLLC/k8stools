@@ -453,9 +453,27 @@ def test_without_pods_a_webhook_with_an_object_selector_is_still_named():
                                    validating=[hook])
     assert _webhook_lines(result, set())[0] == [
         "ValidatingWebhookConfiguration/v: webhook deny.example.com; failurePolicy Fail; "
-        "objectSelector app=cart"]
+        "objectSelector app=cart (no pods to match it against)"]
     assert _webhook_lines(result, {"cart-1"})[0] == [
         "no admission webhook is called when these pods are created"]
+
+
+def test_an_object_selector_not_matched_for_unknown_pod_labels_says_so():
+    """An older capture without pod labels: listed, since it may be called,
+    but the line doesn't read as though its selector matched."""
+    hook = WebhookSummary(configuration="v", name="deny.example.com", age=DAY,
+                          rules=[WebhookRule(operations=["CREATE"], api_groups=[""],
+                                             api_versions=["v1"], resources=["pods"])],
+                          object_selector="app=cart", object_selector_pods=None)
+    result = WebhookConfigurations(namespace="default", namespace_labels={}, mutating=[],
+                                   validating=[hook])
+    assert _webhook_lines(result, {"cart-1"})[0] == [
+        "ValidatingWebhookConfiguration/v: webhook deny.example.com; failurePolicy Fail; "
+        "objectSelector app=cart (not matched: pod labels unknown)"]
+    matched = WebhookConfigurations(namespace="default", namespace_labels={}, mutating=[],
+                                    validating=[hook.model_copy(
+                                        update={"object_selector_pods": ["cart-1"]})])
+    assert _webhook_lines(matched, {"cart-1"})[0][0].endswith("objectSelector app=cart")
 
 
 def test_the_report_puts_each_webhooks_consequences_on_its_line():
