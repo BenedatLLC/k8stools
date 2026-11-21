@@ -1659,7 +1659,9 @@ class DeploymentSummary(BaseModel):
         if surge is None or unavailable is None:
             return None
         # Both zero would make no progress: the controller allows one unavailable.
-        return (1 if surge == 0 and unavailable == 0 else unavailable), surge
+        # Its MaxUnavailable() then caps that at the replica count (0 for none).
+        unavailable = 1 if surge == 0 and unavailable == 0 else unavailable
+        return min(unavailable, self.total_replicas), surge
 
     def takes_every_replica(self) -> bool:
         """An update may leave no replica serving."""
@@ -2339,8 +2341,8 @@ NOTE_INTERNAL_TRAFFIC_LOCAL = (
 NOTE_EXTERNAL_TRAFFIC_LOCAL = (
     "externalTrafficPolicy Local: traffic reaching a node from outside the cluster "
     "(NodePort, load balancer) goes only to endpoints on that node, keeping the "
-    "client's source IP. A node with no ready endpoint drops it, and fails the load "
-    "balancer's health check.")
+    "client's source IP. A node with no ready endpoint drops it; for a LoadBalancer "
+    "Service, that node also fails the load balancer's health check.")
 NOTE_SERVICE_ROUTING_NOT_RECORDED = (
     "This capture doesn't record the Service's routing fields (traffic policies, "
     "session affinity, traffic distribution, publishNotReadyAddresses; made before "
@@ -2367,7 +2369,8 @@ class ServiceSummary(BaseModel):
     ready_endpoints: Optional[int] = None
     not_ready_endpoints: Optional[int] = None
     #: "Cluster" (the default) or "Local": in-cluster traffic only to endpoints
-    #: on the caller's node. None for an ExternalName Service.
+    #: on the caller's node. None for an ExternalName Service. kube-proxy doesn't
+    #: proxy a headless Service, so there it has no effect (no note, no change).
     internal_traffic_policy: Optional[str] = None
     #: "Cluster" (the default) or "Local", for NodePort and LoadBalancer
     #: Services; None for other types.
@@ -2381,11 +2384,18 @@ class ServiceSummary(BaseModel):
     publish_not_ready_addresses: Optional[bool] = None
     notes: list[str] = Field(default_factory=list)
 
+    def headless(self) -> bool:
+        """clusterIP None: DNS names the pods, and kube-proxy doesn't proxy it."""
+        return self.type == "ClusterIP" and self.cluster_ip is None
+
+    def internal_policy_applies(self) -> bool:
+        return self.internal_traffic_policy not in (None, "Cluster") and not self.headless()
+
     def routing_changes(self) -> list[str]:
-        """The routing fields not at their defaults, e.g. "internalTrafficPolicy Local"."""
+        """The routing fields not at their defaults and in effect, e.g.
+        "internalTrafficPolicy Local"."""
         return [text for text, differs in (
-            (f"internalTrafficPolicy {self.internal_traffic_policy}",
-             self.internal_traffic_policy not in (None, "Cluster")),
+            (f"internalTrafficPolicy {self.internal_traffic_policy}", self.internal_policy_applies()),
             (f"externalTrafficPolicy {self.external_traffic_policy}",
              self.external_traffic_policy not in (None, "Cluster")),
             (f"sessionAffinity {self.session_affinity}", self.session_affinity not in (None, "None")),
@@ -2396,7 +2406,8 @@ class ServiceSummary(BaseModel):
     def _derive_notes(self) -> "ServiceSummary":
         self.notes = ([NOTE_SERVICE_ROUTING_NOT_RECORDED] if self.publish_not_ready_addresses is None
                       else []) + \
-                     ([NOTE_INTERNAL_TRAFFIC_LOCAL] if self.internal_traffic_policy == "Local" else []) + \
+                     ([NOTE_INTERNAL_TRAFFIC_LOCAL] if self.internal_traffic_policy == "Local"
+                      and not self.headless() else []) + \
                      ([NOTE_EXTERNAL_TRAFFIC_LOCAL] if self.external_traffic_policy == "Local" else [])
         return self
 

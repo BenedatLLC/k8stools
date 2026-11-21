@@ -473,7 +473,7 @@ def _strategy_line(d) -> Optional[str]:
         return None
     plural = "s" if d.total_replicas != 1 else ""
     if d.strategy_type == "Recreate":
-        line = "Recreate: every pod is stopped before any of the new revision's start"
+        line = "Recreate: every pod is stopped before any of the new revision's pods start"
     else:
         line = (f"{d.strategy_type}: maxUnavailable {d.max_unavailable}, maxSurge {d.max_surge}")
         if (limits := d.update_limits()) is not None:
@@ -499,7 +499,8 @@ def _routing_lines(services: list[ServiceSummary], endpoints: list[EndpointSumma
         changes = s.routing_changes()
         if not changes:
             continue
-        if "Local" in (s.internal_traffic_policy, s.external_traffic_policy):
+        if (s.internal_traffic_policy == "Local" and s.internal_policy_applies()) \
+                or s.external_traffic_policy == "Local":
             e = by_name.get(s.name)
             ready = [a for a in (e.addresses if e else []) if a.ready]
             nodes = sorted({a.node for a in ready if a.node})

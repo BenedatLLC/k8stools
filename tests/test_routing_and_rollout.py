@@ -11,7 +11,7 @@ import pytest
 from kubernetes import client as c
 
 from k8stools import k8s_tools
-from k8stools.composites import workload_report
+from k8stools.composites import _routing_lines, workload_report
 from k8stools.k8s_tools import (DeploymentSummary, NOTE_EXTERNAL_TRAFFIC_LOCAL,
                                 NOTE_INTERNAL_TRAFFIC_LOCAL, NOTE_ROLLOUT_TAKES_ALL,
                                 NOTE_SERVICE_ROUTING_NOT_RECORDED, NOTE_STRATEGY_NOT_RECORDED)
@@ -81,7 +81,10 @@ def test_recreate_has_no_surge_fields_and_takes_every_replica(monkeypatch):
     (3, "0%", "0%", (1, 0), False),
     (2, "50%", 0, (1, 0), False),
     (2, 2, 1, (2, 1), True),
-    (0, "100%", 0, (1, 0), False),        # scaled to zero: nothing to take down
+    (0, "100%", 0, (0, 0), False),        # scaled to zero: nothing to take down
+    (0, "25%", "25%", (0, 0), False),     # MaxUnavailable() is 0 with no replicas
+    (1, 2, 0, (1, 0), True),              # capped at the replica count, as the controller does
+    (3, "200%", 1, (3, 1), True),
 ])
 def test_what_an_update_may_take_down_as_the_controller_resolves_it(
         replicas, unavailable, surge, limits, takes_all):
@@ -169,6 +172,21 @@ def test_the_routing_fields_as_the_spec_gives_them(monkeypatch):
     assert s.notes == [NOTE_INTERNAL_TRAFFIC_LOCAL]
     assert s.routing_changes() == ["internalTrafficPolicy Local", "sessionAffinity ClientIP",
                                    "trafficDistribution PreferClose", "publishNotReadyAddresses true"]
+
+
+def test_a_headless_service_has_no_internal_policy_note(monkeypatch):
+    """kube-proxy doesn't proxy a headless Service, so its internalTrafficPolicy
+    drops nothing; the field is kept as the spec gives it."""
+    svc = _service("kafka", internal_traffic_policy="Local", session_affinity="ClientIP",
+                   publish_not_ready_addresses=True)
+    svc.spec.cluster_ip = "None"
+    s = _services(monkeypatch, svc)["kafka"]
+    assert s.headless() and s.cluster_ip is None and s.internal_traffic_policy == "Local"
+    assert NOTE_INTERNAL_TRAFFIC_LOCAL not in s.notes
+    assert s.routing_changes() == ["sessionAffinity ClientIP", "publishNotReadyAddresses true"]
+    lines, notes = _routing_lines([s], [])
+    assert lines == ["Service/kafka: sessionAffinity ClientIP; publishNotReadyAddresses true"]
+    assert NOTE_INTERNAL_TRAFFIC_LOCAL not in notes
 
 
 def test_defaults_and_types(monkeypatch):

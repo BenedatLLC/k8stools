@@ -48,7 +48,8 @@ dates are release-tag dates.
 - **`ServiceSummary` has the fields that decide where kube-proxy sends traffic**:
   `internal_traffic_policy`, `external_traffic_policy`, `session_affinity`,
   `traffic_distribution` and `publish_not_ready_addresses`, with a note on a
-  `Local` policy. With `internalTrafficPolicy: Local`, a caller on a node without
+  `Local` policy (none for `internalTrafficPolicy` on a headless Service, which
+  kube-proxy doesn't proxy). With `internalTrafficPolicy: Local`, a caller on a node without
   a ready endpoint gets no answer while every health signal looks normal; no
   tool showed it. `get_workload_report` has `service_routing`: a line for each
   of the workload's Services whose routing isn't the default, naming the nodes
@@ -60,7 +61,8 @@ dates are release-tag dates.
   out of service (`Recreate`, or `maxUnavailable` resolving to at least the
   replica count, as with 100% and maxSurge 0). `get_workload_report` has
   `rollout_strategy`: the strategy and what it resolves to ("of 1 replica, at
-  most 1 unavailable and 0 extra during an update"). Captures made before
+  most 1 unavailable and 0 extra during an update"), capped at the replica
+  count as the controller caps it. Captures made before
   4.7.0 replay both sets of fields as unknown, with a note, not as defaults.
 - `get_namespace_health` has `resource_quotas`: one line per quota, every
   resource's used/hard and percent; a hard limit in milli-units or plain bytes
