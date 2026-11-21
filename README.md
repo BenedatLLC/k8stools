@@ -147,7 +147,7 @@ it is in `investigate`. Every tool is in `all`.
 | Tool | What it answers | T | I |
 |---|---|:-:|:-:|
 | `get_namespace_health` | What is wrong in a namespace, and where. A full entry for each unhealthy workload (last termination with the exit code's meaning, how long instances live, the restart back-off, memory limit vs request, when the template last changed), pods that can't be scheduled and a Deployment's failing rollout conditions, the same for each *recovering* one (ready, but restarted within the last 24 hours), and one line for each healthy one. Workloads failing the same way are grouped. | ✓ | ✓ |
-| `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails of its most troubled pod, short ones of the others (`grep` searches every pod's whole log); the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA and resource usage. | ✓ | ✓ |
+| `get_workload_report` | Everything about one workload in one call: images, resources and probes; each instance's state and last termination; deduplicated events; current and previous log tails of its most troubled pod, short ones of the others (`grep` searches every pod's whole log); the last template change; the ConfigMaps and Secrets it uses; its Services, Ingress rules, HPA, NetworkPolicies, the admission webhooks called when its pods are created, and resource usage. | ✓ | ✓ |
 | `get_cluster_info` | Which cluster the tools are answering from: kubeconfig context, API server URL and version, or the capture being replayed. | ✓ | ✓ |
 | `get_recent_changes` | What changed in a namespace, and when: every write within a window (30 minutes by default) to an object in it or a cluster-scoped object, by a client other than Kubernetes' own controllers (whose writes are counted), from each object's `managedFields`. A new NetworkPolicy, a ResourceQuota, a ConfigMap edit, a rollout with the revision it made. Only each client's latest write is kept, and deletions leave no trace; the result says so. | ✓ | ✓ |
 
@@ -208,6 +208,7 @@ out-of-memory kill".
 | `get_configmap` | The full contents of one ConfigMap (redacted by the server) | | ✓ |
 | `get_pvc_summaries` | PersistentVolumeClaims, like `kubectl get pvc`, with the pods that mount each one, and an unbound claim's events | | ✓ |
 | `get_quota_summaries` | ResourceQuotas (each resource's hard limit, how much is used, the percent) and LimitRanges (per-container defaults, minimums and maximums). A quota at its limit makes the API refuse new pods. | | ✓ |
+| `get_webhook_configurations` | Admission webhooks, mutating and validating: each webhook's rules, namespace and object selectors, failurePolicy, and backend (its Service's ready endpoints, or a URL), with rules on resources the server doesn't serve flagged. With a namespace, only those whose namespaceSelector matches it, with objectSelectors matched to its pods. A mutating webhook can make a pod differ from its template; a validating one can refuse it. | | ✓ |
 
 ### Custom resources
 
@@ -416,6 +417,9 @@ rules:
   verbs: [get, list]
 - apiGroups: [apiextensions.k8s.io]
   resources: [customresourcedefinitions]
+  verbs: [get, list]
+- apiGroups: [admissionregistration.k8s.io]
+  resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
   verbs: [get, list]
 ```
 

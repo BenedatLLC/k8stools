@@ -6,12 +6,18 @@
     {
       "name": "default",
       "status": "Active",
-      "age_seconds": 777610.0
+      "age_seconds": 777610.0,
+      "labels": {
+        "kubernetes.io/metadata.name": "default"
+      }
     },
     {
       "name": "kube-system",
       "status": "Active",
-      "age_seconds": 777610.0
+      "age_seconds": 777610.0,
+      "labels": {
+        "kubernetes.io/metadata.name": "kube-system"
+      }
     }
   ],
   "nodes": [
@@ -1676,6 +1682,8 @@
   "networkpolicies": [],
   "resourcequotas": [],
   "limitranges": [],
+  "mutatingwebhooks": [],
+  "validatingwebhooks": [],
   "configmaps": [
     {
       "name": "app-config",
