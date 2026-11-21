@@ -9,7 +9,7 @@ and in two places in the results themselves:
 ## Notes in results
 
 Warnings that apply to a particular result come back with it, so an agent sees
-them when they matter instead of carrying them on every turn. Seventeen models have a
+them when they matter instead of carrying them on every turn. Nineteen models have a
 `notes` list, empty unless a warning applies. Notes are derived from the item's
 own fields, so live calls and replayed captures (including captures made before
 notes existed) give the same notes; captures don't store them.
@@ -43,6 +43,14 @@ notes existed) give the same notes; captures don't store them.
 | `ServiceSummary` | `internal_traffic_policy` is `Local` and the Service isn't headless | internalTrafficPolicy Local: kube-proxy sends traffic from inside the cluster only to the Service's endpoints on the caller's own node. A caller on a node with no ready endpoint has its connections dropped: no error and no response, until its own timeout. |
 | `ServiceSummary` | `external_traffic_policy` is `Local` | externalTrafficPolicy Local: traffic reaching a node from outside the cluster (NodePort, load balancer) goes only to endpoints on that node, keeping the client's source IP. A node with no ready endpoint drops it; for a LoadBalancer Service, that node also fails the load balancer's health check. |
 | `ServiceSummary` | replay of a capture made before 4.7.0 | This capture doesn't record the Service's routing fields (traffic policies, session affinity, traffic distribution, publishNotReadyAddresses; made before 4.7.0), so they are unknown, not the defaults. |
+| `WebhookSummary` | its backend can't answer (`backend_problem`) and `failure_policy` is `Fail` | Its backend can't answer (see backend_problem) and failurePolicy is Fail: the API server refuses every request its rules match, e.g. a controller's pod creates (FailedCreate events), until the backend is back. |
+| `WebhookSummary` | its backend can't answer and `failure_policy` is `Ignore` | Its backend can't answer (see backend_problem) and failurePolicy is Ignore: requests its rules match go ahead without it. |
+| `WebhookSummary` | `unserved_resources` isn't empty | Some of its rules name resources this API server doesn't serve (unserved_resources): those rules match nothing until the resource is served (for a custom resource, until its CRD is installed). |
+| `WebhookSummary` | it has `match_conditions` | It is called only for requests its matchConditions (CEL expressions) accept; k8stools doesn't evaluate them. |
+| `WebhookSummary` | with a namespace: its objectSelector matches none of the namespace's pods | Its objectSelector matches none of the namespace's current pods: it acts on a new pod only if that pod's labels match. |
+| `WebhookConfigurations` | it lists a mutating webhook | The API doesn't record what a mutating webhook changed. A pod it changed at creation differs from its workload's template: compare the pod's spec (get_pod_spec) with what the workload asks for. |
+| `WebhookConfigurations` | with a namespace whose labels aren't known | The namespace's labels aren't known (not readable with these credentials, or not recorded in this capture), so webhooks weren't filtered by namespaceSelector. |
+| `WebhookConfigurations` | live: the role may not list Mutating (Validating) WebhookConfigurations; replay: the capture doesn't record them | Not readable with these credentials (403 Forbidden), so unknown rather than absent: MutatingWebhookConfigurations. / This capture doesn't record MutatingWebhookConfigurations, so they are unknown, not absent. (Likewise for ValidatingWebhookConfigurations.) |
 | `RecentChanges` | from write records (always, live) | Each object keeps only the time of each client's latest write (per operation and subresource), not what it changed or earlier writes; a deletion leaves no trace. An object whose recorded writes are all controllers' counts as theirs. Secrets are listed by name only, and only if the role may list them. Events and Leases are left out: they are written continually. |
 | `RecentChanges` | a change has a `revision` | revision: the workload revision created within 5s after that write. That is when the two happened, not a recorded cause. |
 | `RecentChanges` | replay of a capture without write records | This capture has no write records (made before 4.7.0): only objects created within the window are listed, from their ages, without who created them, and only of the kinds it records. Updates aren't recorded. Objects a controller owns (pods, ReplicaSets) are left out. |
@@ -238,6 +246,7 @@ those tools, so it answers the same way from a replayed capture.
 - **`usage`** (`list[ContainerUsage]`): its containers' current usage, as from `get_container_metrics`. When metrics aren't available, `notes` says why.
 - **`ingresses`** (`list[str]`): Ingress rules routing to its Services, e.g. "Ingress/shop: shop.example.com/ -> test-service:80 (3 ready)".
 - **`network_policies`** (`list[str]`): the NetworkPolicies selecting its pods, combined per direction, since a pod's allowed traffic is the union of every policy selecting it: "ingress: allows all ingress (NetworkPolicy/frontend-block-all-ports, created 5m55s ago)", "egress: not restricted (no NetworkPolicy selects these pods for egress)", or "egress: denies all egress; none allows port 53, so these pods can't look up names (DNS) (NetworkPolicy/deny-all, created 41d2h ago)". Each line is one string, with the policies in the closing parentheses, each with when it was created, separated by "; ": a policy created just before an alert is a recent change. The age is since creation, as in `get_networkpolicy_summaries`, so an edit since then doesn't show. A policy selecting only some of its pods adds "NetworkPolicy/x selects 2 of these 3 pods". When none selects them, the one line "no NetworkPolicy (networking.k8s.io) selects these pods". Empty when the policies weren't recorded or couldn't be read, with a note saying which. Policy kinds installed as custom resources (Cilium, Calico, Antrea, AdminNetworkPolicy) are named in a note: they apply too, and aren't read.
+- **`admission_webhooks`** (`list[str]`): the admission webhooks called when its pods are created: rules covering pod CREATE, a namespaceSelector matching the namespace, and an objectSelector that is empty or matches one of its pods (any webhook with an objectSelector, when it has no pods: a validating webhook refusing creates leaves none; the line then says "objectSelector app=cart (no pods to match it against)", or "(not matched: pod labels unknown)" for a capture without pod labels, since such a webhook may not be called at all). One line each, e.g. "MutatingWebhookConfiguration/mem-override: webhook memory.example.com; failurePolicy Fail; objectSelector app=cart; backend webhooks/mem-svc:443/mutate (1 ready)", with the backend's problem in the parentheses when it can't answer, followed by what that does by failurePolicy ("the API server refuses these pod creates", or "pod creates go ahead without it"), and "2 matchConditions (not evaluated)" when it has them. What a webhook's own notes say is on its line, not in `notes`, so with several webhooks each statement names its webhook; rules on unserved resources aren't mentioned (a listed webhook covers pod CREATE, which is always served). The report's read skips the discovery behind `unserved_resources`. When none is, the one line "no admission webhook is called when these pods are created". A mutating webhook's line comes with the note that the API doesn't record what it changed. Empty when webhooks weren't recorded or couldn't be read, with a note saying which, never the "none" line.
 - **`notes`** (`list[str]`): including where the event records start ("not necessarily when the problem did"), when the template last changed ("not how long the workload has been healthy"), which pod the containers come from, pods whose logs weren't read, and an exit code / reason disagreement.
 
 Empty fields are left out of the result.
@@ -259,6 +268,7 @@ List of namespace summary objects. Each NamespaceSummary has the following field
 - **`name`** (`str`): Name of the namespace.
 - **`status`** (`str`): Status phase of the namespace.
 - **`age`** (`datetime.timedelta`): Age of the namespace (current time minus creation timestamp).
+- **`labels`** (`Optional[dict[str, str]]`): the namespace's labels, which namespace selectors (webhooks', NetworkPolicy peers') match. Every namespace has `kubernetes.io/metadata.name`. None when a replayed capture made before 4.7.0 didn't record them.
 
 ### `get_node_summaries`
 
@@ -829,6 +839,59 @@ QuotaSummaries, with:
 - **`limit_ranges`** (`Optional[list[LimitRangeSummary]]`): None as above. Each with `name`, `namespace`, `age`, and `limits`: per entry, `type` ("Container", "Pod", "PersistentVolumeClaim"), `default` (limits given to a container that sets none), `default_request`, `min`, `max` and `max_limit_request_ratio`.
 - **`forbidden`** (`list[str]`): live, the half the role may not list ("ResourceQuotas" or "LimitRanges"). A role that may list only one gets that half; neither raises `K8sForbidden`.
 - **`notes`** (`list[str]`): says which half is unknown, and why: not readable with these credentials, or not recorded by the capture.
+
+### `get_webhook_configurations`
+
+```python
+get_webhook_configurations(namespace: Optional[str] = None) -> WebhookConfigurations
+```
+
+The cluster's admission webhooks: every webhook of every
+MutatingWebhookConfiguration and ValidatingWebhookConfiguration, with what
+decides whether the API server calls it and whether its backend can answer. A
+mutating webhook can change an object as it is created, so a pod can differ from
+its workload's template with nothing else recording why (SREGym's fault: a
+webhook setting the first container's memory to 16Mi under a template asking for
+128Mi/256Mi). A validating webhook can refuse it: the controller then reports
+`FailedCreate`, and the pod never exists.
+
+A cluster may carry several webhooks with the same backend and selectors that
+differ only in what makes them fire, so the fields that make one inert are all
+here:
+
+- **Rules.** A webhook is called only for the operations and resources its rules name. A rule naming a resource the API server doesn't serve (a custom resource whose CRD isn't installed) matches nothing: `unserved_resources` names those, from discovery.
+- **Selectors.** The namespaceSelector is matched against the labels of the request's namespace, the objectSelector against the object's labels. With `namespace`, the first is evaluated (webhooks it rejects are named in `left_out`), and an objectSelector of a webhook covering pods is matched to the namespace's current pods (`object_selector_pods`). A new pod is matched by its own labels, which a workload's pods share.
+- **matchConditions** (CEL) are shown and not evaluated.
+- **The backend.** For a Service backend, whether the Service exists, has the port, and has ready endpoints. With `failurePolicy: Fail` (the default), a backend that can't answer makes the API server refuse every request the rules match.
+
+Not shown: the CA bundle, and what a mutating webhook would change (the API doesn't record it). ValidatingAdmissionPolicies and MutatingAdmissionPolicies (CEL policies in the same API group) can also refuse or change objects, and aren't read.
+
+#### Parameters
+
+- **`namespace`** (`Optional[str]`): keep only the webhooks whose namespaceSelector matches this namespace's labels, and match objectSelectors to its pods. A namespace that doesn't exist raises an error. All webhooks if omitted.
+
+#### Returns
+
+WebhookConfigurations, with:
+
+- **`namespace`** (`Optional[str]`): the namespace asked about.
+- **`namespace_labels`** (`Optional[dict[str, str]]`): the labels the namespaceSelectors were matched against. None when no namespace was given, or its labels aren't known (the role may not read the namespace, or a capture before 4.7.0 didn't record them): then nothing is left out, and a note says so.
+- **`mutating`**, **`validating`** (`Optional[list[WebhookSummary]]`): None when unknown: live, the role may not list that kind; in replay, the capture doesn't record it. Each WebhookSummary has:
+  - **`configuration`** (`str`): the configuration it belongs to; **`name`** (`str`): the webhook's own name; **`age`**: the configuration's.
+  - **`rules`** (`list[WebhookRule]`): each with `operations` ("CREATE", "UPDATE", "DELETE", "CONNECT", "*"), `api_groups` ("" for the core group), `api_versions`, `resources` ("pods", "pods/status", "*" for every resource, "*/*" with subresources) and `scope` ("Namespaced", "Cluster", "*").
+  - **`namespace_selector`**, **`object_selector`** (`str`): label selectors in kubectl syntax; "" matches everything.
+  - **`match_conditions`** (`list[str]`): "name: expression".
+  - **`failure_policy`** (`str`): "Fail" (the default) or "Ignore". **`match_policy`**, **`side_effects`**, **`timeout_seconds`** as the API gives them.
+  - **`reinvocation_policy`** (`Optional[str]`): mutating only, "Never" (the default) or "IfNeeded"; None for validating.
+  - **`service`** (`Optional[str]`): the backend Service as "namespace/name:port" and its path (port 443 when unset), or **`url`** (`Optional[str]`).
+  - **`backend_ready`** (`Optional[int]`): the Service's ready endpoints; None for a URL, or when unknown (the Services couldn't be read).
+  - **`backend_problem`** (`Optional[str]`): "Service webhooks/mem-svc not found", "Service webhooks/mem-svc has no port 443", or "no ready endpoints". In a capture, as the capture saw it.
+  - **`unserved_resources`** (`Optional[list[str]]`): resources its rules name that the API server doesn't serve, e.g. "widgets.example.com"; None when discovery failed, and in an ITBench import (a pull's discovery serves only the kinds it pulled, so any other resource would read as unserved).
+  - **`object_selector_pods`** (`Optional[list[str]]`): with `namespace`, for a webhook with an objectSelector whose rules cover pods: the namespace's pods it matches now. None otherwise (no objectSelector matches every pod).
+  - **`notes`** (`list[str]`): see [Notes in results](#notes-in-results).
+- **`left_out`** (`list[str]`): with `namespace`, the webhooks whose namespaceSelector doesn't match it, e.g. "MutatingWebhookConfiguration/x: webhook y (namespaceSelector env=prod)".
+- **`forbidden`** (`list[str]`): live, the kind the role may not list. A role that may list only one gets that one; neither raises `K8sForbidden`.
+- **`notes`** (`list[str]`): which kind is unknown and why, unknown namespace labels, and, when a mutating webhook is listed, that the API doesn't record what it changed.
 
 ### `get_configmap_summaries`
 

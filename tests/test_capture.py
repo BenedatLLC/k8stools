@@ -338,6 +338,8 @@ class _FakeCluster:
             "binary_data_keys": []})
         monkeypatch.setattr(capture, "_pod_labels", lambda ns: {})
         monkeypatch.setattr(k8s_tools, "_object_writes", lambda ns=None: k8s_tools.ObjectWrites())
+        monkeypatch.setattr(k8s_tools, "get_mutating_webhook_summaries", lambda: [])
+        monkeypatch.setattr(k8s_tools, "get_validating_webhook_summaries", lambda: [])
 
 
 def test_capture_redacts_by_default(monkeypatch):

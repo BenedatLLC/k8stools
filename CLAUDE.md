@@ -57,6 +57,7 @@ tests/
   test_recent_changes.py     - get_recent_changes: reader, window, controllers, revisions, replay, fallback, capture, ITBench (#38)
   test_quotas.py             - get_quota_summaries, the namespace view's quota lines, capture and replay (#38)
   test_routing_and_rollout.py - Service routing fields (#40) and Deployment rollout strategy (#41): summaries, report lines, replay
+  test_webhooks.py           - get_webhook_configurations (#39): rules, selectors, backends, unserved resources, one namespace, replay, the report's lines, ITBench
   test_log_decoding.py       - Log decoding at the API boundary (bytes vs str), `previous` plumbing, log redaction
   test_mcp_client.py         - MCP client tests
   test_mcp_errors.py         - Anticipated failures reach MCP clients with their reason; crashes stay generic; one-line API errors
@@ -265,6 +266,22 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
   per direction. Unrecorded or unreadable policies give no line, never "no
   NetworkPolicy selects these pods"; a role without the permission must not
   fail the report.
+- **A webhook is called only if its rules and selectors say so** (#39). The
+  report's `admission_webhooks` lists those covering pod CREATE whose
+  namespaceSelector matches the namespace's labels and whose objectSelector is
+  empty or matches one of the pods (any, when there are no pods: a webhook
+  refusing creates leaves none; the line says the selector wasn't matched). Selectors are stored as text, as
+  `_selector_text` writes them, and matched at query time
+  (`selector_text_matches`) against `NamespaceSummary.labels` and the
+  capture's pod labels, so replay filters as live. Unknown namespace labels
+  filter nothing, with a note; webhooks unrecorded or unreadable give no line,
+  never "no admission webhook". Backend state and `unserved_resources` are
+  stored as read, like `ServiceSummary.ready_endpoints`; an ITBench import
+  sets `unserved_resources` to None (its discovery serves only the pull's
+  kinds). A webhook's consequences go on its report line, not in detached
+  notes ("its backend" can't name one of several). The report reads
+  `get_namespace_webhooks` (not a tool), which skips the discovery: every
+  report pays for it, and a listed webhook's pod rule is always served.
 - New data sources (HPA, endpoints, metrics: #14-#16) extend `WorkloadHealth`
   and `WorkloadReport` with fields, rather than adding tools to `triage`.
 

@@ -41,6 +41,8 @@ READERS = {
     "events": lambda s: s.get_events(),
     "resourcequotas": lambda s: s.get_resourcequota_summaries(),
     "limitranges": lambda s: s.get_limitrange_summaries(),
+    "mutatingwebhooks": lambda s: s.get_mutating_webhook_summaries(),
+    "validatingwebhooks": lambda s: s.get_validating_webhook_summaries(),
 }
 
 
@@ -143,10 +145,12 @@ def _scenario_33_shape(**extra):
         statefulsets=[], jobs=[], pvcs=[], events=[])
 
 
-# The namespace view reads ResourceQuotas too (#38); the workload report doesn't.
-REPORT_NOTE = ("Not recorded in this capture, so unknown rather than absent: DaemonSets, "
-               "HorizontalPodAutoscalers, Service endpoints, Ingresses, NetworkPolicies.")
-NOTE = REPORT_NOTE[:-1] + ", ResourceQuotas."
+# The namespace view reads ResourceQuotas too (#38); the workload report reads
+# admission webhooks (#39) instead.
+_COMMON = ("Not recorded in this capture, so unknown rather than absent: DaemonSets, "
+           "HorizontalPodAutoscalers, Service endpoints, Ingresses, NetworkPolicies")
+REPORT_NOTE = _COMMON + ", admission webhooks."
+NOTE = _COMMON + ", ResourceQuotas."
 
 
 def test_the_namespace_view_names_what_wasnt_recorded_in_one_note():

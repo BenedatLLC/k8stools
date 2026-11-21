@@ -175,3 +175,66 @@ def test_a_rollout_whose_new_pod_cant_be_scheduled(apis, namespace):
     assert web.placement == [f"{pending.name}: 0 of {nodes} nodes match its nodeSelector "
                              "and required node affinity"]
     assert report.placement == web.placement
+
+
+def test_a_webhook_the_namespace_selects_and_one_whose_rules_match_nothing(apis, namespace):
+    """#39, against a real API server's defaults and discovery. The webhooks
+    select only this test's namespace and fail open (Ignore), so nothing else
+    is affected; their backend doesn't exist."""
+    core, apps = apis
+    admission = client.AdmissionregistrationV1Api(core.api_client)
+    k8s_tools.ADMISSION_V1_API = None
+    only_here = client.V1LabelSelector(match_labels={"kubernetes.io/metadata.name": namespace})
+
+    def hook(name, rule):
+        return client.V1MutatingWebhook(
+            name=name, admission_review_versions=["v1"], side_effects="None",
+            failure_policy="Ignore", namespace_selector=only_here, rules=[rule],
+            client_config=client.AdmissionregistrationV1WebhookClientConfig(
+                service=client.AdmissionregistrationV1ServiceReference(
+                    namespace=namespace, name="no-such-svc")))
+    config = f"{namespace}-mutating"
+    admission.create_mutating_webhook_configuration(client.V1MutatingWebhookConfiguration(
+        metadata=client.V1ObjectMeta(name=config), webhooks=[
+            hook("pods.k8stools.test", client.V1RuleWithOperations(
+                operations=["CREATE"], api_groups=[""], api_versions=["v1"], resources=["pods"])),
+            hook("widgets.k8stools.test", client.V1RuleWithOperations(
+                operations=["CREATE"], api_groups=["k8stools.example.com"], api_versions=["v1"],
+                resources=["widgets"]))]))
+    try:
+        r = k8s_tools.get_webhook_configurations(namespace)
+        pods, widgets = sorted((w for w in r.mutating if w.configuration == config),
+                               key=lambda w: w.name)
+        assert (pods.name, pods.failure_policy, pods.reinvocation_policy) == (
+            "pods.k8stools.test", "Ignore", "Never")
+        assert pods.rules[0].scope == "*" and pods.timeout_seconds == 10  # the API's defaults
+        assert pods.backend_problem == f"Service {namespace}/no-such-svc not found"
+        assert pods.unserved_resources == [] and widgets.unserved_resources == [
+            "widgets.k8stools.example.com"]
+        assert k8s_tools.NOTE_WEBHOOK_FAILS_OPEN in pods.notes
+        assert k8s_tools.NOTE_WEBHOOK_UNSERVED in widgets.notes
+        elsewhere = k8s_tools.get_webhook_configurations("default")
+        assert not any(w.configuration == config for w in elsewhere.mutating)
+        assert f"MutatingWebhookConfiguration/{config}: webhook pods.k8stools.test " \
+               f"(namespaceSelector kubernetes.io/metadata.name={namespace})" in elsewhere.left_out
+
+        labels = {"app": "web"}
+        apps.create_namespaced_deployment(namespace, client.V1Deployment(
+            metadata=client.V1ObjectMeta(name="web"),
+            spec=client.V1DeploymentSpec(
+                replicas=1, selector=client.V1LabelSelector(match_labels=labels),
+                template=client.V1PodTemplateSpec(
+                    metadata=client.V1ObjectMeta(labels=labels),
+                    spec=client.V1PodSpec(termination_grace_period_seconds=0, containers=[
+                        client.V1Container(name="pause", image=PAUSE_IMAGE)])))))
+        _until(lambda: k8s_tools.get_pod_summaries(namespace), 60, "the pod to be created")
+        report = k8s_tools.get_workload_report("web", namespace)
+        print(f"\nadmission_webhooks: {report.admission_webhooks}")
+        assert report.admission_webhooks == [
+            f"MutatingWebhookConfiguration/{config}: webhook pods.k8stools.test; "
+            f"failurePolicy Ignore; backend {namespace}/no-such-svc:443 "
+            f"(Service {namespace}/no-such-svc not found); pod creates go ahead without it"]
+        assert k8s_tools.NOTE_WEBHOOK_PATCH in report.notes
+    finally:
+        admission.delete_mutating_webhook_configuration(config)
+        k8s_tools.ADMISSION_V1_API = None
