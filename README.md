@@ -610,6 +610,9 @@ application, with problems for an agent to find:
   PersistentVolumeClaim it mounts can't bind: its storage class doesn't exist;
 * an Ingress with one rule to a missing Service;
 * a cert-manager `Certificate` that isn't Ready;
+* a mutating webhook left behind by an uninstalled OpenTelemetry Operator: every
+  pod create calls it, its Service is gone, and `failurePolicy: Ignore` lets the
+  creates through;
 * a DaemonSet, a CronJob and its Job, a StatefulSet with PVCs and a completed
   init container, and events.
 

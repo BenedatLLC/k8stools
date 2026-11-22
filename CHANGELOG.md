@@ -42,6 +42,10 @@ dates are release-tag dates.
   pods are created". An objectSelector that couldn't be matched says so on the
   line (no pods, or pod labels not recorded). In SREGym's fault (a webhook rewriting the first container's memory
   on create) the agent saw the pod differ from its template and couldn't see why.
+- **The `--mock` fixture has an admission webhook**: a MutatingWebhookConfiguration
+  left behind by an uninstalled OpenTelemetry Operator, called on every pod create,
+  whose Service is gone (`failurePolicy: Ignore`, so creates go through). Every
+  workload report shows its line.
 - **`NamespaceSummary.labels`**, which namespace selectors match. Captures
   record them and both webhook kinds; replay of an older capture says webhooks
   aren't recorded, and a capture without namespace labels filters nothing by
@@ -101,6 +105,16 @@ dates are release-tag dates.
   and `mutatingwebhookconfigurations` and `validatingwebhookconfigurations`**,
   and shows optional rules for what `get_recent_changes` can also cover (RBAC
   objects, service accounts, volumes) and, opt-in with its risk, Secrets.
+  **Upgrading without changing your role** is safe: the composites and
+  `k8s-capture-state` carry on, with a note naming what the role couldn't read
+  ("Not readable with these credentials"), never "none". Called directly,
+  `get_quota_summaries` and `get_webhook_configurations` report the 403 as an
+  error when the role can read neither of their two kinds, and
+  `get_recent_changes` lists the types it couldn't read.
+- **Tool descriptions are sent without their docstring's indentation**, which
+  Python 3.12 kept (3.13 strips it): the same words, about 480 fewer characters
+  for the whole tool set on every turn. The description budgets now measure the
+  text the server sends.
 - **The composites' NetworkPolicy lines say when each policy was created.** A
   policy created just before an alert is a recent change, and agents rarely call
   `get_networkpolicy_summaries`, the only place its age was. In ITBench

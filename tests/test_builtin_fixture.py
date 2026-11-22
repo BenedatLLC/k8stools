@@ -327,6 +327,33 @@ def test_custom_resources_agree_with_their_definitions(state):
             assert all(c.since <= r.age for c in r.conditions if c.since is not None)
 
 
+def test_webhook_backends_agree_with_services(state):
+    """#39: a webhook's stored backend state is what the fixture's Services
+    say: a problem only for a Service or port that isn't there, ready counts
+    from the Service's endpoints. Its configuration is no older than the
+    cluster. One that can't answer, called on pod creates, must be Ignore: with
+    Fail, the pods created minutes before the capture would have been refused."""
+    services = {(s.namespace, s.name): s for s in state.get_service_summaries()}
+    oldest_namespace = max(n.age for n in state.get_namespaces())
+    youngest_pod = min(p.age for p in state.get_pod_summaries())
+    hooks = state.get_mutating_webhook_summaries() + state.get_validating_webhook_summaries()
+    assert hooks
+    for w in hooks:
+        assert w.age <= oldest_namespace
+        assert w.unserved_resources == []
+        if not w.service:
+            continue
+        ref, _, _ = w.service.partition("/")[2].partition("/")
+        name, _, port = ref.partition(":")
+        svc = services.get((w.service.partition("/")[0], name))
+        if w.backend_problem:
+            assert svc is None or not any(str(p.port) == port for p in svc.ports), w.name
+            if w.acts_on_pods("CREATE") and youngest_pod < w.age:
+                assert w.failure_policy == "Ignore", w.name
+        else:
+            assert svc is not None and w.backend_ready == svc.ready_endpoints, w.name
+
+
 def test_write_records_agree_with_the_objects(state):
     """#38: every recorded object exists with that creation time, no write
     predates its object, every Deployment's ReplicaSets carry its revisions, and
@@ -335,6 +362,9 @@ def test_write_records_agree_with_the_objects(state):
     writes = data["writes"]
     ages = {("Namespace", None, n["name"]): n["age_seconds"] for n in data["namespaces"]}
     ages |= {("Node", None, n["name"]): n["age_seconds"] for n in data["nodes"]}
+    for kind, key in (("MutatingWebhookConfiguration", "mutatingwebhooks"),
+                      ("ValidatingWebhookConfiguration", "validatingwebhooks")):
+        ages |= {(kind, None, w["configuration"]): w["age_seconds"] for w in data[key]}
     for kind, key in (("Deployment", "deployments"), ("ReplicaSet", "replicasets"),
                       ("StatefulSet", "statefulsets"), ("DaemonSet", "daemonsets"),
                       ("Service", "services"), ("ConfigMap", "configmaps"),

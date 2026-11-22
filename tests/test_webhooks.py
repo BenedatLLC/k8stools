@@ -416,9 +416,24 @@ def test_the_report_names_the_webhooks_called_when_its_pods_are_created(monkeypa
 
 
 def test_the_report_says_when_no_webhook_is_called():
-    report = workload_report(MockState.from_builtin(frozen=True), "test-deployment", "default")
+    data = json.loads(BUILTIN_STATE_FILE.read_text())
+    data["mutatingwebhooks"] = data["validatingwebhooks"] = []
+    report = workload_report(_replay(data), "test-deployment", "default")
     assert report.admission_webhooks == ["no admission webhook is called when these pods are created"]
     assert NOTE_WEBHOOK_PATCH not in report.notes
+
+
+def test_the_builtin_fixtures_leftover_webhook_is_on_the_report():
+    """The fixture's OpenTelemetry Operator webhook outlived its namespace:
+    every pod create calls it, it can't answer, and Ignore lets them through."""
+    report = workload_report(MockState.from_builtin(frozen=True), "test-deployment", "default")
+    assert report.admission_webhooks == [
+        "MutatingWebhookConfiguration/opentelemetry-operator-mutation: webhook mpod.kb.io; "
+        "failurePolicy Ignore; backend opentelemetry-operator-system/"
+        "opentelemetry-operator-webhook:443/mutate-v1-pod (Service "
+        "opentelemetry-operator-system/opentelemetry-operator-webhook not found); "
+        "pod creates go ahead without it"]
+    assert NOTE_WEBHOOK_PATCH in report.notes
 
 
 def test_an_older_capture_gives_no_line_and_says_not_recorded():
