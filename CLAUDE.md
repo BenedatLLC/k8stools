@@ -290,7 +290,9 @@ otherwise assembles from five or six. Rules that keep them trustworthy:
 A tool's docstring is its MCP description, sent to the model on every turn of
 every agent that has the tool. Keep it to what question the tool answers, its
 parameters, and at most one warning: `tests/test_notes.py` holds each to 700
-characters, their average to 300, and the `triage` toolset to 2,000. The field-by-field reference lives in
+characters, their average to 300, and the `triage` toolset to 2,400, measured
+as the server sends them (`mcp_server.tool_description`: the docstring without
+the indentation Python 3.12 keeps). The field-by-field reference lives in
 `docs/TOOL_REFERENCE.md`, maintained by hand; update it with the code.
 
 A warning that applies to particular results goes in those results:

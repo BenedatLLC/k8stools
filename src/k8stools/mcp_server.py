@@ -18,6 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools import Tool
 import argparse
 import functools
+import inspect
 import logging
 import sys
 from pathlib import Path
@@ -28,10 +29,15 @@ from .k8s_tools import K8sApiError, K8sConfigError, _api_error_text
 from .redaction import redact_object, redaction_enabled, wrap_with_redaction
 
 
+def tool_description(fn) -> str:
+    """A tool's MCP description: its docstring without the indentation, which
+    Python 3.12 keeps in ``__doc__`` (3.13 strips it) and which would otherwise
+    go to the model on every turn. The description budgets measure this text."""
+    return inspect.cleandoc(fn.__doc__ or "")
+
+
 def get_tool_for_function(fn) -> Tool:
-    tool = Tool.from_function(fn, structured_output=True)
-    #return_type = fn.__annotations__['return']
-    return tool
+    return Tool.from_function(fn, description=tool_description(fn), structured_output=True)
 
 
 def report_anticipated_errors(fn, redact: bool):

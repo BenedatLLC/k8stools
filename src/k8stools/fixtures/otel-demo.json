@@ -1682,7 +1682,44 @@
   "networkpolicies": [],
   "resourcequotas": [],
   "limitranges": [],
-  "mutatingwebhooks": [],
+  "mutatingwebhooks": [
+    {
+      "configuration": "opentelemetry-operator-mutation",
+      "name": "mpod.kb.io",
+      "age_seconds": 691500.0,
+      "rules": [
+        {
+          "operations": [
+            "CREATE",
+            "UPDATE"
+          ],
+          "api_groups": [
+            ""
+          ],
+          "api_versions": [
+            "v1"
+          ],
+          "resources": [
+            "pods"
+          ],
+          "scope": "*"
+        }
+      ],
+      "namespace_selector": "",
+      "object_selector": "",
+      "match_conditions": [],
+      "failure_policy": "Ignore",
+      "match_policy": "Equivalent",
+      "side_effects": "None",
+      "timeout_seconds": 10,
+      "reinvocation_policy": "Never",
+      "service": "opentelemetry-operator-system/opentelemetry-operator-webhook:443/mutate-v1-pod",
+      "url": null,
+      "backend_ready": null,
+      "backend_problem": "Service opentelemetry-operator-system/opentelemetry-operator-webhook not found",
+      "unserved_resources": []
+    }
+  ],
   "validatingwebhooks": [],
   "configmaps": [
     {
@@ -2613,6 +2650,7 @@
       "ingresses.networking.k8s.io",
       "jobs.batch",
       "limitranges",
+      "mutatingwebhookconfigurations.admissionregistration.k8s.io",
       "namespaces",
       "networkpolicies.networking.k8s.io",
       "nodes",
@@ -2621,7 +2659,8 @@
       "replicasets.apps",
       "resourcequotas",
       "services",
-      "statefulsets.apps"
+      "statefulsets.apps",
+      "validatingwebhookconfigurations.admissionregistration.k8s.io"
     ],
     "not_readable": [
       {
@@ -3573,6 +3612,23 @@
             "operation": "Update",
             "subresource": "status",
             "time_offset_seconds": 30.0
+          }
+        ],
+        "revision": null
+      },
+      {
+        "kind": "MutatingWebhookConfiguration",
+        "group": "admissionregistration.k8s.io",
+        "namespace": null,
+        "name": "opentelemetry-operator-mutation",
+        "created_offset_seconds": 691500.0,
+        "owner": null,
+        "writes": [
+          {
+            "manager": "kubectl-client-side-apply",
+            "operation": "Update",
+            "subresource": null,
+            "time_offset_seconds": 691500.0
           }
         ],
         "revision": null

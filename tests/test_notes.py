@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from k8stools import k8s_tools, mock_tools
+from k8stools.mcp_server import build_tools, tool_description
 from k8stools.k8s_tools import (ContainerStateRunning, ContainerStateTerminated,
                                 ContainerStateWaiting, ContainerStatus, LOG_NOTE_PREFIX)
 from k8stools.mock_state import CAPTURE_VERSION, MockState, encode_model
@@ -25,6 +26,7 @@ NOW = datetime.datetime.now(UTC).replace(microsecond=0)
 #: in all, about 12,000 tokens on every turn. The total grows with the tools, so
 #: it's held as an average; the triage toolset, which agents carry on every
 #: turn of a coordinator, has a budget of its own.
+#: Measured as the server sends them (``tool_description``: no indentation).
 DESCRIPTION_BUDGET = 700
 AVERAGE_DESCRIPTION_BUDGET = 300
 TRIAGE_DESCRIPTION_BUDGET = 2400
@@ -34,18 +36,30 @@ TRIAGE_DESCRIPTION_BUDGET = 2400
 
 @pytest.mark.parametrize("tool", k8s_tools.TOOLS, ids=lambda f: f.__name__)
 def test_each_description_is_within_budget(tool):
-    assert len(tool.__doc__) <= DESCRIPTION_BUDGET, \
-        f"{tool.__name__}: {len(tool.__doc__)} chars; move detail to " \
+    description = tool_description(tool)
+    assert len(description) <= DESCRIPTION_BUDGET, \
+        f"{tool.__name__}: {len(description)} chars; move detail to " \
         f"docs/TOOL_REFERENCE.md or into the result's notes"
 
 
 def test_descriptions_average_within_budget():
-    total = sum(len(t.__doc__) for t in k8s_tools.TOOLS)
+    total = sum(len(tool_description(t)) for t in k8s_tools.TOOLS)
     assert total / len(k8s_tools.TOOLS) <= AVERAGE_DESCRIPTION_BUDGET
 
 
 def test_the_triage_toolset_is_within_budget():
-    assert sum(len(t.__doc__) for t in k8s_tools.TOOLSETS["triage"]) <= TRIAGE_DESCRIPTION_BUDGET
+    assert sum(len(tool_description(t)) for t in k8s_tools.TOOLSETS["triage"]) \
+        <= TRIAGE_DESCRIPTION_BUDGET
+
+
+@pytest.mark.parametrize("redact", [True, False])
+def test_the_server_sends_the_measured_description(redact):
+    """The budgets measure what the model is sent: the docstring without the
+    indentation Python 3.12 keeps in __doc__, words and line breaks unchanged."""
+    for fn, tool in zip(k8s_tools.TOOLS, build_tools(k8s_tools.TOOLS, redact)):
+        assert tool.description == tool_description(fn)
+        assert "\n    " not in tool.description
+        assert tool.description.split() == fn.__doc__.split()
 
 
 def test_every_tool_is_in_the_reference():
